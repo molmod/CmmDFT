@@ -81,7 +81,7 @@ class Guest(object):
     def compute_hardsphere_radius(self, temperature, rcut=12*angstrom):
         "Get hard sphere radius (for FMT/MFMT) and zero radius (for MFA)"
         with log.section('GUEST', 2, timer="Initializing"):
-            log.dump('Computing hard sphere radius from barker and henderson formula at temperature of %.0 K' %(temperature))
+            log.dump('Computing hard sphere radius from barker and henderson formula at temperature of %.0f K' %(temperature))
             ff_int = get_ff(self.mol, self.mol, self.par, rcut)
             beta = 1.0/(temperature*boltzmann)
             self.Rhs, self.Rzero = hard_spheres_barker_henderson(ff_int, beta, natom=self.mol.natom)

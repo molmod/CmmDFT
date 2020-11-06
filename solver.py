@@ -54,11 +54,13 @@ class Picard(object):
                     log.dump("new loading is infinite! PICARD failed, aborting")
                     return np.nan, None
                 IUE = self.grid.integrate(np.abs(rho_new-rho)).real
+                RIUE = np.nan
+                if N_new>0: RIUE = IUE/N_new
                 if self.fener.fn_tracking is not None:
                     G = self.fener.track(chempot, rho_new, self.iphase).real
                 log.dump("step %3i/%3i *  Loading                           = %11.4e mol./uc" % (istep+1,nsteps,N_new))
                 log.dump("             *  Abs. Integr. Unsign. Err. density = %11.4e mol./uc" %IUE)
-                log.dump("             *  Rel. Integr. Unsign. Err. density = %11.4e " %(IUE/N_new))
+                log.dump("             *  Rel. Integr. Unsign. Err. density = %11.4e " %(RIUE))
                 if self.fener.fn_tracking is not None:
                     log.dump("             *  Grand potential                   = %11.4e kJ/mol " %(G/kjmol))
                 if IUE<threshold*N_new:

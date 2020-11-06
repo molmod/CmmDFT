@@ -132,14 +132,8 @@ def get_ff(system1, system2, pars, rcut, nlow=None, nhigh=None, tailcorrections=
             Yaff system instance for system 2
     
     pars
-            list containing 1 or 2 Yaff FF parameter files. In case system1 
-            represents the host and system2 the guest, then this routine should
-            return a FF for the interaction between host and guest and two files
-            should be given containing the non-bonding FF pars for respectively
-            host and guest. If, however, system1 and system2 both represent the 
-            guest, this routine should return a FF for the guest-guest
-            interaction and only one file should be given containig the
-            non-bonding FF pars of the guest molecules.
+            (list of) Yaff FF parameter file(s) containing the non-bonding FF pars for 
+            computing the interaction between the given systems.
     
     rcut
             Cut off for computing the non-bonding interactions.

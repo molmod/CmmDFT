@@ -15,7 +15,7 @@ from log import log
 
 
 __all__ = [
-    'VanderWaalsEOS', 'ModifiedBenedictWebbRubinEOS'
+    'VanderWaalsEOS', 'ModifiedBenedictWebbRubinEOS', 'CarnahanStarlingEOS', 'MFAEOS'
 ]
 
 class EquationOfState(object):
@@ -163,3 +163,16 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         for bi,Gi in zip(self.b,G):
             Ar += bi*Gi
         return Ar*self.epsilon
+
+
+#Placeholder
+class CarnahanStarlingEOS(EquationOfState):
+    def __init__(self):
+        raise NotImplementedError
+
+
+#Placeholder
+class MFAEOS(EquationOfState):
+    def __init__(self):
+        raise NotImplementedError
+    

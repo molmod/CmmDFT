@@ -15,6 +15,7 @@ from yaff import ForceField
 from tools import get_ff, merge_ffpar_files
 from log import log
 from system import NanoporousHost
+from eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS
 
 __all__ = [
     'FreeEnergy', 'get_ff', 'Functional','FMTFunctional','MFMTFunctional',
@@ -56,6 +57,16 @@ class FreeEnergy(object):
                     if part.name in ['WDA-V', 'WDA-N']:
                         part.R = 2*self.system.guest.Rhs
                         part._init_weight_function()
+                if part.name in ['CORR']:
+                    part.Flj.eos.set_temperature(temperature)
+                    part.Fhs.eos.set_temperature(temperature)
+                    part.Fmfa.eos.set_temperature(temperature)
+                    part.Flj.R = 2*self.system.guest.Rhs
+                    part.Fhs.R = 2*self.system.guest.Rhs
+                    part.Fmfa.R = 2*self.system.guest.Rhs
+                    part.Flj._init_weight_function()
+                    part.Fhs._init_weight_function()
+                    part.Fmfa._init_weight_function()
     
     def init_tracking(self, fn):
         self.fn_tracking = fn
@@ -159,6 +170,14 @@ class FreeEnergy(object):
                 log.dump('loading interaction potential from %s' %mfa_fn)
                 mfa.load_potential(mfa_fn)
         self.parts.append(mfa)
+    
+    def add_correlation_wda(self):
+        raise NotImplementeError
+        epsilon = None #TODO: uit self.system.guest.par file
+        sigma = None #TODO: uit self.system.guest.par file
+        R = self.system.guest.Rhs
+        corr = WDACorrFunctional(self.grid, self.temperature, R, epsilon, sigma)
+        self.parts.append(corr)
 
 
 class Functional(object):
@@ -605,3 +624,46 @@ class WDAVFunctional(LDAFunctional):
             wd = self._get_weighted_density(krho)
             phi = self.eos.excess_free_energy_volume(wd)
             return self.grid.integrate(phi)
+
+
+
+class WDACorrFunctional(Functional):
+    """
+    linear combination of 3 WDA functionals, each with their own EOS:
+    
+    F_ex = kT*int(Phi(wrho), r)
+    
+    Phi  = beta*(F_LJ-F_hs-F_MFA)/V
+    
+    with F_LJ/V  = f_MBWR(rho) , using the modified Benedict−Webb−Rubin EOS
+         F_hs/V  = f_CS(rho)   , using the Carnahan−Starling EOS
+         F_MFA/V = -16/9*pi*epsilon*sigma^3*rho**2
+    """
+
+    name = 'CORR'
+    
+    def __init__(self, grid, temperature, R, epsilon, sigma):
+        self.grid = grid
+        self.temperature = temperature
+        self.R = R
+        self.epsilon = epsilon 
+        self.sigma = sigma
+        self.Flj = WDAVFunctional(temperature, grid, R, ModifiedBenedictWebbRubinEOS(sigma, epsilon))
+        self.Fhs = WDAVFunctional(temperature, grid, R, CarnahanStarlingEOS(R))
+        self.Fmfa = WDAVFunctional(temperature, grid, R, MFAEOS(sigma, epsilon))
+    
+    def copy(self):
+        return WDACorrFunctional(self.grid.copy(), self.temperature, self.R, self.epsilon, self.sigma)
+    
+    def derive(self, krho):
+        deriv = self.Flj.value(krho)
+        deriv -= self.Fjs.value(krho)
+        deriv -= self.Fmfa.value(krho)
+        return deriv
+    
+    def value(self, krho):
+        value = 0.0
+        value += self.Flj.value(krho)
+        value -= self.Fjs.value(krho)
+        value -= self.Fmfa.value(krho)
+        return value

@@ -40,14 +40,14 @@ class Program(object):
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
         self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing)
     
-    def init_free_energy(self, temperature=300*kelvin):
+    def init_free_energy(self, temperature):
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
         assert self.grid is not None, "Grid must first be set using 'set_grid'"
         assert isinstance(self.grid, Grid), "self.grid is not an instance of Grid, aborting!"
         self.fener = FreeEnergy(self.grid, self.system, temperature, workdir=self.workdir, overwrite=self.overwrite)
     
-    def set_temperature(self, temperature=300*kelvin):
+    def set_temperature(self, temperature):
         assert self.fener is not None, "Free energy must first be initialized using 'init_free_energy'"
         assert isinstance(self.fener, FreeEnergy), "self.fener is not an instance of FreeEnergy, aborting!"
         self.fener.set_temperature(temperature)

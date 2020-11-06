@@ -49,10 +49,14 @@ class NanoporousHost(Host):
 class EmptyHost(Host):
     def __init__(self, cell=None, volume=None):
         with log.section('SYSTEM', 1, timer='Initializing'):
-            if cell is None: assert volume is not None, 'Either cell or volume keyword argument must be defined in EmptyHost.__init__'
             log.dump('Configuring empty space host')
             if cell is None:
+                assert volume is not None, 'Either cell or volume keyword argument must be defined in EmptyHost.__init__'
                 cell = Cell(np.diag([1.,1.,1.])*(volume)**(1./3.))
+            elif isinstance(cell, np.ndarray):
+                cell = Cell(cell)
+            else:
+                assert isinstance(cell, Cell), 'cell should be numpy array or yaff.pes.ext.Cell instance'
             Host.__init__(self, cell)
             
 
@@ -77,7 +81,7 @@ class Guest(object):
     def compute_hardsphere_radius(self, temperature, rcut=12*angstrom):
         "Get hard sphere radius (for FMT/MFMT) and zero radius (for MFA)"
         with log.section('GUEST', 2, timer="Initializing"):
-            log.dump('Computing hard sphere radius from barker and henderson formula')
+            log.dump('Computing hard sphere radius from barker and henderson formula at temperature of %.0 K' %(temperature))
             ff_int = get_ff(self.mol, self.mol, self.par, rcut)
             beta = 1.0/(temperature*boltzmann)
             self.Rhs, self.Rzero = hard_spheres_barker_henderson(ff_int, beta, natom=self.mol.natom)

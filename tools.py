@@ -149,6 +149,12 @@ def get_ff(system1, system2, pars, rcut, nlow=None, nhigh=None, tailcorrections=
     if system1.natom==0 or system2.natom==0:
         raise IOError('Empty system given in get_ff, terminating.')
     system = merge_yaff_systems(system1, system2)
+    #if there are no bonds, still init the neighbors (which will be empty) to be compatible with possible scaling def in pars files for non bonding contibutions
+    if system.bonds is None:
+        system.neighs1 = dict((i,set([])) for i in range(system.natom))
+        system.neighs2 = dict((i,set([])) for i in range(system.natom))
+        system.neighs3 = dict((i,set([])) for i in range(system.natom))
+        system.neighs4 = dict((i,set([])) for i in range(system.natom))
     if nlow is None or nhigh is None:
         nlow = system1.natom
         nhigh = system1.natom

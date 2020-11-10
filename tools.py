@@ -11,7 +11,7 @@ from scipy.optimize import brentq
 from molmod.units import *
 from molmod.constants import boltzmann
 
-from yaff import ForceField, Parameters
+from yaff import System, ForceField, Parameters
 
 from log import log
 
@@ -148,9 +148,62 @@ def get_ff(system1, system2, pars, rcut, nlow=None, nhigh=None, tailcorrections=
     """
     if system1.natom==0 or system2.natom==0:
         raise IOError('Empty system given in get_ff, terminating.')
-    system = system1.merge(system2)
+    system = merge_yaff_systems(system1, system2)
     if nlow is None or nhigh is None:
         nlow = system1.natom
         nhigh = system1.natom
     ff = ForceField.generate(system, pars, rcut=rcut, nlow=nlow, nhigh=nhigh, tailcorrections=tailcorrections)
     return ff
+
+
+def merge_yaff_systems(system0, system1):
+    "Routine based on the System.merge routine from yaff, but with small hack to allow for merging systems with no bonds"
+    def merge_arrays(array0, array1):
+        '''Concatenate arrays along first dimension'''
+        if array0 is None or array1 is None:
+            return None
+        else:
+            assert array0.ndim==array1.ndim
+            return np.concatenate( (array0, array1), axis=0)
+
+    def merge_ffatypes(system0, system1):
+        '''Concatenate atom types'''
+        if system0.ffatypes is None or system1.ffatypes is None:
+            return None
+        else:
+            ffatypes  = [system0.get_ffatype(iatom) for iatom in range(system0.natom)]
+            ffatypes += [system1.get_ffatype(iatom) for iatom in range(system1.natom)]
+            return ffatypes
+
+    def merge_scopes(system0, system1):
+        '''Concatenate scopes'''
+        if system0.scopes is None or system1.scopes is None:
+            return None
+        else:
+            scopes  = [system0.get_scope(iatom) for iatom in range(system0.natom)]
+            scopes += [system1.get_scope(iatom) for iatom in range(system1.natom)]
+
+    def merge_bonds(system0, system1):
+        if len(system0.bonds)>0 and len(system1.bonds)>0:
+            return np.array(merge_arrays(system0.bonds, system1.bonds+self.natom), dtype=int)
+        elif len(system0.bonds)==0 and len(system1.bonds)>0:
+            return system1.bonds
+        elif len(system0.bonds)>0 and len(system1.bonds)==0:
+            return system0.bonds
+        else:
+            return None
+    
+    return System(
+        numbers = merge_arrays(system0.numbers, system1.numbers),
+        pos = merge_arrays(system0.pos, system1.pos),
+        scopes=merge_scopes(system0, system1),
+        ffatypes=merge_ffatypes(system0, system1),
+        bonds=merge_bonds(system0, system1),
+        rvecs=system0.cell.rvecs,
+        charges=merge_arrays(system0.charges, system1.charges),
+        radii=merge_arrays(system0.radii, system1.radii),
+        valence_charges=merge_arrays(system0.valence_charges, system1.valence_charges),
+        dipoles=merge_arrays(system0.dipoles, system1.dipoles),
+        radii2=merge_arrays(system0.radii2, system1.radii2),
+        masses=merge_arrays(system0.masses, system1.masses),
+    )

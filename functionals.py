@@ -128,14 +128,18 @@ class FreeEnergy(object):
         self.parts.append(epot)
     
     def add_lda(self, eos):
-        eos.set_temperature(self.temperature)
-        lda = LDAFunctional(self.temperature, self.grid, eos)
+        with log.section('FREEENER', 2, timer='LDA init'):
+            log.dump('Initializing LDA functional for attractive interaction contribution')
+            eos.set_temperature(self.temperature)
+            lda = LDAFunctional(self.temperature, self.grid, eos)
         self.parts.append(lda)
     
     def add_wdav(self, eos):
-        eos.set_temperature(self.temperature)
-        self.system.guest.compute_hardsphere_radius(self.temperature)
-        wda = WDAVFunctional(self.temperature, self.grid, self.system.guest.Rhs, eos)
+        with log.section('FREEENER', 2, timer='LDA init'):
+            log.dump('Initializing WDA-v functional for attractive interaction contribution')
+            eos.set_temperature(self.temperature)
+            self.system.guest.compute_hardsphere_radius(self.temperature)
+            wda = WDAVFunctional(self.temperature, self.grid, self.system.guest.Rhs, eos)
         self.parts.append(wda)
     
     def add_hard_sphere(self, version='MFMT'):
@@ -171,12 +175,11 @@ class FreeEnergy(object):
                 mfa.load_potential(mfa_fn)
         self.parts.append(mfa)
     
-    def add_correlation_wda(self):
-        raise NotImplementeError
-        epsilon = None #TODO: uit self.system.guest.par file
-        sigma = None #TODO: uit self.system.guest.par file
-        R = self.system.guest.Rhs
-        corr = WDACorrFunctional(self.grid, self.temperature, R, epsilon, sigma)
+    def add_correlation_wda(self, epsilon, sigma):
+        with log.section('FREEENER', 2, timer='Correlation WDA init'):
+            log.dump('Initializing correlation WDA functional for attractive interaction contribution')
+            R = self.system.guest.Rhs
+            corr = WDACorrFunctional(self.grid, self.temperature, R, epsilon, sigma)
         self.parts.append(corr)
 
 
@@ -259,12 +262,14 @@ class FMTFunctional(Functional):
         n2 = np.fft.ifftn(kn2)*self.grid.dk
         kn3 = krho*self.kw3
         n3 = np.fft.ifftn(kn3)*self.grid.dk
-        #print("Min(Re{n3}) = %+8.2e" % (np.amin(n3.real)))
-        #print("Max(Re{n3}) = %+8.2e" % (np.amax(n3.real)))
-        #print("Max(|Im{n3}|) = %+8.2e" % (np.amax(np.abs(n3.imag))))
-        # When n3 approaches 1, things can go wrong because the functional
+# =============================================================================
+#         print("Min(Re{n3}) = %+8.2e" % (np.amin(n3.real)))
+#         print("Max(Re{n3}) = %+8.2e" % (np.amax(n3.real)))
+#         print("Max(|Im{n3}|) = %+8.2e" % (np.amax(np.abs(n3.imag))))
+# =============================================================================
+        #When n3 approaches 1, things can go wrong because the functional
         # contains terms with log(1-n3) and 1/(1-n3)
-        #n3[n3>0.95] = 0.95
+        n3[n3>0.95] = 0.95
         # The vector density functions
         knv1, nv1 = [], []
         for alpha in range(3):
@@ -366,7 +371,7 @@ class FMTFunctional(Functional):
     def value(self, krho):
         with log.section('(M)FMT', 3, timer='(M)FMT value'):
             n0, n1, n2, n3, nv1, nv2 = self._get_density_functions(krho)
-            phi = self.get_phi( n0, n1, n2, n3, nv1, nv2)
+            phi = self.get_phi(n0, n1, n2, n3, nv1, nv2)
             return self.grid.integrate(phi)/self.beta
 
 
@@ -383,6 +388,7 @@ class MFMTFunctional(FMTFunctional):
         phi = -n0*np.log(1.0-n3)
         phi += (n1*n2 - (nv1[0]*nv2[0]+nv1[1]*nv2[1]+nv1[2]*nv2[2]))/(1.0-n3)
         phi += (n3+(1-n3)**2*np.log(1-n3))*(n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))/(36.0*np.pi*n3**2*(1-n3)**2)
+        print('MFMT')
         return phi
 
     def _get_dphi_n2(self, n0, n1, n2, n3, nv1, nv2):
@@ -398,8 +404,8 @@ class MFMTFunctional(FMTFunctional):
         #dphi = tmp0+tmp1+tmp2+tmp3
         tmp2 = (n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))
         tmp3 = -(2.0+n3*(n3-5.0))/(36.0*np.pi*n3**2*(1.0-n3)**3)-np.log(1.0-n3)/(18.0*np.pi*n3**3)
-        #avoid numerical instability in tmp3 at low n3 by imposing analytic limit
         tmp3[n3<1e-3] = 2/(27*np.pi)
+        #avoid numerical instability in tmp3 at low n3 by imposing analytic limit
         dphi = tmp0+tmp1+tmp2*tmp3       
         return dphi
 
@@ -555,7 +561,7 @@ class LDAFunctional(Functional):
         self.eos.set_temperature(temperature)
     
     def copy(self):
-        return LDAFunctional(self.temperature, self.grid.copy(), self.eos)
+        return LDAFunctional(self.eos.temperature, self.grid.copy(), self.eos)
 
     def derive(self, krho):
         with log.section('LDA', 3, timer='LDA derive'):
@@ -582,7 +588,7 @@ class WDAVFunctional(LDAFunctional):
         self._init_weight_function()
     
     def copy(self):
-        return WDAVFunctional(self.temperature, self.grid.copy(), self.R, self.eos)
+        return WDAVFunctional(self.eos.temperature, self.grid.copy(), self.R, self.eos)
     
     def _init_weight_function(self):
         """
@@ -656,14 +662,14 @@ class WDACorrFunctional(Functional):
         return WDACorrFunctional(self.grid.copy(), self.temperature, self.R, self.epsilon, self.sigma)
     
     def derive(self, krho):
-        deriv = self.Flj.value(krho)
-        deriv -= self.Fjs.value(krho)
-        deriv -= self.Fmfa.value(krho)
+        deriv = self.Flj.derive(krho)
+        deriv -= self.Fhs.derive(krho)
+        deriv -= self.Fmfa.derive(krho)
         return deriv
     
     def value(self, krho):
         value = 0.0
         value += self.Flj.value(krho)
-        value -= self.Fjs.value(krho)
+        value -= self.Fhs.value(krho)
         value -= self.Fmfa.value(krho)
         return value

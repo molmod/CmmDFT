@@ -24,6 +24,7 @@ units = {
     'MFA'    : 'kjmol',
     'LDA'    : 'kjmol',
     'Total'  : 'kjmol',
+    'CORR'   : 'kjmol'
 }
 
 
@@ -37,6 +38,7 @@ ylabels = {
     'MFA'    : 'Energy',
     'LDA'    : 'Energy',
     'Total'  : 'Energy',
+    'CORR'   : 'Energy'
 }
 
 cm_convergence = cmap.get_cmap('tab10')
@@ -48,8 +50,16 @@ class Plotter(object):
         self.fig = pp.figure()
         
     def convergence(self, chempot, temp, max_num_phases=None, save_fig=False):
-        # define the name of the file containing the convergence data
-        fn = '%s/convergence_%3.0fkJmol_%3.0fK.txt' %(self.calculator.workdir, chempot/kjmol, temp)
+        fn_name_file = os.path.join(self.calculator.workdir, 'name_file_%3.0fK.txt'%(temp/kelvin))
+        assert os.path.isfile(fn_name_file), 'No convergence file found for %3.0f K' %(temp/kelvin)
+        fn_suffix=""
+        with open(fn_name_file) as n:
+            for x in n:
+                l = x.split(",")
+                ln = l[1].translate({ord('\n'): None})
+                if float(ln) == float('%7.3f'%(chempot/kjmol)):
+                    fn_suffix = l[0]
+        fn = os.path.join(self.calculator.workdir, fn_suffix)
         assert os.path.isfile(fn), 'No convergence file found for %3.0f K and %3.0f kJ/mol' %(temp,chempot/kjmol)
         # get data from header of convergence file
         with open(fn) as f:
@@ -241,7 +251,7 @@ class Plotter(object):
         if obs.lower()!='rho':
             data = np.load('%s/%s.npy' %(self.calculator.workdir,obs))
         else:
-            data = np.load('%s/%s_%3.0fkJmol_%3.0fK.npy' %(self.calculator.workdir,obs,chempot/kjmol,temperature/kelvin))
+            data = np.load('%s/%s_%4.1fkJmol_%3.0fK.npy' %(self.calculator.workdir,obs,chempot/kjmol,temperature/kelvin))
         
         #set some default values if not specified in keyword arguments
         if fn is None:

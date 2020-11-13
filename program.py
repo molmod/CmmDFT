@@ -79,7 +79,21 @@ class Program(object):
     def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=1e-6, energy_tracking=True):
         with log.section('PROGRAM', 2, timer='Solve'):
             if energy_tracking:
-                self.fener.init_tracking('%s/convergence_%4.1fkJmol_%3.0fK.txt' %(self.workdir, chempot/kjmol,self.fener.temperature/kelvin))
+                fn_name_file = os.path.join(self.workdir, 'name_file_%3.0fK.txt'%(self.fener.temperature/kelvin))
+                if not os.path.isfile(fn_name_file):
+                    with open(fn_name_file, 'w') as g:
+                        self.name_suffix = "convergence_%3.0fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,0)
+                        print("%s,%7.3f"%(self.name_suffix,chempot/kjmol), file=g)
+                if os.path.isfile(fn_name_file):
+                    with open(fn_name_file) as n:
+                        for x in n:
+                            l = x.split(",")
+                            old_fn = l[0].replace(".","_").split("_")
+                            step = float(old_fn[-2])+1
+                    with open(fn_name_file, 'a') as g:
+                        self.name_suffix = "convergence_%3.0fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,step)
+                        print("%s,%7.3f"%(self.name_suffix,chempot/kjmol), file=g)
+                self.fener.init_tracking(os.path.join(self.workdir, '%s'%(self.name_suffix)))
             fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
             log.dump('Thermodynamic conditions:')
             log.dump('  temperature = %5.1f   K' %(self.fener.temperature/kelvin))
@@ -99,7 +113,7 @@ class Program(object):
                 log.dump('#################################################################################')
                 N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix)
                 if rho is None:
-                    todo.append([min(1e-1,current_threshold*10),current_alpha_mix/10,100])
+                    todo.append([min(1e-1,current_threshold*5),current_alpha_mix/10,100])
                     if len(todo)>maxphases:
                         log.dump('Could not solve in less then %i phases. Aborting!' %maxphases)
                         sys.exit()

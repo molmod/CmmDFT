@@ -15,12 +15,10 @@ from log import log
 
 
 __all__ = [
-    'VanderWaalsEOS', 'ModifiedBenedictWebbRubinEOS', 'CarnahanStarlingEOS', 'MFAEOS'
+    'VanderWaalsEOS', 'ModifiedBenedictWebbRubinEOS', 'CarnahanStarlingEOS', 'MFAEOS', 'EquationOfState'
 ]
 
 class EquationOfState(object):
-
-    name = None
 
     def __init__(self):
         self.temperature = None
@@ -117,7 +115,7 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         self.gamma = 3.0
     
     def set_temperature(self, temperature):
-        EquationOfState.set_temperature(temperature)
+        EquationOfState.set_temperature(self, temperature)
         self._set_coefficients()
     
     def _set_coefficients(self):
@@ -153,6 +151,18 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         G6 = -ig*(F*rhor**10-10*G5)
         return [G1, G2, G3, G4, G5, G6]
     
+    def _get_dG_functionals(self,rho):
+        ig = 1.0/(2*self.gamma)
+        rhor = rho*self.sigma**3 #reduced density
+        F = np.exp(-self.gamma*rhor**2)
+        dG1 = ig*(1 + 2*self.gamma*rho*self.sigma**6*F)
+        dG2 = -ig*(self.sigma*(2*rhor*F-2*self.gamma*rhor**3*F) - 2*dG1)
+        dG3 = -ig*(self.sigma*(4*rhor*F-2*self.gamma*rhor**5*F) - 4*dG2)
+        dG4 = -ig*(self.sigma*(6*rhor*F-2*self.gamma*rhor**7*F) - 6*dG3)
+        dG5 = -ig*(self.sigma*(8*rhor*F-2*self.gamma*rhor**9*F) - 8*dG4)
+        dG6 = -ig*(self.sigma*(10*rhor*F-2*self.gamma*rhor**11*F) - 10*dG5)
+        return [dG1, dG2, dG3, dG4, dG5, dG6]
+        
     def excess_free_energy_particle(self, rho):
         Ar = 0.0 #reduced excess free energy per particle
         rhor = rho*self.sigma**3 #reduced density
@@ -163,16 +173,52 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         for bi,Gi in zip(self.b,G):
             Ar += bi*Gi
         return Ar*self.epsilon
-
-
-#Placeholder
-class CarnahanStarlingEOS(EquationOfState):
-    def __init__(self):
-        raise NotImplementedError
-
-
-#Placeholder
-class MFAEOS(EquationOfState):
-    def __init__(self):
-        raise NotImplementedError
     
+    def derivative_excess_free_energy_particle(self, rho):
+        dAr = 0.0
+        rhor = rho*self.sigma**3 #reduced density
+        Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
+        for i, ai in enumerate(self.a):
+            dAr += ai*rhor**(i)
+        dG = self._get_dG_functionals(rho)
+        for bi,dGi in zip(self.b,dG):
+            dAr += bi*dGi
+        return dAr*self.epsilon
+        
+        
+
+class CarnahanStarlingEOS(EquationOfState):
+    
+    name = 'CS'
+    """
+        R
+            The radius of the hard sphere particles
+            
+        Compressibility = eta*rho
+    """
+    
+    def __init__(self, R):
+        self.R = R
+        self.eta = np.pi*self.R**3/6
+    
+    def excess_free_energy_particle(self, rho):
+        kT = boltzmann*self.temperature
+        return kT*(4*self.eta*rho-3*(self.eta*rho)**2)/(1-self.eta*rho)**2
+
+    def derivative_excess_free_energy_particle(self, rho):
+        kT = boltzmann*self.temperature
+        return 2*kT/self.eta*(2-self.eta*rho)/(1-self.eta*rho)**3
+    
+    
+class MFAEOS(EquationOfState):
+    
+    def __init__(self, sigma, epsilon):
+        self.sigma = sigma
+        self.epsilon = epsilon
+        
+    def excess_free_energy_particle(self, rho):
+        kT = boltzmann*self.temperature
+        return -16/9*np.pi*self.epsilon*self.sigma**3*rho
+    
+    def derivative_excess_free_energy_particle(self, rho):
+        return -16/9*np.pi*self.epsilon*self.sigma**3

@@ -39,8 +39,9 @@ ylabels = {
     'Total'  : 'Energy',
 }
 
-cm_convergence = cmap.get_cmap('tab10')
-cm_contour     = cmap.get_cmap('rainbow')
+cm_convergence  = cmap.get_cmap('tab10')
+cm_contour      = cmap.get_cmap('rainbow')
+cm_temperatures = cmap.get_cmap('tab10')
 
 class Plotter(object):
     def __init__(self, calculator):
@@ -49,7 +50,7 @@ class Plotter(object):
         
     def convergence(self, chempot, temp, max_num_phases=None, save_fig=False):
         # define the name of the file containing the convergence data
-        fn = '%s/convergence_%3.0fkJmol_%3.0fK.txt' %(self.calculator.workdir, chempot/kjmol, temp)
+        fn = '%s/convergence_%4.1fkJmol_%3.0fK.txt' %(self.calculator.workdir, chempot/kjmol, temp)
         assert os.path.isfile(fn), 'No convergence file found for %3.0f K and %3.0f kJ/mol' %(temp,chempot/kjmol)
         # get data from header of convergence file
         with open(fn) as f:
@@ -105,29 +106,30 @@ class Plotter(object):
                             a function that allows to compute/extract the value of the observable that needs to be plotted
                             using the temperature and chemical potential as arguments (in that order).
         '''
-        pp.clf()
-        self.fig.clear()
-        axs = self.fig.gca()
-        if not (isinstance(temperatures, list) or isinstance(temperatures,np.ndarray)):
-            temperatures = [temperatures]
-        for temp in temperatures:
-            values = np.zeros(len(chempots), float)
-            for i, chempot in enumerate(chempots):
-                try:
-                    values[i] = function(temp, chempot)
-                except AssertionError:
-                    values[i] = np.nan
-            mask = ~np.isnan(values)
-            axs.plot(chempots[mask]/parse_unit(xunit), values[mask]/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="T=%3.0f" %temp)
-            axs.set_xlabel(xlabel %xunit, fontsize=14)
-            axs.set_ylabel(ylabel %yunit, fontsize=14)
-            axs.set_title(title, fontsize=14)
-        axs.legend(loc='best', fontsize=14)
-        self.fig.set_size_inches([6,6])
-        self.fig.tight_layout()
-        if fn is not None:
-            self.fig.savefig('%s/%s' %(self.calculator.workdir, fn))
-        return self.fig
+        with log.section('PLOT', 3, timer='Observable plotting'):
+            pp.clf()
+            self.fig.clear()
+            axs = self.fig.gca()
+            if not (isinstance(temperatures, list) or isinstance(temperatures,np.ndarray)):
+                temperatures = [temperatures]
+            for temp in temperatures:
+                values = np.zeros(len(chempots), float)
+                for i, chempot in enumerate(chempots):
+                    try:
+                        values[i] = function(temp, chempot)
+                    except AssertionError:
+                        values[i] = np.nan
+                mask = ~np.isnan(values)
+                axs.plot(chempots[mask]/parse_unit(xunit), values[mask]/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="T=%3.0f" %temp)
+                axs.set_xlabel(xlabel %xunit, fontsize=14)
+                axs.set_ylabel(ylabel %yunit, fontsize=14)
+                axs.set_title(title, fontsize=14)
+            axs.legend(loc='best', fontsize=14)
+            self.fig.set_size_inches([6,6])
+            self.fig.tight_layout()
+            if fn is not None:
+                self.fig.savefig('%s/%s' %(self.calculator.workdir, fn))
+            return self.fig
     
     def observable_vs_loading(self, temperatures, chempots, function, 
                               fn='observable_vs_loading.png', xlabel='Loading [%s]', xunit='au', 
@@ -320,11 +322,101 @@ class MultiPlotter(object):
         Compare and plot observables of various calculators, i.e. with various values of the used functional, force field, 
         grid, ...
     '''
-    def __init__(self, calculators):
-        self.calculator = calculators
+    def __init__(self, calculators, linestyles=None, workdir=os.getcwd()):
+        self.calculators = calculators
+        if linestyles is None:
+            if len(calculators)>4:
+                raise ValueError('Definition of linestyles is required when using more than 4 calculators.')
+            styles = ['-','--',':','-.']
+        else:
+            styles = linestyles
+        self.linestyles = styles[:len(calculators)]
+        self.workdir = workdir
+        self.fig = pp.figure()
     
-    def observable(self):
-        raise NotImplementedError
+    def observable(self, temperatures, chempots, function, fn='isotherm.png', 
+                   xlabel='Chemical potential [%s]', xunit='kjmol', 
+                   ylabel='Observable [%s]', yunit='au', title='Observable vs chemical potential'):
+        '''
+            temperatures
+                            numpy array of temperatures, for each temperature an isotherm of the observable will be plotted 
+                            against the chemical potential.
+            
+            chempots
+                            numpy array of chemical potentials that specify the x-axis.
+            
+            function
+                            a function that allows to compute/extract the value of the observable that needs to be plotted
+                            using the temperature and chemical potential as arguments (in that order).
+        '''
+        pp.clf()
+        self.fig.clear()
+        axs = self.fig.gca()
+        assert len(temperatures)>0, 'No temperatures defined, aborting'
+        if not (isinstance(temperatures, list) or isinstance(temperatures,np.ndarray)):
+            temperatures = [temperatures]
+        if len(temperatures)<=1:
+            colors = [cm_temperatures(0)]
+        else:
+            colors = [cm_temperatures(i/(len(temperatures)-1)) for i in range(len(temperatures))]
+        for calculator, linestyle in zip(self.calculators, self.linestyles):
+            for temp, color in zip(temperatures, colors):
+                values = np.zeros(len(chempots), float)
+                for i, chempot in enumerate(chempots):
+                    try:
+                        values[i] = function(calculator, temp, chempot)
+                    except AssertionError:
+                        values[i] = np.nan
+                mask = ~np.isnan(values)
+                axs.plot(chempots[mask]/parse_unit(xunit), values[mask]/parse_unit(yunit), linestyle=linestyle, color=color, marker='o', markersize=6, label="%s (T=%3.0f)" %(calculator.label, temp))
+        axs.set_xlabel(xlabel %xunit, fontsize=14)
+        axs.set_ylabel(ylabel %yunit, fontsize=14)
+        axs.set_title(title, fontsize=14)
+        axs.legend(loc='best', fontsize=14)
+        self.fig.set_size_inches([6,6])
+        self.fig.tight_layout()
+        if fn is not None:
+            self.fig.savefig('%s/%s' %(self.workdir, fn))
+        return self.fig
     
-    def loading(self):
-        raise NotImplementedError
+    def loading(self, temperatures, chempots, ylabel='Loading [%s]', 
+                yunit='au', title='Adsorption loading vs chemical potential', fn='adsorption_isotherm.png'):
+        '''
+            Plot the adsorption isotherm (i.e. loading versus chemical potential) for several temperatures.
+        '''
+        def function(calculator, temp, chempot):
+            return calculator.loading(temp, chempot)
+        
+        return self.observable(temperatures, chempots, function, ylabel=ylabel, yunit=yunit, title=title, fn=fn)
+
+    def free_energy(self, temperatures, chempots, ylabel='Energy [%s]', yunit='kjmol', title='Free Energy vs chemical potential', fn='free_energy_isotherm.png'):
+        '''
+            Plot the free energy isotherm (i.e. total free energy F versus chemical potential) for several temperatures.
+        '''
+        def function(calculator, temp, chempot):
+            return calculator.free_energy(temp, chempot)
+        
+        return self.observable(temperatures, chempots, function, ylabel=ylabel, yunit=yunit, title=title, fn=fn)
+    
+    def grand_potential(self, temperatures, chempots, ylabel='Energy [%s]', yunit='kjmol', title='Grand Potential vs chemical potential', fn='grand_potential_isotherm.png'):
+        '''
+            Plot the grand potential isotherm (i.e. grand potential G=F-µN versus chemical potential) for several temperatures.
+        '''
+        def function(calculator, temp, chempot):
+            return calculator.grand_potential(temp, chempot)
+        
+        return self.observable(temperatures, chempots, function, ylabel=ylabel, title=title, yunit=yunit, fn=fn)
+
+    def free_energy_contribution(self, temperatures, chempots, contrib_name, ylabel='Energy [%s]', yunit='kjmol', title=None, fn=None):
+        '''
+            Plot the contribution to the free energy specified by <contrib_name> as function of chemical potential for several temperatures.
+        '''
+        if title==None:
+            title = '%s contribution vs chemical potential' %(contrib_name)
+        if fn==None:
+            fn = '%s_contribution_isotherm.png' %(contrib_name)
+        
+        def function(calculator, temp, chempot):
+            return calculator.free_energy_contrib(Ts, mus, contrib_name)
+        
+        return self.observable(temperatures, chempots, function, ylabel=ylabel, title=title, yunit=yunit, fn=fn)

@@ -322,7 +322,7 @@ class FMTFunctional(Functional):
         dphi = -nv1[index]/(1.0-n3)-n2*nv2[index]/(4.0*np.pi*(1-n3)**2)
         return dphi
 
-    def derive(self, krho):
+    def derive(self, rho, krho):
         """
         Functional derivative with respect to the density
 
@@ -361,7 +361,7 @@ class FMTFunctional(Functional):
                 dF_total += dF
             return dF_total/self.beta
     
-    def value(self, krho):
+    def value(self, rho, krho):
         with log.section('(M)FMT', 3, timer='(M)FMT value'):
             n0, n1, n2, n3, nv1, nv2 = self._get_density_functions(krho)
             phi = self.get_phi(n0, n1, n2, n3, nv1, nv2)
@@ -481,7 +481,7 @@ class MFAFunctional(Functional):
             self.potential[mask] = e
         self.kpotential = np.fft.fftn(self.potential)
 
-    def derive(self, krho):
+    def derive(self, rho, krho):
         """
         Functional derivative, which is the convolution of the density and
         the potential. It is evaluated using the convolution theorem
@@ -490,9 +490,8 @@ class MFAFunctional(Functional):
             dF = np.fft.ifftn(krho*self.kpotential)
             return dF
 
-    def value(self, krho):
+    def value(self, rho, krho):
         with log.section('MFA', 3, timer='MFA value'):
-            rho = np.fft.ifftn(krho)/self.grid.dr
             return 0.5*self.grid.integrate(rho*self.derive(krho))
 
 
@@ -532,13 +531,12 @@ class ExternalPotential(Functional):
         assert self.potential is not None
         np.save(fn, self.potential)
 
-    def derive(self, krho):
+    def derive(self, rho, krho):
         with log.section('ExtPot', 3, timer='ExtPot derive'):
             return self.potential
     
-    def value(self, krho):
+    def value(self, rho, krho):
         with log.section('ExtPot', 3, timer='ExtPot value'):
-            rho = np.fft.ifftn(krho)/self.grid.dr
             return self.grid.integrate(rho*self.potential)
 
 
@@ -555,14 +553,12 @@ class LDAFunctional(Functional):
     def copy(self):
         return LDAFunctional(self.eos.temperature, self.grid.copy(), self.eos)
 
-    def derive(self, krho):
+    def derive(self, rho, krho):
         with log.section('LDA', 3, timer='LDA derive'):
-            rho = np.fft.ifftn(krho)/self.grid.dr
             return self.eos.derivative_excess_free_energy_volume(rho)
     
-    def value(self, krho):
+    def value(self, rho, krho):
         with log.section('LDA', 3, timer='LDA value'):
-            rho = np.fft.ifftn(krho)/self.grid.dr
             return self.grid.integrate(self.eos.excess_free_energy_volume(rho))
 
 
@@ -602,7 +598,7 @@ class WDAVFunctional(LDAFunctional):
     def _get_weighted_density(self, krho):
         return np.fft.ifftn(krho*self.kw)*self.grid.dk
     
-    def derive(self, krho):
+    def derive(self, rho, krho):
         """
         Functional derivative with respect to the density
 
@@ -617,7 +613,7 @@ class WDAVFunctional(LDAFunctional):
             dF = np.fft.ifftn(np.fft.fftn(dphi)*self.kw)
             return dF
     
-    def value(self, krho):
+    def value(self, rho, krho):
         with log.section('WDA', 3, timer='WDA value'):
             wd = self._get_weighted_density(krho)
             phi = self.eos.excess_free_energy_volume(wd)
@@ -653,15 +649,15 @@ class WDACorrFunctional(Functional):
     def copy(self):
         return WDACorrFunctional(self.grid.copy(), self.temperature, self.R, self.epsilon, self.sigma)
     
-    def derive(self, krho):
-        deriv = self.Flj.derive(krho)
-        deriv -= self.Fjs.derive(krho)
-        deriv -= self.Fmfa.derive(krho)
+    def derive(self, rho, krho):
+        deriv = self.Flj.derive(rho, krho)
+        deriv -= self.Fjs.derive(rho, krho)
+        deriv -= self.Fmfa.derive(rho, krho)
         return deriv
     
-    def value(self, krho):
+    def value(self, rho, krho):
         value = 0.0
-        value += self.Flj.value(krho)
-        value -= self.Fjs.value(krho)
-        value -= self.Fmfa.value(krho)
+        value += self.Flj.value(rho, krho)
+        value -= self.Fjs.value(rho, krho)
+        value -= self.Fmfa.value(rho, krho)
         return value

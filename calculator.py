@@ -48,7 +48,7 @@ class Calculator(object):
                 if part.name == partname:
                     if partname in ['MFMT', 'FMT', 'WDA-V', 'WDA-N']:
                         self.fener.set_temperature(temp)
-                    return part.value(krho).real
+                    return part.value(rho, krho).real
             raise IOError("Recieved partname (%s) not present in functional (contains: %s)" %(partname, ','.join([part.name for part in self.fener.parts])))
 
     def free_energy(self, temp, chempot):

@@ -62,7 +62,7 @@ class VanderWaalsEOS(EquationOfState):
     
     def derivative_excess_free_energy_particle(self, rho):
         kT = boltzmann*self.temperature
-        return -kT*np.log(1.0-self.b*rho) + kT*self.b/(1.0-self.b*rho) - 2*self.a
+        return kT*self.b/(1.0-self.b*rho) - self.a
 
 
 class ModifiedBenedictWebbRubinEOS(EquationOfState):

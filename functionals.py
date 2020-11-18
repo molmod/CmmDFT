@@ -128,12 +128,10 @@ class FreeEnergy(object):
         self.parts.append(epot)
     
     def add_lda(self, eos):
-        eos.set_temperature(self.temperature)
         lda = LDAFunctional(self.temperature, self.grid, eos)
         self.parts.append(lda)
     
     def add_wdav(self, eos):
-        eos.set_temperature(self.temperature)
         self.system.guest.compute_hardsphere_radius(self.temperature)
         wda = WDAVFunctional(self.temperature, self.grid, self.system.guest.Rhs, eos)
         self.parts.append(wda)
@@ -366,7 +364,7 @@ class FMTFunctional(Functional):
     def value(self, krho):
         with log.section('(M)FMT', 3, timer='(M)FMT value'):
             n0, n1, n2, n3, nv1, nv2 = self._get_density_functions(krho)
-            phi = self.get_phi( n0, n1, n2, n3, nv1, nv2)
+            phi = self.get_phi(n0, n1, n2, n3, nv1, nv2)
             return self.grid.integrate(phi)/self.beta
 
 
@@ -555,7 +553,7 @@ class LDAFunctional(Functional):
         self.eos.set_temperature(temperature)
     
     def copy(self):
-        return LDAFunctional(self.temperature, self.grid.copy(), self.eos)
+        return LDAFunctional(self.eos.temperature, self.grid.copy(), self.eos)
 
     def derive(self, krho):
         with log.section('LDA', 3, timer='LDA derive'):
@@ -582,7 +580,7 @@ class WDAVFunctional(LDAFunctional):
         self._init_weight_function()
     
     def copy(self):
-        return WDAVFunctional(self.temperature, self.grid.copy(), self.R, self.eos)
+        return WDAVFunctional(self.eos.temperature, self.grid.copy(), self.R, self.eos)
     
     def _init_weight_function(self):
         """
@@ -656,9 +654,9 @@ class WDACorrFunctional(Functional):
         return WDACorrFunctional(self.grid.copy(), self.temperature, self.R, self.epsilon, self.sigma)
     
     def derive(self, krho):
-        deriv = self.Flj.value(krho)
-        deriv -= self.Fjs.value(krho)
-        deriv -= self.Fmfa.value(krho)
+        deriv = self.Flj.derive(krho)
+        deriv -= self.Fjs.derive(krho)
+        deriv -= self.Fmfa.derive(krho)
         return deriv
     
     def value(self, krho):

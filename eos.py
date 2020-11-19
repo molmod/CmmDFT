@@ -60,7 +60,7 @@ class VanderWaalsEOS(EquationOfState):
     
     def derivative_excess_free_energy_particle(self, rho):
         kT = boltzmann*self.temperature
-        return -kT*np.log(1.0-self.b*rho) + kT*self.b/(1.0-self.b*rho) - 2*self.a
+        return kT*self.b/(1.0-self.b*rho) - self.a
 
 
 class ModifiedBenedictWebbRubinEOS(EquationOfState):
@@ -155,12 +155,13 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         ig = 1.0/(2*self.gamma)
         rhor = rho*self.sigma**3 #reduced density
         F = np.exp(-self.gamma*rhor**2)
-        dG1 = ig*(1 + 2*self.gamma*rho*self.sigma**6*F)
-        dG2 = -ig*(self.sigma*(2*rhor*F-2*self.gamma*rhor**3*F) - 2*dG1)
-        dG3 = -ig*(self.sigma*(4*rhor*F-2*self.gamma*rhor**5*F) - 4*dG2)
-        dG4 = -ig*(self.sigma*(6*rhor*F-2*self.gamma*rhor**7*F) - 6*dG3)
-        dG5 = -ig*(self.sigma*(8*rhor*F-2*self.gamma*rhor**9*F) - 8*dG4)
-        dG6 = -ig*(self.sigma*(10*rhor*F-2*self.gamma*rhor**11*F) - 10*dG5)
+        dF = -2*self.gamma*self.sigma**3*rhor*F
+        dG1 = ig*(1 - dF)
+        dG2 = -ig*(dF*rhor**2 + 2*F*rhor*self.sigma**3 - 2*dG1)
+        dG3 = -ig*(dF*rhor**4 + 4*self.sigma**3*rhor**3*F - 4*dG2)
+        dG4 = -ig*(dF*rhor**6 + 6*self.sigma**3*rhor**5*F - 6*dG3)
+        dG5 = -ig*(dF*rhor**8 + 8*self.sigma**3*rhor**7*F - 8*dG4)
+        dG6 = -ig*(dF*rhor**10 + 10*self.sigma**3*rhor**9*F - 10*dG5)
         return [dG1, dG2, dG3, dG4, dG5, dG6]
         
     def excess_free_energy_particle(self, rho):
@@ -179,7 +180,7 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         rhor = rho*self.sigma**3 #reduced density
         Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
         for i, ai in enumerate(self.a):
-            dAr += ai*rhor**(i)
+            dAr += ai*rhor**(i)*self.sigma**3
         dG = self._get_dG_functionals(rho)
         for bi,dGi in zip(self.b,dG):
             dAr += bi*dGi
@@ -207,7 +208,7 @@ class CarnahanStarlingEOS(EquationOfState):
 
     def derivative_excess_free_energy_particle(self, rho):
         kT = boltzmann*self.temperature
-        return 2*kT/self.eta*(2-self.eta*rho)/(1-self.eta*rho)**3
+        return 2*kT*self.eta*(2-self.eta*rho)/(1-self.eta*rho)**3
     
     
 class MFAEOS(EquationOfState):

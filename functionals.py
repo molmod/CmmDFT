@@ -135,7 +135,7 @@ class FreeEnergy(object):
         self.parts.append(lda)
     
     def add_wdav(self, eos):
-        with log.section('FREEENER', 2, timer='LDA init'):
+        with log.section('FREEENER', 2, timer='WDA-v init'):
             log.dump('Initializing WDA-v functional for attractive interaction contribution')
             eos.set_temperature(self.temperature)
             self.system.guest.compute_hardsphere_radius(self.temperature)
@@ -175,8 +175,9 @@ class FreeEnergy(object):
                 mfa.load_potential(mfa_fn)
         self.parts.append(mfa)
     
-    def add_correlation_wda(self, epsilon, sigma):
+    def add_correlation_wda(self, sigma, epsilon):
         with log.section('FREEENER', 2, timer='Correlation WDA init'):
+            self.add_mean_field()
             log.dump('Initializing correlation WDA functional for attractive interaction contribution')
             R = self.system.guest.Rhs
             corr = WDACorrFunctional(self.grid, self.temperature, R, epsilon, sigma)
@@ -388,7 +389,6 @@ class MFMTFunctional(FMTFunctional):
         phi = -n0*np.log(1.0-n3)
         phi += (n1*n2 - (nv1[0]*nv2[0]+nv1[1]*nv2[1]+nv1[2]*nv2[2]))/(1.0-n3)
         phi += (n3+(1-n3)**2*np.log(1-n3))*(n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))/(36.0*np.pi*n3**2*(1-n3)**2)
-        print('MFMT')
         return phi
 
     def _get_dphi_n2(self, n0, n1, n2, n3, nv1, nv2):

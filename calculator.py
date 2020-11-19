@@ -26,13 +26,13 @@ class Calculator(object):
         self.fener = program.fener.copy()
     
     def loading(self, temp, chempot):
-        fn = '%s/rho_%3.0fkJmol_%3.0fK.npy' %(self.workdir, chempot/kjmol, temp/kelvin)
+        fn = '%s/rho_%4.1fkJmol_%3.0fK.npy' %(self.workdir, chempot/kjmol, temp/kelvin)
         assert os.path.isfile(fn), 'No density found for %3.0f K and %3.0f kJ/mol' %(temp,chempot/kjmol)
         rho = np.load(fn)
         return self.grid.integrate(rho).real
 
     def free_energy_contrib(self, temp, chempot, partname):
-        fn = '%s/rho_%3.0fkJmol_%3.0fK.npy' %(self.workdir, chempot/kjmol, temp/kelvin)
+        fn = '%s/rho_%4.1fkJmol_%3.0fK.npy' %(self.workdir, chempot/kjmol, temp/kelvin)
         assert os.path.isfile(fn), 'No density found for %3.0f K and %3.0f kJ/mol' %(temp,chempot/kjmol)
         rho = np.load(fn)
         krho = np.fft.fftn(rho)*self.grid.dr

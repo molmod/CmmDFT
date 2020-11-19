@@ -24,7 +24,8 @@ units = {
     'MFA'    : 'kjmol',
     'LDA'    : 'kjmol',
     'Total'  : 'kjmol',
-    'CORR'   : 'kjmol'
+    'CORR'   : 'kjmol',
+    'WDA-V'  : 'kjmol',
 }
 
 
@@ -38,6 +39,7 @@ ylabels = {
     'MFA'    : 'Energy',
     'LDA'    : 'Energy',
     'Total'  : 'Energy',
+    'WDA-V'  : 'Energy',
     'CORR'   : 'Energy'
 }
 
@@ -165,10 +167,12 @@ class Plotter(object):
                 try:
                     loadings[i] = self.calculator.loading(temp, chempot)
                 except AssertionError:
+                    print('oeie')
                     loadings[i] = np.nan
                 try:
                     values[i] = function(temp, chempot)
                 except AssertionError:
+                    print('oeie')
                     values[i] = np.nan
             mask = (~np.isnan(loadings))*(~np.isnan(values))
             axs.plot(loadings[mask], values[mask]/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="T=%3.0f" %temp)

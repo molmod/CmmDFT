@@ -72,19 +72,26 @@ class Guest(object):
             self.chk = chk
             self.par = par
             self.mass = self.mol.masses.sum()
+            
+    def add_len_jon_parameters(self, sigma, epsilon):
+        self.sigma = sigma
+        self.epsilon = epsilon
     
     def copy(self):
         guest = Guest(self.name, self.chk, self.par)
         guest.Rhs, guest.Rzero = self.Rhs, self.Rzero
+        if hasattr(self, 'sigma'): guest.sigma, guest.epsilon = self.sigma, self.epsilon
         return guest
 
     def compute_hardsphere_radius(self, temperature, rcut=12*angstrom):
         "Get hard sphere radius (for FMT/MFMT) and zero radius (for MFA)"
         with log.section('GUEST', 2, timer="Initializing"):
             log.dump('Computing hard sphere radius from barker and henderson formula at temperature of %.0f K' %(temperature))
-            ff_int = get_ff(self.mol, self.mol, self.par, rcut)
             beta = 1.0/(temperature*boltzmann)
-            self.Rhs, self.Rzero = hard_spheres_barker_henderson(ff_int, beta, natom=self.mol.natom)
+            if hasattr(self, 'sigma'): self.Rhs, self.Rzero = hard_spheres_barker_henderson(beta, len_jon=(self.sigma,self.epsilon), natom=self.mol.natom)
+            else:
+                ff_int = get_ff(self.mol, self.mol, self.par, rcut)
+                self.Rhs, self.Rzero = hard_spheres_barker_henderson(beta, ff_int, natom=self.mol.natom)
             log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
 
 

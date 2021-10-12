@@ -20,7 +20,7 @@ class Picard(object):
         self.fener = fener
         self.iphase = 0
 
-    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.01):
+    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.001):
         """
             Implementing Picard iterative solver to find equilibrium density.
             

@@ -8,21 +8,20 @@ from __future__ import division
 import numpy as np
 from scipy.optimize import brentq
 
-from molmod.units import *
-from molmod.constants import boltzmann
+from molmod.units import kjmol
 
 from yaff import System, ForceField, Parameters
 
-from log import log
+
 
 __all__ = [
-    'merge_ffpar_files', 'get_ff', 'plot_gridslice_contour', 
-    'hard_spheres_barker_henderson'
+    'merge_ffpar_files', 'merge_ffpar_files', 'get_ff',
+    'hard_spheres_barker_henderson', 'merge_yaff_systems'
 ]
 
 
-def hard_spheres_barker_henderson(ff, beta, natom=1, rmin=1e-5, rmax=None,
-        npoints=10000):
+def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmin=1e-5, rmax=None,
+        npoints=500):
     """
     Calculate the hard-sphere radius according to Barker-Henderson:
 
@@ -41,9 +40,13 @@ def hard_spheres_barker_henderson(ff, beta, natom=1, rmin=1e-5, rmax=None,
         The thermodynamic temperature
 
     **Optional arguments:**
+    
+    len_jon
+        Tuple containing the Lennard-Jones parameters, default is None. If these are given the hard-sphere radius 
+        is approximated by the formula below
 
     natom
-        The number of atoms in each molecule
+        The number of atoms in each molecules
 
     rmin
         The potential is assumed to be infinite below this value
@@ -63,26 +66,33 @@ def hard_spheres_barker_henderson(ff, beta, natom=1, rmin=1e-5, rmax=None,
     \sigma
         The first zero of the potential
     """
-    def potential(r):
-        ff.system.pos[:] = 0.0
-        ff.system.pos[natom:,2] = r
-        ff.update_pos(ff.system.pos)
-        return ff.compute()
-    assert potential(rmin)>0.0
-    if rmax is None:
-        assert ff.nlist is not None
-        rmax = 0.99*ff.nlist.rcut
-    assert potential(rmax)<0.0
-    # Find the only zero of the potential
-    sigma = brentq(potential, rmin, rmax)
-    # Numerical integration
-    grid = np.linspace(0.0, sigma, num=npoints)
-    e = np.zeros(grid.shape)
-    for ir, r in enumerate(grid):
-        if r<rmin: e[ir] = np.nan
-        e[ir] = potential(r)
-    integrand = 1.0-np.exp(-beta*e)
-    Rhs = 0.5*np.trapz(integrand, x=grid)
+    if len_jon is None and ff is not None:
+        def potential(r):
+            ff.system.pos[:] = 0.0
+            ff.system.pos[natom:,2] = r
+            ff.update_pos(ff.system.pos)
+            return ff.compute()
+        assert potential(rmin)>0.0
+        if rmax is None:
+            assert ff.nlist is not None
+            rmax = 0.99*ff.nlist.rcut
+        # print(potential(rmax/8))
+        assert potential(rmax)<0.0
+        # Find the only zero of the potential
+        sigma = brentq(potential, rmin, rmax)
+        # Numerical integration
+        grid = np.linspace(0.0, sigma, num=npoints)
+        e = np.zeros(grid.shape)
+        for ir, r in enumerate(grid):
+            if r<rmin: e[ir] = np.nan
+            e[ir] = potential(r)
+        integrand = 1.0-np.exp(-beta*e)
+        Rhs = 0.5*np.trapz(integrand, x=grid)
+    elif ff is None and len_jon is not None: 
+        sigma = len_jon[0]
+        epsilon = len_jon[1]
+        Tt = 1/beta/epsilon
+        Rhs = sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
     return Rhs, sigma
 
 
@@ -114,7 +124,7 @@ def merge_ffpar_files(fn_pars, *fns):
                             else:
                                 pardef.lines.append((counter+i, line))
             else:
-                pars.sections[seckey] = section
+                pars.sections[seckey] = newsec
     pars.write_to_file(fn_pars)
 
 
@@ -191,7 +201,7 @@ def merge_yaff_systems(system0, system1):
 
     def merge_bonds(system0, system1):
         if len(system0.bonds)>0 and len(system1.bonds)>0:
-            return np.array(merge_arrays(system0.bonds, system1.bonds+self.natom), dtype=int)
+            return np.array(merge_arrays(system0.bonds, system1.bonds+system0.natom), dtype=int)
         elif len(system0.bonds)==0 and len(system1.bonds)>0:
             return system1.bonds
         elif len(system0.bonds)>0 and len(system1.bonds)==0:

@@ -6,8 +6,8 @@ from __future__ import division
 
 import numpy as np, sys, os
 
-from molmod.constants import *
-from molmod.units import *
+from molmod.constants import boltzmann
+from molmod.units import angstrom, kelvin, kjmol, bar
 
 from functionals import FreeEnergy
 from system import System, Grid
@@ -51,59 +51,213 @@ class Program(object):
         assert self.fener is not None, "Free energy must first be initialized using 'init_free_energy'"
         assert isinstance(self.fener, FreeEnergy), "self.fener is not an instance of FreeEnergy, aborting!"
         self.fener.set_temperature(temperature)
+
+    def calc_distance(self, again = False):
+        """
+        Calculates a distance matrix, where the distance to the closest atom of the host material is calculated and stored as a numpy file in the OutputFiles.
+        This matrix is used to calculate the regions of the framework.
+        """
+        lis = self.workdir.split('/')[:-4]
+        lis.append(self.workdir.split('/')[-1])
+        dist_fn = ''
+        for l in lis:
+            dist_fn += l +'/'
+        dist_file = dist_fn + 'distances.npy'
+        if not os.path.isdir(dist_fn):
+            os.makedirs(dist_fn)
+        if again:
+            os.remove(dist_file)
+        if not os.path.isfile(dist_file):
+            grid_pos = self.grid.copy()
+            points = grid_pos.points
+            dist = np.zeros(self.grid.npoints)
+            for i in range(points.shape[0]):
+                for j in range(points.shape[1]):
+                    for k in range(points.shape[2]):
+                        distance = np.zeros(self.system.host.mol.pos.shape[0])
+                        for ii, atom in enumerate(self.system.host.mol.pos):
+                            vec = points[i,j,k,:3] - atom
+                            self.system.host.mol.cell.mic(vec)
+                            distance[ii] = np.linalg.norm(vec)
+                        dist[i,j,k] = np.amin(distance)
+            self.dis = dist
+            np.save(dist_file, self.dis)
+        else:
+            self.dis = np.load(dist_file)         
     
-    def _set_initial_density(self, Ninit=1e-6, chempot=None):
+    def calc_regions(self, energy_cutoff = 0.55, range_cutoff = 3.4*angstrom, mof_cutoff = 2.5):
+        """
+        Calculates 3 different regions of the MOFs based on a distance and an energy criterium. 
+        The three regions are: MOF, enrgetically favored interaction sites, empty space in MOF.
+
+        Parameters
+        ----------
+        energy_cutoff : Scalar, optional
+            Energy criterium, ratio of te threshold energy to the energy minimum of the external potential. 
+            The threshold energy determines which points are energetically favored. The default is 0.55.
+        range_cutoff : Scalar, optional
+            Distance cut-off, points further from host atoms than this distance and which conform with the energy criterion are part of the empty space. 
+            The default is 3.4*angstrom.
+        mof_cutoff : Scalar, optional
+            Energy criterium, points with a potential energy larger than boltzmann*temperature*mof_cutoff are part of the MOF. The default is 2.5.
+
+        Returns: 3 masks in the shape of the grid indicating the different regions
+        -------
+        mask_site, the energetically favored interaction sites
+        mask_mof, the atoms of the framework, where guest molecules can't adsorb
+        mask_empty, the empty space in the MOF, not energetically favored
+
+        """
+        self.calc_distance()
+        range_mask = self.dis<range_cutoff
+        epot_data = np.load('%s/%s.npy' %(self.workdir,'epot'))
+        crit = np.amin(epot_data) - energy_cutoff*np.amin(epot_data)
+        energy_mask = epot_data<crit        
+        self.r_mask = range_mask
+        self.e_mask = energy_mask
+        self.mask_mof = epot_data>mof_cutoff*boltzmann*self.fener.temperature
+        self.mask_site = (energy_mask + range_mask)*(~self.mask_mof)
+        self.mask_empty = (~energy_mask)*(~range_mask)*(~self.mask_mof)
+        return self.mask_site,self.mask_mof,self.mask_empty    
+
+    def _set_initial_density(self, Ninit=None, chempot=None, rewrite=False):
+        """
+        Sets the initial density for the
+
+        Parameters
+        ----------
+        Ninit : Initial density:
+        If Ninit is a string: loads density profile from this string
+        If Ninit a float: set the density to this float
+        
+        chempot : Chemical potential sed to calculate the ideal gas density.  The default is None.
+        rewrite : Boolean. Setting to true will lead the program to ignore previous calculations. The default is False.
+
+        """
         with log.section('PROGRAM', 1, timer='Initializing'):
-            if self.rho_fn is not None and os.path.isfile(self.rho_fn) and not self.overwrite:
+            if self.rho_fn is not None and os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite:
                 log.dump('Reading initial guess for density from %s' %self.rho_fn)
                 self.rho0 = np.load(self.rho_fn)
             else:
                 if Ninit is not None:
+                    parts_name = []
+                    for part in self.fener.parts:
+                        parts_name.append(part.name)
                     if isinstance(Ninit, str):
                         if os.path.isfile(Ninit):
                             log.dump('Loading initial guess for density from file %s' %(Ninit))
                             self.rho0 = np.load(Ninit)
                         else:
                             raise FileNotFoundError('File %s for setting initial density not found' %Ninit)
+                    elif isinstance(Ninit, float) and ("ExtPot" in parts_name):
+                        log.dump('Setting initial guess for density at %.3e/cellvolume in pores' %Ninit)
+                        mask_site,mask_mof,mask_empty = self.calc_regions()
+                        self.rho0 = np.zeros(self.grid.npoints)
+                        self.rho0[mask_site + mask_empty] = Ninit
                     elif isinstance(Ninit, float):
-                        log.dump('Setting initial guess for density at %.3e/cellvolume' %Ninit)
-                        self.rho0 = Ninit*np.ones(self.grid.npoints)/self.grid.cell.volume
+                        log.dump('Setting initial guess for density at %.3e/cellvolume' %Ninit*self.system.host.cell.volume)
+                        self.rho0 = Ninit*np.ones(self.grid.npoints)          
                 else:
                     log.dump('Setting initial guess for density from ideal gas at chempot = %.3f kJ/mol' %(chempot/kjmol))
                     epot = 0.0
                     for part in self.fener.parts:
                         if part.name == "ExtPot":
-                            epot = part.potential
+                            epot = part.potential                     
                     self.rho0 = np.exp(self.fener.beta*(chempot-epot))/self.fener.wavelength**3
+                    
+    def _set_split_density(self, masks, densities):
+        """
+        Set the initial density to a split density according to a 
 
-    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=1e-6, energy_tracking=True):
+        Parameters
+        ----------
+        masks : List of masks in the shape of the grid, indicating the different regions of densities
+        densities : List of densities corresponding to the masks.
+
+        """
+        with log.section('PROGRAM', 1, timer='Initializing'):
+            assert len(masks) == len(densities)
+            log.dump('Setting initial guess with a split density') 
+            self.rho0 = np.zeros(self.grid.npoints)
+            for rho,mask in zip(masks, densities):
+                self.rho0[mask] = rho  
+            self.split = True
+        pass
+
+    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, split=False):
+        """
+        Solve for the density profile
+
+        Parameters
+        ----------
+        chempot : scalar giving the chemical potential of the simulation
+        threshold : scalar, optional
+            Gives the threshold of the relative error, which when obtained stops the calculation. The default is 1e-6.
+        alpha_mix : scalar, optional
+            Mixing parameter in the Picard solver. The default is 0.01.
+        nsteps : TYPE, optional
+            number of maximum steps for each solving phase. The default is 1000.
+        maxphases : number of maximum phases. The default is 20.
+        Ninit : Initial density (see _set_initial_density for more information). The default is None.
+        rewrite : Boolean, optional
+            If set to true the calculation will overwrite and ignore all previously calculated loadings. The default is False.
+        energy_tracking : Boolean, optional
+            If set to true, the program will log and save energetic values. The default is True.
+        Initialization : a list of three elements: (threshold, alpha_mix, nsteps), optional
+            Adding this initialization will add an initial solving phase with the specified parameters, 
+            allowing the simulation to initially get closer to the solution. The default is None.
+        split : Boolean, if set to true initial density has to be provided manually through _set_split_density()
+        """
         with log.section('PROGRAM', 2, timer='Solve'):
             if energy_tracking:
                 fn_name_file = os.path.join(self.workdir, 'name_file_%3.0fK.txt'%(self.fener.temperature/kelvin))
                 if not os.path.isfile(fn_name_file):
                     with open(fn_name_file, 'w') as g:
                         self.name_suffix = "convergence_%3.0fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,0)
-                        print("%s,%7.3f"%(self.name_suffix,chempot/kjmol), file=g)
-                if os.path.isfile(fn_name_file):
-                    with open(fn_name_file) as n:
-                        for x in n:
-                            l = x.split(",")
-                            old_fn = l[0].replace(".","_").split("_")
-                            step = float(old_fn[-2])+1
-                    with open(fn_name_file, 'a') as g:
-                        self.name_suffix = "convergence_%3.0fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,step)
-                        print("%s,%7.3f"%(self.name_suffix,chempot/kjmol), file=g)
+                        g.write("%s,%7.3f\n"%(self.name_suffix,chempot/kjmol))
+                elif os.path.isfile(fn_name_file):
+                    with open(fn_name_file, 'r') as n:
+                        lines = n.readlines()   
+                    for ii,line in enumerate(lines):
+                        x = line.strip("\n")
+                        l = x.split(",")
+                        chem_file = l[1]
+                        old_fn = l[0].replace(".","_").split("_")
+                        if chem_file == '%7.5f'%(chempot/kjmol):
+                            step = float(old_fn[-2])
+                            index = ii
+                            break
+                        step = float(old_fn[-2])+1
+                        index = ii+2
+                    self.name_suffix = "convergence_%3.0fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,step)
+                    with open(fn_name_file, 'w') as g:
+                        if index>len(lines):
+                            for line in lines:
+                                g.write(line)
+                            g.write("%s,%7.5f\n"%(self.name_suffix,chempot/kjmol))
+                        else:
+                            for iii,line in enumerate(lines):
+                                if index == iii:
+                                    g.write("%s,%7.5f\n"%(self.name_suffix,chempot/kjmol))
+                                else:
+                                    g.write(line)
                 self.fener.init_tracking(os.path.join(self.workdir, '%s'%(self.name_suffix)))
             fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
             log.dump('Thermodynamic conditions:')
             log.dump('  temperature = %5.1f   K' %(self.fener.temperature/kelvin))
             log.dump('  chem. pot.  = %7.3f kJ/mol' %(chempot/kjmol))
             log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
-            self.suffix = '_%4.1fkJmol_%3.0fK' %(chempot/kjmol,self.fener.temperature/kelvin)
+            self.suffix = '_%4.5fkJmol_%3.0fK' %(chempot/kjmol,self.fener.temperature/kelvin)
             self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.suffix))
-            self._set_initial_density(Ninit=Ninit, chempot=chempot)
+            if split:
+                assert hasattr(self, 'rho0'), 'Must set initial split density manually with _set_split_density()'
+            else:
+                self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite)
             picard = Picard(self.grid, self.fener)
-            todo = [(threshold, alpha_mix, nsteps)]
+            if Initialization is not None:
+                todo = [(threshold, alpha_mix, nsteps), Initialization]
+            else:
+                todo = [(threshold, alpha_mix, nsteps)]
             rho_old = self.rho0.copy()
             while len(todo)>0:
                 picard.iphase = len(todo)

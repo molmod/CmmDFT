@@ -61,6 +61,15 @@ class VanderWaalsEOS(EquationOfState):
     def derivative_excess_free_energy_particle(self, rho):
         kT = boltzmann*self.temperature
         return kT*self.b/(1.0-self.b*rho) - self.a
+    
+    def der_derivative_excess_free_energy_particle(self,rho):
+        kT = boltzmann*self.temperature
+        return kT*self.b**2/(1.0-self.b*rho)**2
+    
+    def der_der_derivative_excess_free_energy_particle(self, rho):
+        kT = boltzmann*self.temperature
+        return 2*kT*self.b**3/(1.0-self.b*rho)**3
+    
 
 
 class ModifiedBenedictWebbRubinEOS(EquationOfState):
@@ -156,7 +165,7 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         rhor = rho*self.sigma**3 #reduced density
         F = np.exp(-self.gamma*rhor**2)
         dF = -2*self.gamma*self.sigma**3*rhor*F
-        dG1 = ig*(1 - dF)
+        dG1 = ig*(-dF)
         dG2 = -ig*(dF*rhor**2 + 2*F*rhor*self.sigma**3 - 2*dG1)
         dG3 = -ig*(dF*rhor**4 + 4*self.sigma**3*rhor**3*F - 4*dG2)
         dG4 = -ig*(dF*rhor**6 + 6*self.sigma**3*rhor**5*F - 6*dG3)
@@ -167,25 +176,57 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
     def excess_free_energy_particle(self, rho):
         Ar = 0.0 #reduced excess free energy per particle
         rhor = rho*self.sigma**3 #reduced density
+        if np.amax(rhor)>1.2:
+            with log.section('MBWR', 2, timer='MBWR'):
+                log.dump('Density exceeds the range of accuracy for MBWR: rhor=%4.2f'%(np.amax(rhor.real)))
         Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
         for i, ai in enumerate(self.a):
             Ar += ai/(i+1)*rhor**(i+1)
         G = self._get_G_functionals(rho)
+        t=0
         for bi,Gi in zip(self.b,G):
             Ar += bi*Gi
+            t+=1
         return Ar*self.epsilon
     
-    def derivative_excess_free_energy_particle(self, rho):
+    def derivative_excess_free_energy_particle(self, rho):    
         dAr = 0.0
         rhor = rho*self.sigma**3 #reduced density
-        Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
+        if np.amax(rhor)>1.2:
+            with log.section('MBWR', 2, timer='MBWR'):
+                log.dump('Density exceeds the range of accuracy for MBWR: rhor=%4.2f'%(np.amax(rhor.real)))
         for i, ai in enumerate(self.a):
             dAr += ai*rhor**(i)*self.sigma**3
-        dG = self._get_dG_functionals(rho)
-        for bi,dGi in zip(self.b,dG):
-            dAr += bi*dGi
+        F = np.exp(-self.gamma*rhor**2)    
+        for t,bi in enumerate(self.b):
+            dAr += bi*self.sigma**3*rhor**(2*t+1)*F   
+#        dG = self._get_dG_functionals(rho)
+#        for bi,dGi in zip(self.b,dG):
+#            dAr += bi*dGi         
         return dAr*self.epsilon
-        
+    
+    def der_derivative_excess_free_energy_particle(self, rho):      
+        ddAr = 0.0
+        rhor = rho*self.sigma**3 #reduced density    
+        for i, ai in enumerate(self.a[1:]):
+            ddAr += ai*(i+1)*rhor**(i)*self.sigma**6
+        F = np.exp(-self.gamma*rhor**2)    
+        for t,bi in enumerate(self.b):
+            ddAr += bi*self.sigma**6*((2*t+1)*rhor**(2*t)-2*self.gamma*rhor**(2*t+2))*F    
+        return ddAr*self.epsilon   
+    
+    def der_der_derivative_excess_free_energy_particle(self, rho):
+        dddAr = 0.0
+        rhor = rho*self.sigma**3 #reduced density    
+        for i, ai in enumerate(self.a[2:]):
+            dddAr += ai*(i+2)*(i+1)*rhor**(i)*self.sigma**9
+        F = np.exp(-self.gamma*rhor**2)    
+        for t,bi in enumerate(self.b):
+            if t==0:
+                dddAr += bi*self.sigma**9*(-2*self.gamma*(4*t+3)*rhor**(2*t+1)+4*self.gamma**2*rhor**(2*t+3))*F
+            else:
+                dddAr += bi*self.sigma**9*((2*t+1)*2*t*rhor**(2*t-1)-2*self.gamma*(4*t+3)*rhor**(2*t+1)+4*self.gamma**2*rhor**(2*t+3))*F     
+        return dddAr*self.epsilon        
         
 
 class CarnahanStarlingEOS(EquationOfState):
@@ -198,9 +239,15 @@ class CarnahanStarlingEOS(EquationOfState):
         Compressibility = eta*rho
     """
     
-    def __init__(self, R):
-        self.R = R
-        self.eta = np.pi*self.R**3/6
+    def __init__(self, sigma, epsilon):
+        self.sigma = sigma
+        self.epsilon = epsilon
+        
+    def set_temperature(self, temperature):
+        self.temperature = temperature
+        Tr = boltzmann*self.temperature/self.epsilon
+        self.Rhs = self.sigma*(1 + 0.2977*Tr)/(1 + 0.33163*Tr + 0.0010477*Tr**2)/2
+        self.eta = 4*np.pi*self.Rhs**3/3
     
     def excess_free_energy_particle(self, rho):
         kT = boltzmann*self.temperature
@@ -210,16 +257,56 @@ class CarnahanStarlingEOS(EquationOfState):
         kT = boltzmann*self.temperature
         return 2*kT*self.eta*(2-self.eta*rho)/(1-self.eta*rho)**3
     
+    def der_derivative_excess_free_energy_particle(self, rho):
+        kT = boltzmann*self.temperature
+        return 2*kT*self.eta**2*(5-2*self.eta*rho)/(1-self.eta*rho)**4
+    
+    def der_der_derivative_excess_free_energy_particle(self, rho):
+        kT = boltzmann*self.temperature
+        return 12*kT*self.eta**3*(3-self.eta*rho)/(1-self.eta*rho)**5
+    
     
 class MFAEOS(EquationOfState):
+    
+    name = 'MFA'
     
     def __init__(self, sigma, epsilon):
         self.sigma = sigma
         self.epsilon = epsilon
         
     def excess_free_energy_particle(self, rho):
-        kT = boltzmann*self.temperature
         return -16/9*np.pi*self.epsilon*self.sigma**3*rho
     
     def derivative_excess_free_energy_particle(self, rho):
         return -16/9*np.pi*self.epsilon*self.sigma**3
+    
+    def der_derivative_excess_free_energy_particle(self, rho):
+        return 0
+    
+    def der_der_derivative_excess_free_energy_particle(self, rho):
+        return 0
+    
+    
+class MFMT_MFA_EOS(EquationOfState):
+    
+    def __init__(self, sigma, epsilon, a_fact = 1.0):
+        self.MFA = MFAEOS(sigma,epsilon)
+        self.MFMT = CarnahanStarlingEOS(sigma,epsilon)
+        self.a_fact = a_fact
+        
+    def set_temperature(self, temperature):
+        self.temperature = temperature
+        self.MFA.set_temperature(temperature)
+        self.MFMT.set_temperature(temperature)
+        
+    def excess_free_energy_particle(self, rho):
+        return self.a_fact*self.MFA.excess_free_energy_particle(rho) + self.MFMT.excess_free_energy_particle(rho)
+    
+    def derivative_excess_free_energy_particle(self, rho):
+        return self.a_fact*self.MFA.derivative_excess_free_energy_particle(rho) + self.MFMT.derivative_excess_free_energy_particle(rho) 
+
+    def der_derivative_excess_free_energy_particle(self, rho):
+        return self.a_fact*self.MFA.der_derivative_excess_free_energy_particle(rho) + self.MFMT.der_derivative_excess_free_energy_particle(rho) 
+
+    def der_der_derivative_excess_free_energy_particle(self, rho):
+        return self.a_fact*self.MFA.der_der_derivative_excess_free_energy_particle(rho) + self.MFMT.der_der_derivative_excess_free_energy_particle(rho) 

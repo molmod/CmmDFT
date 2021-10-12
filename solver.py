@@ -20,7 +20,7 @@ class Picard(object):
         self.fener = fener
         self.iphase = 0
 
-    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.01):
+    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.001):
         """
             Implementing Picard iterative solver to find equilibrium density.
             
@@ -79,7 +79,7 @@ class Picard(object):
             krho = np.fft.fftn(rho)*self.grid.dr
             for part in self.fener.parts:
                 dF += part.derive(krho)
-            if self.fener.beta*np.amin(dF.real)<-1e2:
+            if self.fener.beta*np.amin(dF.real)<-100:
                 return np.nan*rho
             rho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity
             rho_new = (1.0-alpha_mix)*rho+alpha_mix*rho_new

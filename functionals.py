@@ -103,9 +103,12 @@ class FreeEnergy(object):
         G = Fid - chempot*N
         line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, -chempot*N, Fid)
         krho = np.fft.fftn(rho)*self.grid.dr
+        Fex = 0
         for part in self.parts:
             Fpart = part.value(krho).real
             G += Fpart
+            if part.name not in ['ExtPot', 'EffExtPot']:
+                Fex += Fpart
             line += "\t% .6e" %Fpart
         line += "\t% .6e" %G
         with open(self.fn_tracking, 'a') as f:

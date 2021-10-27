@@ -60,8 +60,8 @@ class Plotter(object):
         self.fig = pp.figure()
         
     def convergence(self, chempot, temp, max_num_phases=None, save_fig=False):
-        fn_name_file = os.path.join(self.calculator.workdir, 'name_file_%3.0fK.txt'%(temp/kelvin))
-        assert os.path.isfile(fn_name_file), 'No convergence file found for %3.0f K' %(temp/kelvin)
+        fn_name_file = os.path.join(self.calculator.workdir, 'name_file_%7.5fK.txt'%(temp/kelvin))
+        assert os.path.isfile(fn_name_file), 'No convergence file found for %7.5f K' %(temp/kelvin)
         fn_suffix=""
         with open(fn_name_file) as n:
             for x in n:
@@ -70,7 +70,7 @@ class Plotter(object):
                 if float(ln) == float('%7.5f'%(chempot/kjmol)):
                     fn_suffix = l[0]
         fn = os.path.join(self.calculator.workdir, fn_suffix)
-        assert os.path.isfile(fn), 'No convergence file found for %3.0f K and %3.0f kJ/mol' %(temp,chempot/kjmol)
+        assert os.path.isfile(fn), 'No convergence file found for %7.5f K and %3.0f kJ/mol' %(temp,chempot/kjmol)
         # get data from header of convergence file
         with open(fn) as f:
             header = f.readline()

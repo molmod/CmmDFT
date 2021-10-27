@@ -226,18 +226,28 @@ class Program(object):
             self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True, F_ex=True)
             self.set_temperature(T2)
             self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True, F_ex=True)
-            fn_name_file1 = os.path.join(self.workdir, 'name_file_%3.0fK.txt'%(T1/kelvin))
-            assert os.path.isfile(fn_name_file1), 'No convergence file found for %3.0f K' %(T1/kelvin)
-            fn_suffix=""
+            fn_name_file1 = os.path.join(self.workdir, 'name_file_%7.5fK.txt'%(T1/kelvin))
+            assert os.path.isfile(fn_name_file1), 'No convergence file found for %7.5f K' %(T1/kelvin)
+            fn_suffix1=""
             with open(fn_name_file1) as n:
                 for x in n:
                     l = x.split(",")
                     ln = l[1].translate({ord('\n'): None})
                     if float(ln) == float('%7.5f'%(chempot/kjmol)):
-                        fn_suffix = l[0]
-            fn = os.path.join(self.workdir, fn_suffix)
-            assert os.path.isfile(fn), 'No convergence file found for %3.0f K and %3.0f kJ/mol' %(T1,chempot/kjmol)            
-        
+                        fn_suffix1 = l[0]
+            fn1 = os.path.join(self.workdir, fn_suffix1)
+            assert os.path.isfile(fn1), 'No convergence file found for %3.0f K and %3.0f kJ/mol' %(T1,chempot/kjmol)            
+            fn_name_file2 = os.path.join(self.workdir, 'name_file_%7.5fK.txt'%(T2/kelvin))
+            assert os.path.isfile(fn_name_file2), 'No convergence file found for %7.5f K' %(T2/kelvin)
+            fn_suffix2=""
+            with open(fn_name_file2) as n:
+                for x in n:
+                    l = x.split(",")
+                    ln = l[1].translate({ord('\n'): None})
+                    if float(ln) == float('%7.5f'%(chempot/kjmol)):
+                        fn_suffix2 = l[0]
+            fn2 = os.path.join(self.workdir, fn_suffix2)
+            assert os.path.isfile(fn2), 'No convergence file found for %3.0f K and %3.0f kJ/mol' %(T2,chempot/kjmol)
         pass
     
     def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, F_ex=False):
@@ -265,10 +275,10 @@ class Program(object):
         """
         with log.section('PROGRAM', 2, timer='Solve'):
             if energy_tracking:
-                fn_name_file = os.path.join(self.workdir, 'name_file_%3.0fK.txt'%(self.fener.temperature/kelvin))
+                fn_name_file = os.path.join(self.workdir, 'name_file_%7.5fK.txt'%(self.fener.temperature/kelvin))
                 if not os.path.isfile(fn_name_file):
                     with open(fn_name_file, 'w') as g:
-                        self.name_suffix = "convergence_%3.0fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,0)
+                        self.name_suffix = "convergence_%7.5fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,0)
                         g.write("%s,%7.3f\n"%(self.name_suffix,chempot/kjmol))
                 elif os.path.isfile(fn_name_file):
                     with open(fn_name_file, 'r') as n:
@@ -284,7 +294,7 @@ class Program(object):
                             break
                         step = float(old_fn[-2])+1
                         index = ii+2
-                    self.name_suffix = "convergence_%3.0fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,step)
+                    self.name_suffix = "convergence_%7.5fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,step)
                     with open(fn_name_file, 'w') as g:
                         if index>len(lines):
                             for line in lines:
@@ -299,10 +309,10 @@ class Program(object):
                 self.fener.init_tracking(os.path.join(self.workdir, '%s'%(self.name_suffix)))
             fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
             log.dump('Thermodynamic conditions:')
-            log.dump('  temperature = %5.1f   K' %(self.fener.temperature/kelvin))
+            log.dump('  temperature = %7.3f   K' %(self.fener.temperature/kelvin))
             log.dump('  chem. pot.  = %7.3f kJ/mol' %(chempot/kjmol))
             log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
-            self.suffix = '_%4.5fkJmol_%3.0fK' %(chempot/kjmol,self.fener.temperature/kelvin)
+            self.suffix = '_%7.5fkJmol_%7.5fK' %(chempot/kjmol,self.fener.temperature/kelvin)
             self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.suffix))
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite)
             picard = Picard(self.grid, self.fener)

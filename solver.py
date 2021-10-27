@@ -20,7 +20,7 @@ class Picard(object):
         self.fener = fener
         self.iphase = 0
 
-    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.001):
+    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.001, F_ex=False):
         """
             Implementing Picard iterative solver to find equilibrium density.
             
@@ -55,14 +55,15 @@ class Picard(object):
                     return np.nan, None
                 IUE = self.grid.integrate(np.abs(rho_new-rho)).real
                 RIUE = np.nan
-                if N_new>0: RIUE = IUE/N_new
-                if self.fener.fn_tracking is not None:
-                    G = self.fener.track(chempot, rho_new, self.iphase).real
+                if N_new>0: RIUE = IUE/N_new                  
                 log.dump("step %3i/%3i *  Loading                           = %11.4e mol./uc" % (istep+1,nsteps,N_new))
                 log.dump("             *  Abs. Integr. Unsign. Err. density = %11.4e mol./uc" %IUE)
                 log.dump("             *  Rel. Integr. Unsign. Err. density = %11.4e " %(RIUE))
                 if self.fener.fn_tracking is not None:
+                    G = self.fener.track(chempot, rho_new, self.iphase).real
                     log.dump("             *  Grand potential                   = %11.4e kJ/mol " %(G/kjmol))
+                # if F_ex: 
+                #     F_ex = G[1]
                 if IUE<threshold*N_new:
                     log.dump("Converged after %d Picard steps"%(istep+1))
                     log.dump("")

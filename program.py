@@ -138,6 +138,8 @@ class Program(object):
             if self.rho_fn is not None and os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite:
                 log.dump('Reading initial guess for density from %s' %self.rho_fn)
                 self.rho0 = np.load(self.rho_fn)
+            elif self.split:
+                pass
             else:
                 if Ninit is not None:
                     parts_name = []
@@ -183,8 +185,62 @@ class Program(object):
                 self.rho0[mask] = rho  
             self.split = True
         pass
+    
+    def diffusion_constant(self, chempot, temperature, dT=0.001*kelvin, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False):
+        """ 
+        Calculation of the diffusion cosntant with a combination of the Knudsen model and Rosenfeld's excess-entropy scaling method (proposed by Yu Liu (2015) dx.doi.org/10.1021/la403082q)
+        
 
-    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, split=False):
+        Parameters
+        ----------
+        chempot : TYPE
+            DESCRIPTION.
+        dT : TYPE
+            DESCRIPTION.
+        threshold : TYPE, optional
+            DESCRIPTION. The default is 1e-6.
+        nsteps : TYPE, optional
+            DESCRIPTION. The default is 1000.
+        maxphases : TYPE, optional
+            DESCRIPTION. The default is 20.
+        Ninit : TYPE, optional
+            DESCRIPTION. The default is None.
+        rewrite : TYPE, optional
+            DESCRIPTION. The default is False.
+
+        Raises
+        ------
+        NotImplementedError
+            DESCRIPTION.
+
+        Returns
+        -------
+        None.
+
+        """
+        raise NotImplementedError
+        with log.section('PROGRAM', 2, timer='Diffusion constant'):
+            T1 = temperature + dT/2
+            T2 = temperature - dT/2
+            self.set_temperature(T1)
+            self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True, F_ex=True)
+            self.set_temperature(T2)
+            self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True, F_ex=True)
+            fn_name_file1 = os.path.join(self.workdir, 'name_file_%3.0fK.txt'%(T1/kelvin))
+            assert os.path.isfile(fn_name_file1), 'No convergence file found for %3.0f K' %(T1/kelvin)
+            fn_suffix=""
+            with open(fn_name_file1) as n:
+                for x in n:
+                    l = x.split(",")
+                    ln = l[1].translate({ord('\n'): None})
+                    if float(ln) == float('%7.5f'%(chempot/kjmol)):
+                        fn_suffix = l[0]
+            fn = os.path.join(self.workdir, fn_suffix)
+            assert os.path.isfile(fn), 'No convergence file found for %3.0f K and %3.0f kJ/mol' %(T1,chempot/kjmol)            
+        
+        pass
+    
+    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, F_ex=False):
         """
         Solve for the density profile
 
@@ -206,7 +262,6 @@ class Program(object):
         Initialization : a list of three elements: (threshold, alpha_mix, nsteps), optional
             Adding this initialization will add an initial solving phase with the specified parameters, 
             allowing the simulation to initially get closer to the solution. The default is None.
-        split : Boolean, if set to true initial density has to be provided manually through _set_split_density()
         """
         with log.section('PROGRAM', 2, timer='Solve'):
             if energy_tracking:
@@ -249,10 +304,7 @@ class Program(object):
             log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
             self.suffix = '_%4.5fkJmol_%3.0fK' %(chempot/kjmol,self.fener.temperature/kelvin)
             self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.suffix))
-            if split:
-                assert hasattr(self, 'rho0'), 'Must set initial split density manually with _set_split_density()'
-            else:
-                self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite)
+            self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite)
             picard = Picard(self.grid, self.fener)
             if Initialization is not None:
                 todo = [(threshold, alpha_mix, nsteps), Initialization]
@@ -265,7 +317,7 @@ class Program(object):
                 log.dump('#################################################################################')
                 log.dump('#'*10+'      PHASE % 2i (threshold = %.1e  alpha_mix = %.1e)    ' %(picard.iphase, current_threshold, current_alpha_mix) + ('#'*10))
                 log.dump('#################################################################################')
-                N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix)
+                N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix, F_ex=F_ex)
                 if rho is None:
                     todo.append([min(1e-1,current_threshold*5),current_alpha_mix/10,100])
                     if len(todo)>maxphases:

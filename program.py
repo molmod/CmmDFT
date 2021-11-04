@@ -236,7 +236,7 @@ class Program(object):
                     if float(ln) == float('%7.5f'%(chempot/kjmol)):
                         fn_suffix1 = l[0]
             fn1 = os.path.join(self.workdir, fn_suffix1)
-            assert os.path.isfile(fn1), 'No convergence file found for %3.0f K and %3.0f kJ/mol' %(T1,chempot/kjmol)            
+            assert os.path.isfile(fn1), 'No convergence file found for %7.5f K and %7.5f kJ/mol' %(T1,chempot/kjmol)            
             fn_name_file2 = os.path.join(self.workdir, 'name_file_%7.5fK.txt'%(T2/kelvin))
             assert os.path.isfile(fn_name_file2), 'No convergence file found for %7.5f K' %(T2/kelvin)
             fn_suffix2=""
@@ -247,7 +247,7 @@ class Program(object):
                     if float(ln) == float('%7.5f'%(chempot/kjmol)):
                         fn_suffix2 = l[0]
             fn2 = os.path.join(self.workdir, fn_suffix2)
-            assert os.path.isfile(fn2), 'No convergence file found for %3.0f K and %3.0f kJ/mol' %(T2,chempot/kjmol)
+            assert os.path.isfile(fn2), 'No convergence file found for %7.5f K and %7.5f kJ/mol' %(T2,chempot/kjmol)
             with open(fn1) as f1:
                 header1 = f1.readline()
                 assert header1.startswith('#')
@@ -257,17 +257,15 @@ class Program(object):
                 assert header2.startswith('#')
                 fields2 = header2.lstrip('#').split()[4:]
             assert fields1 == fields2, 'Two excess functionals have to be the same'            
-            data1 = np.loadtxt(fn1)
-            data2 = np.loadtxt(fn2)
-            if 'ExtPot' in fields1:
-                ind = fields1.index('ExtPot')
-                Fex1 = np.sum(data1[:ind])+ np.sum(data1[ind+1:])
-                Fex2 = np.sum(data2[:ind])+ np.sum(data2[ind+1:])
+            data1 = np.loadtxt(fn1)[-1]
+            data2 = np.loadtxt(fn2)[-1]
+            Fex1 = np.sum(data1[5:-1])
+            Fex2 = np.sum(data2[5:-1])
             Sex = (Fex1-Fex2)/dT
             Dr = A*np.exp(B*Sex)
         pass
     
-    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None):
+    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, F_ex=False):
         """
         Solve for the density profile
 
@@ -344,7 +342,7 @@ class Program(object):
                 log.dump('#################################################################################')
                 log.dump('#'*10+'      PHASE % 2i (threshold = %.1e  alpha_mix = %.1e)    ' %(picard.iphase, current_threshold, current_alpha_mix) + ('#'*10))
                 log.dump('#################################################################################')
-                N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix)
+                N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix, F_ex=F_ex)
                 if rho is None:
                     todo.append([min(1e-1,current_threshold*5),current_alpha_mix/10,100])
                     if len(todo)>maxphases:

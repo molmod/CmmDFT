@@ -186,7 +186,7 @@ class Program(object):
             self.split = True
         pass
     
-    def diffusion_constant(self, chempot, temperature, dT=0.001*kelvin, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False):
+    def diffusion_constant(self, chempot, temperature, dT=0.001*kelvin, A=0.049, B=1, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False):
         """ 
         Calculation of the diffusion cosntant with a combination of the Knudsen model and Rosenfeld's excess-entropy scaling method (proposed by Yu Liu (2015) dx.doi.org/10.1021/la403082q)
         
@@ -248,9 +248,26 @@ class Program(object):
                         fn_suffix2 = l[0]
             fn2 = os.path.join(self.workdir, fn_suffix2)
             assert os.path.isfile(fn2), 'No convergence file found for %3.0f K and %3.0f kJ/mol' %(T2,chempot/kjmol)
+            with open(fn1) as f1:
+                header1 = f1.readline()
+                assert header1.startswith('#')
+                fields1 = header1.lstrip('#').split()[4:]
+            with open(fn2) as f2:
+                header2 = f2.readline()
+                assert header2.startswith('#')
+                fields2 = header2.lstrip('#').split()[4:]
+            assert fields1 == fields2, 'Two excess functionals have to be the same'            
+            data1 = np.loadtxt(fn1)
+            data2 = np.loadtxt(fn2)
+            if 'ExtPot' in fields1:
+                ind = fields1.index('ExtPot')
+                Fex1 = np.sum(data1[:ind])+ np.sum(data1[ind+1:])
+                Fex2 = np.sum(data2[:ind])+ np.sum(data2[ind+1:])
+            Sex = (Fex1-Fex2)/dT
+            Dr = A*np.exp(B*Sex)
         pass
     
-    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, F_ex=False):
+    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None):
         """
         Solve for the density profile
 
@@ -327,7 +344,7 @@ class Program(object):
                 log.dump('#################################################################################')
                 log.dump('#'*10+'      PHASE % 2i (threshold = %.1e  alpha_mix = %.1e)    ' %(picard.iphase, current_threshold, current_alpha_mix) + ('#'*10))
                 log.dump('#################################################################################')
-                N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix, F_ex=F_ex)
+                N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix)
                 if rho is None:
                     todo.append([min(1e-1,current_threshold*5),current_alpha_mix/10,100])
                     if len(todo)>maxphases:

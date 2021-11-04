@@ -186,7 +186,7 @@ class Program(object):
             self.split = True
         pass
     
-    def diffusion_constant(self, chempot, temperature, dT=0.001*kelvin, A=0.049, B=1, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False):
+    def diffusion_constant(self, chempot, temperature, dT=0.001*kelvin, alpha=0.788, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False):
         """ 
         Calculation of the diffusion cosntant with a combination of the Knudsen model and Rosenfeld's excess-entropy scaling method (proposed by Yu Liu (2015) dx.doi.org/10.1021/la403082q)
         
@@ -258,10 +258,17 @@ class Program(object):
             assert fields1 == fields2, 'Two excess functionals have to be the same'            
             data1 = np.loadtxt(fn1)[-1]
             data2 = np.loadtxt(fn2)[-1]
+            N = (data1[2]+data2[2])/2
             Fex1 = np.sum(data1[5:-1])
             Fex2 = np.sum(data2[5:-1])
-            Sex = (Fex1-Fex2)/dT
-            Dr = A*np.exp(B*Sex)
+            s_ex = (Fex1-Fex2)/dT/N/boltzmann
+            if isinstance(self.system.host, NanoporousHost):
+                vol = self.system.host.mol.cell.volume
+            else:
+                vol = self.system.host.cell.volume
+            rho_av = N/vol
+            mass = np.sum(self.system.guest.mol.masses)
+            Dr = 0.585*rho_av**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex)
         pass
     
     def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, F_ex=False):

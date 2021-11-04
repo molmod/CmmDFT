@@ -218,7 +218,6 @@ class Program(object):
         None.
 
         """
-        raise NotImplementedError
         with log.section('PROGRAM', 2, timer='Diffusion constant'):
             T1 = temperature + dT/2
             T2 = temperature - dT/2

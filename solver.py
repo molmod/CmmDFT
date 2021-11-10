@@ -9,7 +9,7 @@ import numpy as np, sys, os
 from molmod.constants import *
 from molmod.units import *
 
-from log import log
+from .log import log
 
 __all__ = ['Picard']
 
@@ -77,7 +77,7 @@ class Picard(object):
             dF = 0.0
             krho = np.fft.fftn(rho)*self.grid.dr
             for part in self.fener.parts:
-                dF += part.derive(krho)
+                dF += part.derive(rho, krho)
             if self.fener.beta*np.amin(dF.real)<-100:
                 return np.nan*rho
             rho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity

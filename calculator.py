@@ -8,11 +8,11 @@ from molmod.constants import *
 from yaff import log as ylog
 ylog.set_level(ylog.silent)
 
-from system import System, Grid
-from program import Program
-from functionals import FreeEnergy
-from eos import VanderWaalsEOS
-from log import log
+from .system import System, Grid
+from .program import Program
+from .functionals import FreeEnergy
+from .eos import VanderWaalsEOS
+from .log import log
 
 
 class Calculator(object):

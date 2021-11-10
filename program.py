@@ -7,12 +7,12 @@ from __future__ import division
 import numpy as np, sys, os
 
 from molmod.constants import boltzmann
-from molmod.units import angstrom, kelvin, kjmol, bar
+from molmod.units import angstrom, kelvin, kjmol, bar, centimeter
 
-from functionals import FreeEnergy
-from system import System, Grid
-from solver import Picard
-from log import log
+from .functionals import FreeEnergy
+from .system import System, Grid, NanoporousHost
+from .solver import Picard
+from .log import log
 
 __all__ = ['Program']
 
@@ -138,8 +138,6 @@ class Program(object):
             if self.rho_fn is not None and os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite:
                 log.dump('Reading initial guess for density from %s' %self.rho_fn)
                 self.rho0 = np.load(self.rho_fn)
-            elif self.split:
-                pass
             else:
                 if Ninit is not None:
                     parts_name = []
@@ -184,47 +182,44 @@ class Program(object):
             for rho,mask in zip(masks, densities):
                 self.rho0[mask] = rho  
             self.split = True
-        pass
+        
     
     def diffusion_constant(self, chempot, temperature, dT=0.001*kelvin, alpha=0.788, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False):
         """ 
-        Calculation of the diffusion cosntant with a combination of the Knudsen model and Rosenfeld's excess-entropy scaling method (proposed by Yu Liu (2015) dx.doi.org/10.1021/la403082q)
+        Calculation of the diffusion constant with Rosenfeld's excess-entropy scaling method. Calculates the free energy through cDFt simulations at two temperatures, 
+        from this the excess entropy is calculated and subsequently the diffusion constant is approximated.
         
 
         Parameters
         ----------
-        chempot : TYPE
-            DESCRIPTION.
-        dT : TYPE
-            DESCRIPTION.
-        threshold : TYPE, optional
-            DESCRIPTION. The default is 1e-6.
-        nsteps : TYPE, optional
-            DESCRIPTION. The default is 1000.
-        maxphases : TYPE, optional
-            DESCRIPTION. The default is 20.
-        Ninit : TYPE, optional
-            DESCRIPTION. The default is None.
-        rewrite : TYPE, optional
-            DESCRIPTION. The default is False.
-
-        Raises
-        ------
-        NotImplementedError
-            DESCRIPTION.
+        chempot : Scalar, is the external chemical potential of the simulation.
+        temperature: Scalar, is the central temperature to compute the derivative to temperatures
+        dT : Scalar, the temprature difference between the two simulations, the default is 0.001K as used by Yu Liu (2015)
+        alpha: A parameter in the excess entropy scaling relation
+        threshold : Scalar, optional
+            Determines the threshold of the solution in the Picard solver algorithm. The default is 1e-6.
+        nsteps : Integer, optional
+            Determines the maximal number of steps per phase in the Picard solver. The default is 1000.
+        maxphases : Integer, optional
+            Determines the maximum number of phases in the Picard solver algorithm. The default is 20.
+        Ninit : Initial density profile, check the function _set_initial_density for more information, optional
+            The default is None.
+        rewrite : Boolean, optional
+            Determines if the density profiles are rewritten or reused. The default is False
 
         Returns
         -------
-        None.
+        Diffusion constant
 
         """
         with log.section('PROGRAM', 2, timer='Diffusion constant'):
             T1 = temperature + dT/2
             T2 = temperature - dT/2
             self.set_temperature(T1)
-            self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True, F_ex=True)
+            self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True)
             self.set_temperature(T2)
-            self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True, F_ex=True)
+            self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True)
+
             fn_name_file1 = os.path.join(self.workdir, 'name_file_%7.5fK.txt'%(T1/kelvin))
             assert os.path.isfile(fn_name_file1), 'No convergence file found for %7.5f K' %(T1/kelvin)
             fn_suffix1=""
@@ -235,7 +230,8 @@ class Program(object):
                     if float(ln) == float('%7.5f'%(chempot/kjmol)):
                         fn_suffix1 = l[0]
             fn1 = os.path.join(self.workdir, fn_suffix1)
-            assert os.path.isfile(fn1), 'No convergence file found for %7.5f K and %7.5f kJ/mol' %(T1,chempot/kjmol)            
+            assert os.path.isfile(fn1), 'No convergence file found for %7.5f K and %7.5f kJ/mol' %(T1,chempot/kjmol)     
+
             fn_name_file2 = os.path.join(self.workdir, 'name_file_%7.5fK.txt'%(T2/kelvin))
             assert os.path.isfile(fn_name_file2), 'No convergence file found for %7.5f K' %(T2/kelvin)
             fn_suffix2=""
@@ -247,6 +243,7 @@ class Program(object):
                         fn_suffix2 = l[0]
             fn2 = os.path.join(self.workdir, fn_suffix2)
             assert os.path.isfile(fn2), 'No convergence file found for %7.5f K and %7.5f kJ/mol' %(T2,chempot/kjmol)
+
             with open(fn1) as f1:
                 header1 = f1.readline()
                 assert header1.startswith('#')
@@ -255,23 +252,29 @@ class Program(object):
                 header2 = f2.readline()
                 assert header2.startswith('#')
                 fields2 = header2.lstrip('#').split()[4:]
-            assert fields1 == fields2, 'Two excess functionals have to be the same'            
+            assert fields1 == fields2, 'Two excess functionals have to be the same'  
+                     
             data1 = np.loadtxt(fn1)[-1]
             data2 = np.loadtxt(fn2)[-1]
-            N = (data1[2]+data2[2])/2
+            N = (data1[2] + data2[2])/2
             Fex1 = np.sum(data1[5:-1])
             Fex2 = np.sum(data2[5:-1])
-            s_ex = (Fex1-Fex2)/dT/N/boltzmann
+            s_ex = (Fex1 - Fex2)/dT/N/boltzmann
             if isinstance(self.system.host, NanoporousHost):
                 vol = self.system.host.mol.cell.volume
             else:
                 vol = self.system.host.cell.volume
             rho_av = N/vol
+            #print(rho_av*angstrom**3)
+            #print(s_ex)
             mass = np.sum(self.system.guest.mol.masses)
             Dr = 0.585*rho_av**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex)
-        pass
+            print(Dr)
+            Dr = 0.585*rho_av**(-1/3)*np.exp(alpha*s_ex)
+            print(Dr)
+            return Dr
     
-    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, F_ex=False):
+    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None):
         """
         Solve for the density profile
 
@@ -300,7 +303,7 @@ class Program(object):
                 if not os.path.isfile(fn_name_file):
                     with open(fn_name_file, 'w') as g:
                         self.name_suffix = "convergence_%7.5fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,0)
-                        g.write("%s,%7.3f\n"%(self.name_suffix,chempot/kjmol))
+                        g.write("%s,%7.5f\n"%(self.name_suffix,chempot/kjmol))
                 elif os.path.isfile(fn_name_file):
                     with open(fn_name_file, 'r') as n:
                         lines = n.readlines()   
@@ -348,7 +351,7 @@ class Program(object):
                 log.dump('#################################################################################')
                 log.dump('#'*10+'      PHASE % 2i (threshold = %.1e  alpha_mix = %.1e)    ' %(picard.iphase, current_threshold, current_alpha_mix) + ('#'*10))
                 log.dump('#################################################################################')
-                N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix, F_ex=F_ex)
+                N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix)
                 if rho is None:
                     todo.append([min(1e-1,current_threshold*5),current_alpha_mix/10,100])
                     if len(todo)>maxphases:

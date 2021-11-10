@@ -15,7 +15,7 @@ from yaff import ForceField
 
 from tools import get_ff, merge_ffpar_files
 from log import log
-from system import NanoporousHost
+from .system import NanoporousHost
 from eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS
 
 __all__ = [
@@ -105,7 +105,7 @@ class FreeEnergy(object):
         krho = np.fft.fftn(rho)*self.grid.dr
         Fex = 0
         for part in self.parts:
-            Fpart = part.value(krho).real
+            Fpart = part.value(rho, krho).real
             G += Fpart
             if part.name not in ['ExtPot', 'EffExtPot']:
                 Fex += Fpart
@@ -129,7 +129,7 @@ class FreeEnergy(object):
 
         """
         with log.section('FREEENER', 2, timer='ExtPot init'):
-            assert isinstance(self.system.host, NanoporousHost), 'No external potential can be added for a %s system' %(self.system.host.__class__.__name__)
+            #assert isinstance(self.system.host, NanoporousHost), 'No external potential can be added for a %s system' %(self.system.host.__class__.__name__)
             log.dump('Initializing external potential')
             epot = ExternalPotential(self.grid)
             epot_fn = os.path.join(self.workdir,'epot.npy')
@@ -609,7 +609,7 @@ class MFAFunctional(Functional):
 
     def value(self, rho, krho):
         with log.section('MFA', 3, timer='MFA value'):
-            return 0.5*self.grid.integrate(rho*self.derive(krho))
+            return 0.5*self.grid.integrate(rho*self.derive(rho, krho))
                    
 class ExternalPotential(Functional):
 
@@ -770,14 +770,14 @@ class WDACorrFunctional(WDAVFunctional):
     
     def derive(self, rho, krho):
         deriv = self.Flj.derive(rho, krho)
-        deriv -= self.Fjs.derive(rho, krho)
+        deriv -= self.Fhs.derive(rho, krho)
         deriv -= self.Fmfa.derive(rho, krho)
         return deriv
     
     def value(self, rho, krho):
         value = 0.0
         value += self.Flj.value(rho, krho)
-        value -= self.Fjs.value(rho, krho)
+        value -= self.Fhs.value(rho, krho)
         value -= self.Fmfa.value(rho, krho)
         return value
 

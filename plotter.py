@@ -8,10 +8,10 @@ from molmod.constants import boltzmann
 from yaff import log as ylog
 ylog.set_level(ylog.silent)
 
-from system import System, Grid
-from functionals import FreeEnergy
-from log import log
-from eos import ModifiedBenedictWebbRubinEOS
+from .system import System, Grid
+from .functionals import FreeEnergy
+from .log import log
+from .eos import ModifiedBenedictWebbRubinEOS
 
 __all__ = ['Plotter', 'MultiPlotter']
 

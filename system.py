@@ -10,8 +10,8 @@ from molmod.constants import *
 from molmod.units import *
 from yaff import System as YaffSystem, Cell
 
-from tools import hard_spheres_barker_henderson, get_ff
-from log import log
+from .tools import hard_spheres_barker_henderson, get_ff
+from .log import log
 
 __all__ = ['System', 'EmptyHost', 'NanoporousHost', 'Guest', 'Grid']
 

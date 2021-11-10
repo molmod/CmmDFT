@@ -11,7 +11,7 @@ import numpy as np, os
 from molmod.units import kjmol, angstrom
 from molmod.constants import planck, boltzmann
 
-from log import log
+from .log import log
 
 
 __all__ = [

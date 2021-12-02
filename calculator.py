@@ -150,7 +150,7 @@ class VdWCalculator(object):
         return 27/4*self.Tc/temp
     
     def _assert_above_Tcrit(self, temp):
-        assert temp>self.Tc, "Van der Waals gas only implement above critical temperature (= %s K)" (self.Tc/kelvin)
+        assert temp>self.Tc, "Van der Waals gas only implement above critical temperature (= %s K)" %(self.Tc/kelvin)
     
     def loading(self, temp, chempot):
         """

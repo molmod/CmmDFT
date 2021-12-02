@@ -7,7 +7,7 @@ from __future__ import division
 import numpy as np, sys, os
 
 from molmod.constants import boltzmann
-from molmod.units import angstrom, kelvin, kjmol, bar, centimeter
+from molmod.units import angstrom, kelvin, kjmol, bar, centimeter, joule
 
 from .functionals import FreeEnergy
 from .system import System, Grid, NanoporousHost
@@ -253,25 +253,27 @@ class Program(object):
                 assert header2.startswith('#')
                 fields2 = header2.lstrip('#').split()[4:]
             assert fields1 == fields2, 'Two excess functionals have to be the same'  
-                     
+            #print(fields1)
+            log.dump('Reading Excess free energy from %s and %s'%(fn1, fn2))
             data1 = np.loadtxt(fn1)[-1]
             data2 = np.loadtxt(fn2)[-1]
+            #print(data1[5:-1])
             N = (data1[2] + data2[2])/2
             Fex1 = np.sum(data1[5:-1])
             Fex2 = np.sum(data2[5:-1])
+            print('S_ex', (Fex1/joule - Fex2/joule)/dT)
             s_ex = (Fex1 - Fex2)/dT/N/boltzmann
             if isinstance(self.system.host, NanoporousHost):
                 vol = self.system.host.mol.cell.volume
             else:
                 vol = self.system.host.cell.volume
             rho_av = N/vol
-            #print(rho_av*angstrom**3)
-            #print(s_ex)
+            print('s_ex', s_ex)
             mass = np.sum(self.system.guest.mol.masses)
             Dr = 0.585*rho_av**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex)
-            print(Dr)
-            Dr = 0.585*rho_av**(-1/3)*np.exp(alpha*s_ex)
-            print(Dr)
+            #print('prefact', 0.585*rho_av**(-1/3)*np.sqrt(boltzmann*temperature/mass))
+            #Dr = 0.585**np.exp(alpha*s_ex)
+            # print(Dr)
             return Dr
     
     def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None):

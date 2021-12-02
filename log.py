@@ -13,7 +13,7 @@ version = '0.1'
 header = """
 ********************************************************************************
 
-                            Welcom to CmmDFT
+                            Welcome to CmmDFT
     a Python package for computing density profiles using classical DFT
 
                                Written by

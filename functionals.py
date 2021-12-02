@@ -17,6 +17,7 @@ from tools import get_ff, merge_ffpar_files
 from log import log
 from .system import NanoporousHost
 from eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS
+from multiprocessing import Process, Pool
 
 __all__ = [
     'FreeEnergy', 'Functional','FMTFunctional','MFMTFunctional', 'WhiteBearIIFunctional',

@@ -20,7 +20,7 @@ __all__ = [
 ]
 
 
-def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmin=1e-5, rmax=None,
+def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmin=1e-3, rmax=None,
         npoints=500):
     """
     Calculate the hard-sphere radius according to Barker-Henderson:

@@ -11,7 +11,7 @@ import numpy as np, os
 from molmod.units import kjmol, angstrom
 from molmod.constants import planck, boltzmann
 
-from log import log
+from .log import log
 
 
 __all__ = [
@@ -69,7 +69,7 @@ class VanderWaalsEOS(EquationOfState):
     def der_der_derivative_excess_free_energy_particle(self, rho):
         kT = boltzmann*self.temperature
         return 2*kT*self.b**3/(1.0-self.b*rho)**3
-
+    
 
 
 class ModifiedBenedictWebbRubinEOS(EquationOfState):
@@ -81,11 +81,12 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
     taken from http://dx.doi.org/10.1080/00268979300100411
     """
     
-    def __init__(self, sigma, epsilon):
+    def __init__(self, sigma, epsilon, logging = False):
         EquationOfState.__init__(self)
         self.sigma = sigma
         self.epsilon = epsilon
         self._init_regression_parameters()
+        self.logging = logging
     
     def _init_regression_parameters(self):
         "Values taken from Table 10 in http://dx.doi.org/10.1080/00268979300100411"
@@ -176,9 +177,10 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
     def excess_free_energy_particle(self, rho):
         Ar = 0.0 #reduced excess free energy per particle
         rhor = rho*self.sigma**3 #reduced density
-        if np.amax(rhor)>1.2:
+        if np.amax(rhor)>1.2 and self.logging:
             with log.section('MBWR', 2, timer='MBWR'):
                 log.dump('Density exceeds the range of accuracy for MBWR: rhor=%4.2f'%(np.amax(rhor.real)))
+        Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
         for i, ai in enumerate(self.a):
             Ar += ai/(i+1)*rhor**(i+1)
         G = self._get_G_functionals(rho)
@@ -191,7 +193,7 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
     def derivative_excess_free_energy_particle(self, rho):    
         dAr = 0.0
         rhor = rho*self.sigma**3 #reduced density
-        if np.amax(rhor)>1.2:
+        if np.amax(rhor)>1.2 and self.logging:
             with log.section('MBWR', 2, timer='MBWR'):
                 log.dump('Density exceeds the range of accuracy for MBWR: rhor=%4.2f'%(np.amax(rhor.real)))
         for i, ai in enumerate(self.a):
@@ -309,4 +311,3 @@ class MFMT_MFA_EOS(EquationOfState):
 
     def der_der_derivative_excess_free_energy_particle(self, rho):
         return self.a_fact*self.MFA.der_der_derivative_excess_free_energy_particle(rho) + self.MFMT.der_der_derivative_excess_free_energy_particle(rho) 
-

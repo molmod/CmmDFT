@@ -13,7 +13,7 @@ version = '0.1'
 header = """
 ********************************************************************************
 
-                            Welcom to CmmDFT
+                            Welcome to CmmDFT
     a Python package for computing density profiles using classical DFT
 
                                Written by
@@ -74,7 +74,7 @@ class Section(object):
 
 
 class Logger(object):
-    def __init__(self, level, _f=sys.stdout, max_label_length=8, line_length=100):
+    def __init__(self, level, _f=sys.stdout, max_label_length=9, line_length=100):
         self.set_level(level)
         self._f = _f
         self.mll = max_label_length
@@ -83,6 +83,7 @@ class Logger(object):
         self.label = 'QFF'
         self.add_blank_line = False
         self.timetable = []
+        self.warnings = []
 
     def set_level(self, level):
         if isinstance(level, int):
@@ -131,7 +132,7 @@ class Logger(object):
             line = line.rstrip('\n')
             print(line, file=self._f)
 
-    def warning(self, message, new_line=True):
+    def warning(self, message, new_line=True, label_section=None):
         '''
             Warnings are printed whenever log_level is higher than 0, i.e. not
             in silent mode.
@@ -151,6 +152,10 @@ class Logger(object):
                 line += piece #.encode('utf-8')
                 line += '\n'
             line = line.rstrip('\n')
+            if label_section is None:
+                self.warnings.append((self.label, message))
+            else:
+                self.warnings.append((label_section, message))
             print(line, file=self._f)
 
     def print_header(self):
@@ -177,6 +182,7 @@ class Logger(object):
     def exit(self):
         if self._active:
             self.print_timetable()
+            self.print_warnings()
             self.print_footer()
         self.close()
 
@@ -186,13 +192,26 @@ class Logger(object):
 
     def print_timetable(self):
         if self.log_level>0:
-            print('~'*80, file=self._f)
             print('', file=self._f)
+            print('~'*80, file=self._f)
         with self.section('TIMING', 1):
             for label, time in self.timetable:
                 line = '%30s  ' %(label+' '*(30-len(label)))
                 line += str(time)
                 self.dump(line)
+
+    def print_warnings(self):
+        if len(self.warnings):
+            print('', file=self._f)
+            print('~'*80, file=self._f)
+            with self.section('WARNINGS', 1):
+                self.dump('%i NUMBER OF WARNINGS'%len(self.warnings))
+                i = 0
+                for label, message in self.warnings:
+                    i += 1
+                    line = 'WARNING NR %i             encountered in %s  ' %(i, label)
+                    self.dump(line)
+                    self.dump(message)
 
     def close(self):
         if isinstance(self._f, IOBase):

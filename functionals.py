@@ -13,10 +13,10 @@ from molmod.constants import planck, boltzmann
 from yaff import ForceField
 
 
-from tools import get_ff, merge_ffpar_files
-from log import log
+from .tools import get_ff, merge_ffpar_files
+from .log import log
 from .system import NanoporousHost
-from eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS
+from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS
 from multiprocessing import Process, Pool
 
 __all__ = [
@@ -36,6 +36,7 @@ class FreeEnergy(object):
         self.overwrite = overwrite
         self.parts = []
         self.fn_tracking = None
+        self.excess_table = ['FMT', 'MFMT', 'WBII', 'MFA', 'LDA', 'WDA-V', 'CORR'] #list of names of excess functionals
     
     def copy(self):
         fenercopy = FreeEnergy(self.grid.copy(), self.system.copy(), self.temperature, workdir=self.workdir, overwrite=self.overwrite)
@@ -472,6 +473,7 @@ class MFMTFunctional(FMTFunctional):
         dphi = -nv1[index]/(1.0-n3)-(n3+(1.0-n3)**2*np.log(1.0-n3))/(6.0*np.pi*n3**2*(1-n3)**2)*n2*nv2[index]
         return dphi
 
+
 class WhiteBearIIFunctional(FMTFunctional):
     "Second version of White Bear, with Carnahan-Starling-Boublik EOS"
     
@@ -611,7 +613,8 @@ class MFAFunctional(Functional):
     def value(self, rho, krho):
         with log.section('MFA', 3, timer='MFA value'):
             return 0.5*self.grid.integrate(rho*self.derive(rho, krho))
-                   
+
+
 class ExternalPotential(Functional):
 
     name = 'ExtPot'
@@ -656,6 +659,7 @@ class ExternalPotential(Functional):
         with log.section('ExtPot', 3, timer='ExtPot value'):
             return self.grid.integrate(rho*self.potential)
         
+
 class LDAFunctional(Functional):
     "The local density approximation (LDA)"
 
@@ -664,7 +668,8 @@ class LDAFunctional(Functional):
     def __init__(self, temperature, grid, eos):
         self.grid = grid
         self.eos = eos
-        self.eos.set_temperature(temperature)
+        if eos is not None:
+            self.eos.set_temperature(temperature)
     
     def copy(self):
         return LDAFunctional(self.eos.temperature, self.grid.copy(), self.eos)
@@ -736,7 +741,6 @@ class WDAVFunctional(LDAFunctional):
             wd = self._get_weighted_density(krho)
             phi = self.eos.excess_free_energy_volume(wd)
             return self.grid.integrate(phi)
-
 
 
 class WDACorrFunctional(WDAVFunctional):

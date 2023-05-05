@@ -7,9 +7,9 @@ from __future__ import division
 import numpy as np, sys, os
 
 from molmod.constants import boltzmann
-from molmod.units import angstrom, kelvin, kjmol, bar, centimeter, joule
+from molmod.units import angstrom, kelvin, kjmol, bar, centimeter, joule, mol
 
-from .functionals import FreeEnergy
+from .functionals import FreeEnergy, WDAVFunctional
 from .system import System, Grid, NanoporousHost
 from .solver import Picard
 from .log import log
@@ -183,7 +183,8 @@ class Program(object):
                 self.rho0[mask] = rho  
             self.split = True
     
-    def solve(self, chempot, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None):
+    def solve(self, chempot, threshold=1e-6, alpha_mix=0.1, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, 
+    energy_tracking=True, Initialization = None, method='hybrid',m=10, delta=0.01, silent=False):
         """
         Solve for the density profile
 
@@ -206,7 +207,9 @@ class Program(object):
             Adding this initialization will add an initial solving phase with the specified parameters, 
             allowing the simulation to initially get closer to the solution. The default is None.
         """
-        with log.section('PROGRAM', 2, timer='Solve'):
+        if silent: log_level = 3
+        else: log_level = 2
+        with log.section('PROGRAM', log_level, timer='Solve'):
             if energy_tracking:
                 fn_name_file = os.path.join(self.workdir, 'name_file_%7.5fK.txt'%(self.fener.temperature/kelvin))
                 if not os.path.isfile(fn_name_file):
@@ -254,27 +257,38 @@ class Program(object):
             else:
                 todo = [(threshold, alpha_mix, nsteps)]
             rho_old = self.rho0.copy()
-            while len(todo)>0:
-                picard.iphase = len(todo)
-                current_threshold, current_alpha_mix, current_nsteps = todo[-1]
-                log.dump('#################################################################################')
-                log.dump('#'*10+'      PHASE % 2i (threshold = %.1e  alpha_mix = %.1e)    ' %(picard.iphase, current_threshold, current_alpha_mix) + ('#'*10))
-                log.dump('#################################################################################')
-                N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix)
-                if rho is None:
-                    todo.append([min(1e-1,current_threshold*5),current_alpha_mix/10,100])
-                    if len(todo)>maxphases:
-                        log.dump('Could not solve in less then %i phases. Aborting!' %maxphases)
-                        sys.exit()
+            if method == 'uno':
+                while len(todo)>0:
+                    picard.iphase = len(todo)
+                    current_threshold, current_alpha_mix, current_nsteps = todo[-1]
+                    log.dump('#################################################################################')
+                    log.dump('#'*10+'      PHASE % 2i (threshold = %.1e  alpha_mix = %.1e)    ' %(picard.iphase, current_threshold, current_alpha_mix) + ('#'*10))
+                    log.dump('#################################################################################')
+                    N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix, method=method, silent=silent)
+                    if rho is None:
+                        todo.append([min(1e-1,current_threshold*5),current_alpha_mix/10,100])
+                        if len(todo)>maxphases:
+                            log.dump('Could not solve in less then %i phases. Aborting!' %maxphases)
+                            sys.exit()
+                        else:
+                            log.dump('Could not determine density, adding a cycle with smaller alpha_mix')
                     else:
-                        log.dump('Could not determine density, adding a cycle with smaller alpha_mix')
-                else:
-                    del todo[-1]
+                        del todo[-1]
+                        np.save(self.rho_fn, rho)
+                        rho_old = rho.copy()
+            else:
+                log.dump('#################################################################################')
+                picard.iphase = 1
+                try:
+                    N, rho = picard.solve(chempot, rho_old, nsteps=nsteps, threshold=threshold, method=method, alpha_mix=alpha_mix, silent=silent)
                     np.save(self.rho_fn, rho)
                     rho_old = rho.copy()
+                except FloatingPointError:
+                    log.warning('THE CALCULATION OF THE DENSITY at chemical potential %7.5f kJ/mol and temperature %5.3f K HAS FAILED DUE TO A ---FloatingPointError---'%(chempot/kjmol, self.fener.temperature), label_section='Solve')
 
 
-    def diffusion_constant(self, chempot, temperature, dT=0.001*kelvin, alpha=0.788, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False):
+    def diffusion_constant(self, chempot, temperature, dT=0.001*kelvin, alpha=0.788, threshold=1e-6, 
+                           alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, weighted_density=True):
         """ 
         Calculation of the diffusion constant with Rosenfeld's excess-entropy scaling method. Calculates the free energy through cDFt simulations at two temperatures, 
         from this the excess entropy is calculated and subsequently the diffusion constant is approximated.
@@ -337,32 +351,55 @@ class Program(object):
             with open(fn1) as f1:
                 header1 = f1.readline()
                 assert header1.startswith('#')
-                fields1 = header1.lstrip('#').split()[4:]
+                fields1 = header1.lstrip('#').split()
             with open(fn2) as f2:
                 header2 = f2.readline()
                 assert header2.startswith('#')
-                fields2 = header2.lstrip('#').split()[4:]
+                fields2 = header2.lstrip('#').split()
+            indices = [fields1.index(name) for name in self.fener.excess_table if name in fields1]
             assert fields1 == fields2, 'Two excess functionals have to be the same, should always be true'  
 
             log.dump('Reading Excess free energy from %s and %s'%(fn1, fn2))
+
             data1 = np.loadtxt(fn1)[-1]
             data2 = np.loadtxt(fn2)[-1]
             N = (data1[2] + data2[2])/2
-            Fex1 = np.sum(data1[5:-1])
-            Fex2 = np.sum(data2[5:-1])
-            log.dump(f'S_ex {(Fex1/joule - Fex2/joule)/dT}')
-            s_ex = (Fex1 - Fex2)/dT/N/boltzmann
+            # Fex1 = np.sum(data1[5:-1]) - data1[3]
+            # Fex2 = np.sum(data2[5:-1]) - data2[3]
+            Fex1 = np.sum(data1[indices])
+            Fex2 = np.sum(data2[indices])
+            log.dump(f'S_ex {-(Fex1 - Fex2)/dT}')
+            s_ex = -(Fex1 - Fex2)/dT/N/boltzmann
             log.dump(f's_ex {s_ex}')
+            mass = np.sum(self.system.guest.mol.masses)
 
             if isinstance(self.system.host, NanoporousHost):
                 vol = self.system.host.mol.cell.volume
             else:
                 vol = self.system.host.cell.volume
             rho_av = N/vol
-            mass = np.sum(self.system.guest.mol.masses)
+
+            fn1 = '%s/rho_%7.5fkJmol_%7.5fK.npy' %(self.workdir, chempot/kjmol, T1/kelvin)
+            assert os.path.isfile(fn1), 'No density found for %3.0f K and %4.5f kJ/mol' %(T1,chempot/kjmol)  
+            rho1 = np.load(fn1)
+
+            fn2 = '%s/rho_%7.5fkJmol_%7.5fK.npy' %(self.workdir, chempot/kjmol, T2/kelvin)
+            assert os.path.isfile(fn2), 'No density found for %3.0f K and %4.5f kJ/mol' %(T2,chempot/kjmol)  
+            rho2 = np.load(fn2)
+
+            rho = (rho1 + rho2).real/2
+            
+            if weighted_density:
+                wda = WDAVFunctional((T1+T2)/2, self.grid, D=self.system.guest.Rhs, eos=None)
+                wda._init_weight_function()
+                rho = wda._get_weighted_density(np.fft.fft(rho)).real
+
+            mask = ~np.isclose(rho,0)*rho>0 #remove densities which are close to zero or negative
+
             log.dump(f'Reduced sef-diffusivity constant {0.585*np.exp(alpha*s_ex)}')
-            Ds = 0.585*rho_av**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex)
-            #print('prefact', 0.585*rho_av**(-1/3)*np.sqrt(boltzmann*temperature/mass))
-            #Dr = 0.585**np.exp(alpha*s_ex)
+            Ds = np.zeros_like(rho)
+            Ds[mask] = 0.585*rho[mask]**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex)
+            # print('prefact', 0.585*rho_av**(-1/3)*np.sqrt(boltzmann*temperature/mass))
+            # Dr = 0.585**np.exp(alpha*s_ex)
             # print(Dr)
             return Ds

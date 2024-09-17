@@ -9,14 +9,14 @@ from __future__ import division
 import numpy as np, os, copy, re
 from multiprocessing import Process, Pool
 from functools import partial
-
+from pathlib import Path
 from molmod.units import kjmol, angstrom
 from molmod.constants import planck, boltzmann
 from yaff import ForceField
 
 from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_Leb, effective_potential_precalc, find_neighbours, find_local_maxima
 from .log import log
-from .system import NanoporousHost
+from .system import NanoporousHost, Grid
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS
 
 __all__ = [
@@ -26,13 +26,14 @@ __all__ = [
 
 
 class FreeEnergy(object):
-    def __init__(self, grid, system, temperature, workdir='.', overwrite=False, rewrite_RHS=False, RHS_style='sb'):
+    def __init__(self, grid, system, temperature, workdir='.', name_dict={}, overwrite=False, rewrite_RHS=False, RHS_style='sb'):
         self.grid = grid
         self.system = system
         self.temperature = temperature
         self.beta = 1.0/(boltzmann*temperature)
         self.wavelength = planck/np.sqrt(2*np.pi*system.guest.mass/self.beta)
-        self.workdir = workdir
+        self.workdir = Path(workdir)
+        self.name_dict = name_dict
         self.overwrite = overwrite
         self.parts = []
         self.fn_tracking = None
@@ -41,10 +42,14 @@ class FreeEnergy(object):
         self.excess_table = ['FMT', 'MFMT', 'WBII', 'MFA', 'LJMFA', 'COARSE', 'LDA', 'WDA-V', 'CORR'] #list of names of excess functionals
         self.part_names = []
     
-    def copy(self):
-        fenercopy = FreeEnergy(self.grid.copy(), self.system.copy(), self.temperature, workdir=self.workdir, overwrite=self.overwrite)
+    def copy(self, grid=None):
+        if grid is None:
+            grid = self.grid.copy()
+        elif not isinstance(grid, Grid):
+            raise ValueError('The provided grid must be a Grid instance')
+        fenercopy = FreeEnergy(grid, self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
         for part in self.parts:
-            fenercopy.parts.append(part.copy())
+            fenercopy.parts.append(part.copy(grid))
         if hasattr(self, 'epot_fn'): fenercopy.epot_fn = self.epot_fn
         return fenercopy
     
@@ -58,7 +63,7 @@ class FreeEnergy(object):
 
         """
         with log.section('FREEENER', 2, timer='Initializing'):
-            self.system.guest.compute_hardsphere_radius_bis(temperature, self.workdir, rewrite=self.rewrite_RHS, style=self.RHS_style)
+            self.system.guest.compute_hardsphere_radius_bis(temperature, self.workdir, self.name_dict, rewrite=self.rewrite_RHS, style=self.RHS_style)
             self.temperature = temperature
             self.beta = 1.0/(boltzmann*temperature)
             #compute barker and henderson hard sphere radius
@@ -86,7 +91,7 @@ class FreeEnergy(object):
                     part.Fmfa._init_weight_function()
 
                 elif part.name in['EffExtPot']:
-                    epot_fn = self.epot_fn + 'eff_epot_%3.2f.npy'%(temperature)
+                    epot_fn = self.epot_fn / f'eff_epot_{temperature:#3.2f}.npy'
 
                     if os.path.isfile(epot_fn):
                         part.load_potential(epot_fn)
@@ -103,18 +108,14 @@ class FreeEnergy(object):
                     part.extrapolate_potential(temperature)
 
                 elif part.name in ['Coarse']:
-                    lis = self.workdir.split('/')[:-2]
-                    lis.append(self.workdir.split('/')[-1])
-                    coarse_fn = ''
-                    for l in lis: coarse_fn += l +'/'
-                    coarse_fn += 'coarse_int_%3.2f_%s.npy'%(temperature, part.style)
-
+                    coarse_dr = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] 
+                    coarse_fn = coarse_dr / f'coarse_int_{temperature:#3.2f}_{part.style}.npy'
                     if os.path.isfile(coarse_fn):
                         log.dump('loading coarsened interaction potential from %s' %coarse_fn)
                         part.load_potential(coarse_fn)
 
                     if not os.path.isfile(coarse_fn) or self.overwrite:
-                        part.generate_potential(self.system.guest.   Rzero, temperature, natom=self.system.guest.mol.natom)
+                        part.generate_potential(self.system.guest.Rzero, temperature, natom=self.system.guest.mol.natom)
                         log.dump('writing coarsened interaction potential to %s' %coarse_fn)
                         part.dump_potential(coarse_fn)                    
                     
@@ -140,24 +141,34 @@ class FreeEnergy(object):
                     self.tracking_step = index+1
     
     def track(self, chempot, rho, iphase=0, write=True, print_out=False):
-        """
-        The function "track" calculates the grand potential and writes a line in a convergence file
+        '''The "track" function calculates the grand potential and writes a line in a convergence file
         containing the adsorption and energetic contributions towards the grand potential.
         
-        :param chempot: The chemical potential of the system
-        :param rho: Density distribution of the system
-        :param iphase: The phase index, which is an integer value used to identify the solving phase of the system
-        being tracked. It is set to 0 by default (optional)
-        :param write: A boolean parameter that determines whether or not a line will be written in the
-        convergence file. If set to False, no line will be written and the tracking step will not increase,
-        defaults to True (optional)
-        :param print_out: A boolean parameter that determines whether or not to print out the energetic
-        contributions of each component during the tracking step. If set to True, the contributions will be
-        printed out, defaults to False (optional)
-        :return: the grand canonical potential (G) which is calculated based on the input parameters chempot
-        and rho. If the write parameter is set to False, the function only returns G without writing a line
-        in the convergence file and without increasing the tracking step.
-        """
+        Parameters
+        ----------
+        chempot
+            The chemical potential of the system.
+        rho
+            Density distribution of the system.
+        iphase, optional
+            The phase index, which is an integer value used to identify the solving phase of the system being
+        tracked. It is set to 0 by default (optional).
+        write, optional
+            A boolean parameter that determines whether or not a line will be written in the convergence file.
+        If set to False, no line will be written and the tracking step will not increase, defaults to True
+        (optional)
+        print_out, optional
+            A boolean parameter that determines whether or not to print out the energetic contributions of each
+        component during the tracking step. If set to True, the contributions will be printed out, defaults
+        to False (optional).
+        
+        Returns
+        -------
+            the grand canonical potential (G) which is calculated based on the input parameters chempot and
+        rho. If the write parameter is set to False, the function only returns G without writing a line in
+        the convergence file and without increasing the tracking step.
+        
+        '''
         #ideal gas contribution
         N = self.grid.integrate(rho).real
         rho_reg = rho.copy()
@@ -180,32 +191,36 @@ class FreeEnergy(object):
         return G
     
     def add_external_potential(self, rcut=12*angstrom, upper_limit=1e6*kjmol, positive=False, rewrite=False):
-        """
-        This function adds an external potential contribution for spherical particles in a system.
+        '''The `add_external_potential` function adds an external potential contribution for spherical
+        particles in a system.
         
-        :param rcut: The cutoff distance for computing non-bonding interactions in the external potential
-        contribution. The default value is 12 angstrom
-
-        :param upper_limit: The highest possible potential value that will be used to replace all values
-        higher than this one. The default value is 1e6*kjmol
-
-        :param positive: A boolean parameter that determines whether the external potential should be
-        positive or not. If set to True, points where the external potential is negative willl be set to zero, defaults to
-        False (optional)
-
-        :param rewrite: `rewrite` is a boolean parameter that determines whether to overwrite an existing
-        external potential file or not. If `rewrite` is `True`, the existing file will be overwritten,
-        otherwise it will be loaded from the file, defaults to False (optional)
-        """
+        Parameters
+        ----------
+        rcut
+            The cutoff distance for computing non-bonding interactions in the external potential contribution.
+        The default value is 12 angstrom.
+        upper_limit
+            The highest possible potential value that will be used to replace all values higher than this one.
+        The default value is 1e6*kjmol.
+        positive, optional
+            A boolean parameter that determines whether the external potential should be positive or not. If
+        set to True, points where the external potential is negative will be set to zero. It is an optional
+        parameter and defaults to False.
+        rewrite, optional
+            `rewrite` is a boolean parameter that determines whether to overwrite an existing external
+        potential file or not. If `rewrite` is `True`, the existing file will be overwritten, otherwise it
+        will be loaded from the file.
+        
+        '''
         with log.section('FREEENER', 2, timer='ExtPot init'):
             assert isinstance(self.system.host, NanoporousHost), 'No external potential can be added for a %s system' %(self.system.host.__class__.__name__)
             assert self.system.guest.mol.natom == 1, 'The guest atom must be a spherical molecule, otherwise use add_effective_external_potential'
             log.dump('Initializing external potential')
             epot = ExternalPotential(self.grid)
-            if positive: epot_fn = os.path.join(self.workdir,'pos_epot.npy')
-            else: epot_fn = os.path.join(self.workdir,'epot.npy')
+            if positive: epot_fn = self.workdir / 'pos_epot.npy'
+            else: epot_fn = self.workdir / 'epot.npy'
             if not os.path.isfile(epot_fn) or self.overwrite or rewrite:
-                pars_fn = '%s/pars.txt' %self.workdir
+                pars_fn = self.workdir / 'pars.txt'
                 merge_ffpar_files(pars_fn, self.system.host.par, self.system.guest.par)
                 log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.host.par, self.system.guest.par, pars_fn))
                 log.dump('computing external potential on grid')
@@ -227,58 +242,56 @@ class FreeEnergy(object):
         self.part_names.append(epot.name)
         
     def add_effective_external_potential(self, temperature, method='pre', rcut=12*angstrom, upper_limit=1e5*kjmol, rewrite=False, degree=10, fn=None, inter_save=False):
-        """
-        This function adds an effective external potential contribution for non-spherical particles,
-        orientationally averaged.
+        '''This function adds an effective external potential contribution for non-spherical particles,
+        orientationally averaged, with various optional parameters.
         
-        :param temperature: The temperature at which the effective external potential is being computed
-
-        :param method: The method used to compute the effective external potential. It can be either "pre"
-        or "leb", defaults to pre (optional)
-
-        :param rcut: The cut off distance for computing non-bonding interactions. It has a default value of
-        12 Angstrom
-
-        :param upper_limit: The highest possible potential value that will replace all values higher than
-        this one
-        :param rewrite: A boolean parameter that determines whether to rewrite the existing potential or
-        not. If set to True, the existing potential will be overwritten, defaults to False (optional)
-
-        :param degree: The degree parameter is an integer that determines the degree of the orientational
-        polynomial used to rotate the guest molecule. A higher degree allows for a more accurate results,
-        but at increased computational cost, defaults to 10 (optional)
-
-        :param fn: The file path where the effective external potential will be saved. If None, the
-        potential will be saved in the work directory
+        Parameters
+        ----------
+        temperature
+            The temperature at which the effective external potential is being computed.
+        method, optional
+            The method used to compute the effective external potential. It can be either "pre" or "leb",
+        defaults to pre
+        rcut
+            The cut off distance for computing non-bonding interactions. It has a default value of 12 Angstrom.
+        upper_limit
+            The highest possible potential value that will replace all values higher than this one.
+        rewrite, optional
+            A boolean parameter that determines whether to rewrite the existing potential or not. If set to
+        True, the existing potential will be overwritten, defaults to False.
+        degree, optional
+            The degree parameter is an integer that determines the degree of the orientational polynomial used
+        to rotate the guest molecule. A higher degree allows for a more accurate result, but at increased
+        computational cost.
+        fn
+            The file path where the effective external potential will be saved. If None, the potential will be
+        saved in the work directory.
+        inter_save, optional
+            inter_save is a boolean parameter that determines whether or not to save the intermediate potential
+        values during the computation of the effective external potential. If set to True, the intermediate
+        potential values will be saved, which can be useful for debugging or analyzing the potential
+        generation process. If set to False, the intermediate potential
         
-        :param inter_save: inter_save is a boolean parameter that determines whether or not to save the
-        intermediate potential values during the computation of the effective external potential. If set to
-        True, the intermediate potential values will be saved, which can be useful for debugging or
-        analyzing the potential generation process. If set to False, the intermediate potential, defaults to
-        False (optional)
-        """
+        '''
 
         with log.section('FREEENER', 2, timer='EffExtPot init'):
             assert isinstance(self.system.host, NanoporousHost), 'No effective external potential can be added for a %s system' %(self.system.host.__class__.__name__)
             assert method.lower() in ['pre', 'leb'], 'Method must be pre, leb'
             log.dump('Initializing effective external potential')
-            pars_fn = '%s/pars.txt' %self.workdir
+            pars_fn = self.workdir / 'pars.txt'
             merge_ffpar_files(pars_fn, self.system.host.par, self.system.guest.par)
             log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.host.par, self.system.guest.par, pars_fn))
             ff_ext = get_ff(self.system.host.mol, self.system.guest.mol, pars_fn, rcut)
             if fn is not None:
-                self.epot_fn = fn
-                epot_file = self.epot_fn + '/eff_epot_%3.2f.npy'%(temperature)
+                self.epot_fn = Path(fn)
+                epot_file = self.epot_fn / 'eff_epot_%3.2f.npy'%(temperature)
             else:
-                lis = self.workdir.split('/')[:-2]
-                lis.append(self.workdir.split('/')[-1])
-                self.epot_fn = ''
-                for l in lis: self.epot_fn += l +'/'
-                epot_file = self.epot_fn + 'eff_epot_%3.2f.npy'%(temperature)    
+                self.epot_fn = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] 
+                epot_file = self.epot_fn / f'eff_epot_{temperature:#3.2f}.npy'
 
             epot = EffectiveExternalPotential(self.grid, ff_ext, self.epot_fn, method=method, limit_potential=upper_limit, degree=degree)
-            if not os.path.isdir(self.epot_fn): os.makedirs(self.epot_fn)     
-            if not os.path.isfile(epot_file) or self.overwrite or rewrite:
+            if not self.epot_fn.is_dir(): self.epot_fn.mkdir(parents=True, exist_ok=True)
+            if not epot_file.is_file() or self.overwrite or rewrite:
                 log.dump('No file found at %s' %epot_file)
                 log.dump('computing effective external potential on grid')
                 epot.generate_potential(temperature, self.system.guest.mol.natom, inter_save=inter_save, rewrite=rewrite)
@@ -318,21 +331,21 @@ class FreeEnergy(object):
             assert self.system.guest.mol.natom == 1, 'The guest atom must be a spherical molecule, otherwise use add_effective_external_potential'
             assert hasattr(self.system, 'second_host'), 'A secondary host must first be added to the system'
 
-            pars_fn = '%s/pars.txt' %self.workdir
+            pars_fn = self.workdir / 'pars.txt'
             merge_ffpar_files(pars_fn, self.system.host.par, self.system.guest.par)
             log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.host.par, self.system.guest.par, pars_fn))
             ff_ext = get_ff(self.system.host.mol, self.system.guest.mol, pars_fn, rcut)
 
-            second_pars_fn = '%s/second_pars.txt' %self.workdir
+            second_pars_fn = self.workdir / 'second_pars.txt'
             merge_ffpar_files(second_pars_fn, self.system.second_host.par, self.system.guest.par)          
             log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.second_host.par, self.system.guest.par, second_pars_fn))
             ff_ext_second = get_ff(self.system.second_host.mol, self.system.guest.mol, second_pars_fn, rcut)
 
             log.dump('Initializing external potential')
             hyb_epot = HybridExternalPotential(self.grid, ff_ext, ff_ext_second)
-            hyb_epot_fn = os.path.join(self.workdir,'hybrid_epot.npy')
-            epot_fn = os.path.join(self.workdir,'epot.npy')
-            if not os.path.isfile(hyb_epot_fn) or self.overwrite or rewrite:
+            hyb_epot_fn = self.workdir / 'hybrid_epot.npy'
+            epot_fn = self.workdir / 'epot.npy'
+            if not hyb_epot_fn.is_file() or self.overwrite or rewrite:
                 log.dump('computing external potential on grid')
                 hyb_epot.generate_potential(self.system.guest.mol.natom)
                 log.dump('writing external potential to %s' %hyb_epot_fn)
@@ -381,7 +394,7 @@ class FreeEnergy(object):
         with log.section('FREEENER', 2, timer='WDA-v init'):
             log.dump('Initializing WDA-v functional for attractive interaction contribution')
             eos.set_temperature(self.temperature)
-            self.system.guest.compute_hardsphere_radius_bis(self.temperature, self.workdir, rewrite=self.rewrite_RHS, style=self.RHS_style)
+            self.system.guest.compute_hardsphere_radius_bis(self.temperature, self.workdir, self.name_dict, rewrite=self.rewrite_RHS, style=self.RHS_style)
             print('Rhs: ', self.system.guest.Rhs/angstrom)
             wda = WDAVFunctional(self.temperature, self.grid, self.system.guest.Rhs, eos)
         self.parts.append(wda)
@@ -398,7 +411,7 @@ class FreeEnergy(object):
 
         """
         with log.section("FREEENER", 2, timer='(M)FMT init'):
-            self.system.guest.compute_hardsphere_radius_bis(self.temperature, self.workdir, rewrite=self.rewrite_RHS, style=self.RHS_style)
+            self.system.guest.compute_hardsphere_radius_bis(self.temperature, self.workdir, self.name_dict, rewrite=self.rewrite_RHS, style=self.RHS_style)
             if version=='MFMT':
                 log.dump('Initializing MFMT functional for hard-sphere contribution')
                 part = MFMTFunctional(self.system.guest.Rhs, self.temperature, self.grid)
@@ -425,7 +438,7 @@ class FreeEnergy(object):
         """
         with log.section('FREEENER', 2, timer='MFA init'):
             log.dump('Initializing MFA functional for attractive interaction contribution')
-            mfa_fn = os.path.join(self.workdir,'mfa.npy')
+            mfa_fn = self.workdir / 'mfa.npy'
             mfa = MFAFunctional(self.grid)
             if not os.path.isfile(mfa_fn) or self.overwrite:
                 log.dump('computing interaction potential')
@@ -440,25 +453,27 @@ class FreeEnergy(object):
         self.part_names.append(mfa.name)
     
     def add_correlation_wda(self, sigma=None, epsilon=None, logging_MBWR=False, from_MFA=False):
-        """
-        This function adds a WDA-c contribution to correct for correlation effect 
+        '''The function adds a WDA-c contribution to correct for correlation effect in a molecular simulation
+        system.
         
-        :param sigma: sigma is the length scale parameter in the Lennard-Jones potential. It represents the
-        distance at which the potential energy between two particles is zero
-
-        :param epsilon: epsilon is the energy scale parameter in the Lennard-Jones potential. It determines
-        the strength of the attractive and repulsive interactions between particles
-
-        :param logging_MBWR: `logging_MBWR` is a boolean parameter that determines whether or not to log 
-        the failure of the MBWR (Modified Benedict-Webb-Rubin) eos in the output, as this eos will not be accurate for higher densities.
-        If set to `True`, the MBWR correction will be logged, defaults to False (optional)
-
-        :param from_MFA: `from_MFA` is a boolean parameter that specifies whether to extract the
-        Lennard-Jones parameters (sigma and epsilon) from an MFA potential that has been added to the
-        system. If set to True, the sigma and epsilon parameters are not required as input, defaults to
-        False (optional)
-        """
-
+        Parameters
+        ----------
+        sigma
+            sigma is the length scale parameter in the Lennard-Jones potential. It represents the distance at
+        which the potential energy between two particles is zero.
+        epsilon
+            epsilon is the energy scale parameter in the Lennard-Jones potential. It determines the strength of
+        the attractive and repulsive interactions between particles.
+        logging_MBWR, optional
+            `logging_MBWR` is a boolean parameter that determines whether or not to log the failure of the MBWR
+        (Modified Benedict-Webb-Rubin) eos in the output, as this eos will not be accurate for higher
+        densities. If set to `True`, the MBWR correction will be
+        from_MFA, optional
+            `from_MFA` is a boolean parameter that specifies whether to extract the Lennard-Jones parameters
+        (sigma and epsilon) from an MFA potential that has been added to the system. If set to True, the
+        sigma and epsilon parameters are not required as input.
+        
+        '''
         with log.section('FREEENER', 2, timer='Correlation WDA init'):
             log.dump('Initializing correlation WDA functional for attractive interaction contribution')
             R = self.system.guest.Rhs
@@ -480,43 +495,43 @@ class FreeEnergy(object):
         self.part_names.append(corr.name)
         
     def add_coarse_MFA(self, temperature, rcut=12*angstrom, limit_potential=0, style='su', rewrite=False, degree=7):
-        """
-        This function adds a coarse-grained MFA contribution to the interaction potential of non-spherical
+        '''This function adds a coarse-grained MFA contribution to the interaction potential of non-spherical
         molecules by orientational averaging.
         
-        :param temperature: The temperature at which the coarsened MFA contribution is being added
-
-        :param rcut: rcut is the cutoff distance for computing non-bonding interactions. It is an optional
-        parameter with a default value of 12 angstroms
-
-        :param limit_potential: `limit_potential` is an optional parameter that sets the potential for points
-        closer than the limit to this value  (optional)
+        Parameters
+        ----------
+        temperature
+            The temperature at which the coarsened MFA contribution is being added.
+        rcut
+            rcut is the cutoff distance for computing non-bonding interactions. It is an optional parameter
+        with a default value of 12 angstroms.
+        limit_potential, optional
+            `limit_potential` is an optional parameter that sets the potential for points closer than the limit
+        to a specified value. This is useful for preventing the potential from becoming too large or too
+        small at short distances.
+        style, optional
+            The style parameter determines the type of averaging used to coarsen the non-spherical interaction
+        potential. It can be set to 'su' for semi-uniform averaging, 'bo' for boltzmann averaging, or 'ave'
+        for simple averaging, defaults to su (optional)
+        rewrite, optional
+            The "rewrite" parameter is a boolean flag that determines whether to overwrite an existing
+        potential file or not. If set to True, it will rewrite the existing potential file. If set to False,
+        it will not overwrite the existing potential file, defaults to False (optional).
+        degree, optional
+            The degree parameter is an integer that determines the degree of the orientational polynomial used
+        to rotate the guest molecule. A higher degree allows for a more accurate results, but at increased
+        computational cost, defaults to 7.
         
-        :param style: The style parameter determines the type of averaging used to coarsen the
-        non-spherical interaction potential. It can be set to 'su' for semi-uniform averaging,
-        'bo' for boltzmann averaging, or 'ave' for simple averaging, defaults to su (optional)
-
-        :param rewrite: The "rewrite" parameter is a boolean flag that determines whether to overwrite an
-        existing potential file or not. If set to True, it will rewrite the existing potential file. If set
-        to False, it will not overwrite the existing potential file, defaults to False (optional)
-
-        :param degree: The degree parameter is an integer that determines the degree of the orientational
-        polynomial used to rotate the guest molecule. A higher degree allows for a more accurate results,
-        but at increased computational cost, defaults to 7 (optional)
-        """
-
+        '''
         with log.section('DUAL', 2, timer='Coarsened interaction init'):
             log.dump('Initializing coarsened model for interaction contribution')
 
             assert style.lower() in ['su', 'ave', 'bo'], 'Style of averaging must be "su", "bo" or "ave"'
 
-            lis = self.workdir.split('/')[:-2]
-            lis.append(self.workdir.split('/')[-1])
-            coarse_fn = ''
-            for l in lis: coarse_fn += l +'/'
-            # coarse_fn = self.workdir
-            coarse_file = coarse_fn + 'coarse_int_%3.2f_%s.npy'%(temperature, style.lower())
-            if not os.path.isdir(coarse_fn): os.makedirs(coarse_fn)
+
+            coarse_fn = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix']
+            coarse_file = coarse_fn + f'coarse_int_{temperature:#3.2f}_{style.lower()}.npy'
+            if not coarse_fn.is_dir(): coarse_fn.mkdir(parents=True)
 
             ff_int = get_ff(self.system.guest.mol, self.system.guest.mol, self.system.guest.par, rcut)
             coarse = CoarsenedFunctional(self.grid, ff_int, degree=degree, limit_potential=limit_potential, style=style)
@@ -540,7 +555,7 @@ class FreeEnergy(object):
         Parameters
         ----------
         sigma : scalar, length scale Lenard-Jones parameter
-        epsilon : TYPE, energy scale LJ parameter
+        epsilon : scalar, energy scale LJ parameter
         rcut : Scalar, optional
             Cut off for computing the non-bonding interactions.. The default is 12*angstrom.
         limit_potential : Scalar, optional
@@ -551,7 +566,7 @@ class FreeEnergy(object):
         """
         with log.section('DUAL', 2, timer='Dual model init'):
             log.dump('Initializing LJ model for interaction contribution')
-            coarse_fn = os.path.join(self.workdir, 'coarse_int_LJ.npy')
+            coarse_fn = self.workdir / 'coarse_int_LJ.npy'
             coarse = LJMFAFunctional(self.grid)
             if not os.path.isfile(coarse_fn) or self.overwrite or rewrite:
                 log.dump('computing coarsened interaction potential from Lenard-Jones parameters')
@@ -590,8 +605,8 @@ class FMTFunctional(Functional):
         self.grid = grid
         self._init_weight_functions()
 
-    def copy(self):
-        return FMTFunctional(self.R, 1/(boltzmann*self.beta), self.grid.copy())
+    def copy(self, grid):
+        return FMTFunctional(self.R, 1/(boltzmann*self.beta), grid)
     
     def _init_weight_functions(self):
         """
@@ -778,8 +793,8 @@ class MFMTFunctional(FMTFunctional):
 
     name = 'MFMT'
     
-    def copy(self):
-        return MFMTFunctional(self.R, 1/(boltzmann*self.beta), self.grid.copy())
+    def copy(self, grid):
+        return MFMTFunctional(self.R, 1/(boltzmann*self.beta), grid)
     
     def get_phi(self, n0, n1, n2, n3, nv1, nv2):
         phi = -n0*np.log(1.0-n3)
@@ -811,8 +826,8 @@ class WhiteBearIIFunctional(FMTFunctional):
     
     name = 'WBII'
     
-    def copy(self):
-        return WhiteBearIIFunctional(self.R, 1/(boltzmann*self.beta), self.grid.copy())
+    def copy(self, grid):
+        return WhiteBearIIFunctional(self.R, 1/(boltzmann*self.beta), grid)
     
     def get_phi(self, n0, n1, n2, n3, nv1, nv2):
         phi2 = (2*n3 - n3**2 + 2*(1-n3)*np.log(1-n3))/n3
@@ -878,8 +893,8 @@ class MFAFunctional(Functional):
         self.potential = None
         self.kpotantial = None
 
-    def copy(self):
-        mfa = MFAFunctional(self.grid.copy())
+    def copy(self, grid):
+        mfa = MFAFunctional(grid)
         mfa.potential = self.potential.copy()
         mfa.kpotential = self.kpotential.copy()
         return mfa
@@ -930,9 +945,9 @@ class MFAFunctional(Functional):
         ff.system.pos[:] = limit_potential
         self.potential = np.zeros(self.grid.points.shape[:3])
         r_prev = None
-        for r in np.unique(self.grid.points[:,:,:,3].round(decimals=7)):
-            mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-7)
+        for r in np.unique(self.grid.points[:,:,:,3].round(decimals=4)):
             if r<rmin: continue
+            mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
             ff.system.pos[natom:,2] = r
             ff.update_pos(ff.system.pos)
             e = ff.compute()
@@ -977,8 +992,8 @@ class CoarsenedFunctional(MFAFunctional):
         self.limit_potential = limit_potential
         self.style = style
 
-    def copy(self):
-        coarse = CoarsenedFunctional(self.grid.copy(), self.ff, self.degree, self.limit_potential)
+    def copy(self, grid):
+        coarse = CoarsenedFunctional(grid, self.ff, self.degree, self.limit_potential)
         return coarse        
 
     def generate_potential(self, rmin, temperature, natom=1):
@@ -999,9 +1014,9 @@ class CoarsenedFunctional(MFAFunctional):
         with log.section('FREEENER', 2, timer='CoarsePot init'):        
             assert natom>1
             self.potential = np.zeros(self.grid.points.shape[:3]) + self.limit_potential
-            for r in np.unique(self.grid.points[:,:,:,3].round(decimals=5)):
-                mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-5)
+            for r in np.unique(self.grid.points[:,:,:,3].round(decimals=4)):
                 if r<rmin: continue
+                mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
                 if self.style == 'su':
                     pre_potential = spherical_potential_semi_boltz(self.ff, r, natom, 1/boltzmann/temperature, degree = self.degree)
                 elif self.style == 'bo':
@@ -1032,8 +1047,8 @@ class LJMFAFunctional(CoarsenedFunctional):
         self.potential = None
         self.kpotential = None
 
-    def copy(self):
-        LJMFA = LJMFAFunctional(self.grid.copy())
+    def copy(self, grid):
+        LJMFA = LJMFAFunctional(grid)
         LJMFA.potential = self.potential.copy()
         LJMFA.kpotential = self.kpotential.copy()
         return LJMFA
@@ -1053,14 +1068,15 @@ class LJMFAFunctional(CoarsenedFunctional):
         rmin
             U(r) is assumed to be the limit_potential for distances smaller than rmin
         """
-        def len_jon_pot(r):
-            return 4*epsilon*((sigma/r)**12-(sigma/r)**6)
-        self.potential = np.zeros(self.grid.points.shape[:3]) + limit_potential
-        for r in np.unique(self.grid.points[:,:,:,3]):
-            mask = self.grid.points[:,:,:,3]==r
-            if r<rmin: continue
-            self.potential[mask] = len_jon_pot(r)
-        self.kpotential = np.fft.fftn(self.potential)        
+        with log.section('FREEENER', 2, timer='LJPot init'):        
+            def len_jon_pot(r):
+                return 4*epsilon*((sigma/r)**12-(sigma/r)**6)
+            self.potential = np.zeros(self.grid.points.shape[:3]) + limit_potential
+            for r in np.unique(self.grid.points[:,:,:,3].round(decimals=4)):
+                if r<rmin: continue
+                mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
+                self.potential[mask] = len_jon_pot(r)
+            self.kpotential = np.fft.fftn(self.potential)       
 
 
 class ExternalPotential(Functional):
@@ -1072,8 +1088,8 @@ class ExternalPotential(Functional):
         self.potential = None
         self.kpotential = None
 
-    def copy(self):
-        extpot = ExternalPotential(self.grid.copy())
+    def copy(self, grid):
+        extpot = ExternalPotential(grid)
         extpot.potential = self.potential.copy()
         extpot.kpotential = self.kpotential.copy()
         return extpot
@@ -1084,6 +1100,20 @@ class ExternalPotential(Functional):
         self.kpotential = np.fft.fftn(self.potential)
 
     def generate_potential(self, ff, natom, positive=False):
+        '''This function generates a potential energy grid for a given force field and set of points, and
+        optionally sets negative values to zero.
+        
+        Parameters
+        ----------
+        ff
+            `ff` is an instance of a yaff ff.
+        natom
+            The number of atoms in the system.
+        positive, optional
+            A boolean parameter that determines whether only positive potential values should be stored in the
+        potential array. If set to True, any potential value less than or equal to zero will be set to zero.
+        
+        '''
         assert natom>0
         points = self.grid.points
         self.potential = np.zeros(points.shape[:3], dtype='complex128')
@@ -1132,31 +1162,35 @@ class EffectiveExternalPotential(ExternalPotential):
         self.method = method
         self.limit_potential = limit_potential
 
-    def copy(self):
-        extpot = EffectiveExternalPotential(self.grid.copy(), self.ff, self.epot_fn, method=self.method, limit_potential=self.limit_potential, degree=self.degree)
+    def copy(self, grid):
+        extpot = EffectiveExternalPotential(grid, self.ff, self.epot_fn, method=self.method, limit_potential=self.limit_potential, degree=self.degree)
         extpot.potential = self.potential.copy()
         extpot.kpotential = self.kpotential.copy()
         return extpot 
 
     def generate_potential(self, temperature, natom, inter_save=False, rewrite=False):
-        """
-        This function generates a potential energy surface for a given temperature and number of atoms using
-        a molecular mechanics force field and saves intermediate results if specified.
+        '''This function generates a potential energy surface for a given temperature and number of atoms
+        using a molecular mechanics force field and saves intermediate results if specified.
         
-        :param temperature: The temperature at which to generate the potential
-
-        :param natom: natom is the number of atoms of the guest molecule
-
-        :param inter_save: The `inter_save` parameter is a boolean flag that determines whether or not to
-        save intermediary effective potentials during the calculation. If `True`, the effective potential
-        will be saved at each grid point as the calculation progresses. If `False`, only the final effective
-        potential will be saved, defaults to False (optional)
-
-        :param rewrite: `rewrite` is a boolean parameter that determines whether to overwrite existing saved
-        effective potentials or not. If `rewrite` is set to `True`, then existing saved potentials will be
-        overwritten. If it is set to `False`, then existing saved potentials will not be overwritten and new
-        potentials will be saved with, defaults to False (optional)
-        """
+        Parameters
+        ----------
+        temperature
+            The temperature at which to generate the potential energy surface.
+        natom
+            `natom` is the number of atoms in the guest molecule for which the potential energy surface is
+        being generated.
+        inter_save, optional
+            The `inter_save` parameter is a boolean flag that determines whether or not to save
+        intermediary effective potentials during the calculation. If `True`, the effective potential
+        will be saved at each grid point as the calculation progresses. If `False`, only the final
+        effective potential will be saved.
+        rewrite, optional
+            `rewrite` is a boolean parameter that determines whether to overwrite existing saved effective
+        potentials or not. If `rewrite` is set to `True`, then existing saved potentials will be
+        overwritten. If it is set to `False`, then existing saved potentials will not be overwritten and
+        new potentials will be saved with
+        
+        '''
         with log.section('FREEENER', 2, timer='EffExtPot init'):
             assert natom>1
             points = self.grid.points
@@ -1164,22 +1198,19 @@ class EffectiveExternalPotential(ExternalPotential):
             COM = np.sum(self.ff.system.pos[-natom:]*self.ff.system.masses[-natom:].reshape((natom,1)), axis=0)/np.sum(self.ff.system.masses[-natom:])
             neutr_pos = np.copy(self.ff.system.pos[-natom:] - COM)
 
-            # break_index = np.random.randint(0,points.shape[0])
-            # print('break_index: ', break_index)
-
             if inter_save and not rewrite:
                 dirs = [dr for dr in os.listdir(self.epot_fn) if dr.startswith('inter_effpot')]
                 if len(dirs):
                     numeric_const_pattern = '[-+]? (?: (?: \d* \. \d+ ) | (?: \d+ \.? ) )(?: [Ee] [+-]? \d+ ) ?'
                     rx = re.compile(numeric_const_pattern, re.VERBOSE)
-                    new_i = int(rx.findall(dirs[0])[0][:-1])
-                    self.potential = np.load(self.epot_fn + dirs[0])
+                    indices = np.array([int(rx.findall(dir)[0]) for dir in dirs])
+                    new_i = int(np.max(indices))
+                    index = np.where(np.isclose(indices,new_i))[0][0]
+                    self.potential = np.load(self.epot_fn / dirs[index])
                 else: new_i = 0
             else:
                 new_i = 0
-            # print('new_i: ', new_i)
             for i in range(points.shape[0])[new_i:]:
-                # print('index: ', i)
                 for j in range(points.shape[1]):
                     for k in range(points.shape[2]):
                         self.ff.system.pos[-natom:] = neutr_pos + points[i,j,k,:3]
@@ -1194,16 +1225,18 @@ class EffectiveExternalPotential(ExternalPotential):
                             self.potential[i,j,k] = -boltzmann*temperature*np.log(integrand) 
 
                 if inter_save:
-                    inter_fn = self.epot_fn + f"inter_effpot_{i}_{temperature}K.npy"
+                    inter_fn = self.epot_fn / f"inter_effpot_{i}_{temperature}K.npy"
                     self.dump_potential(inter_fn)
                     log.dump(f'Saving an intermediary effective potential at {inter_fn}')
                     try:
-                        os.remove(self.epot_fn + f"inter_effpot_{i-1}.npy")
+                        previous_fn = self.epot_fn / f"inter_effpot_{i-1}_{temperature}K.npy"
+                        previous_fn.unlink()
                     except FileNotFoundError:
+                        print(f'unable to remove {previous_fn}')
                         pass
             self.kpotential = np.fft.fftn(self.potential)
             try:
-                os.remove(self.epot_fn + f"inter_effpot_{i}.npy")
+                (self.epot_fn / f"inter_effpot_{i}_{temperature}K.npy").unlink()
             except FileNotFoundError:
                 pass
 
@@ -1224,8 +1257,8 @@ class EffectiveExternalPotentialTaylor(ExternalPotential):
         self.method = method
         self.limit_potential = limit_potential
 
-    def copy(self):
-        extpot = EffectiveExternalPotentialTaylor(self.grid.copy(), self.ff,self.order, method=self.method, limit_potential=self.limit_potential, degree=self.degree)
+    def copy(self, grid):
+        extpot = EffectiveExternalPotentialTaylor(grid, self.ff,self.order, method=self.method, limit_potential=self.limit_potential, degree=self.degree)
         extpot.potential_three = self.potential_three.copy()
         extpot.kpotential_three = self.kpotential_three.copy()
         extpot.derivative = self.derivative
@@ -1308,8 +1341,8 @@ class HybridExternalPotential(ExternalPotential):
         self.ff_second = ff_second
         self.sub_grid = np.zeros(self.grid.points.shape[:-1], dtype=bool)
 
-    def copy(self):
-        extpot = HybridExternalPotential(self.grid.copy(), self.ff, self.ff_second)
+    def copy(self, grid):
+        extpot = HybridExternalPotential(grid, self.ff, self.ff_second)
         extpot.potential = self.potential.copy()
         extpot.kpotential = self.kpotential.copy()
         if hasattr(self,'sub_grid'): extpot.sub_grid = self.sub_grid
@@ -1320,7 +1353,7 @@ class HybridExternalPotential(ExternalPotential):
         Reset the potential and the subgrid to the first forcefield, can be used to restart the calculation of the hybrid potential.
         """
         self.sub_grid = np.zeros(self.grid.points.shape[:-1], dtype=bool)
-        self.load_potential(workdir + '/epot.npy')
+        self.load_potential(workdir / 'epot.npy')
 
     def update_subgrid(self, new_grid):
         """
@@ -1331,7 +1364,7 @@ class HybridExternalPotential(ExternalPotential):
 
     def add_neighbours(self, mask_mof = None):
         """
-        Adds the neighbours of the current subgrid to the new subgrid, but leaves out duplicates (I hope)
+        Adds the neighbours of the current subgrid to the new subgrid, but leaves out duplicates
         """
         new_grid = np.zeros(self.grid.points.shape[:-1], dtype=bool)
         for i in range(self.sub_grid.shape[0]):
@@ -1373,6 +1406,16 @@ class HybridExternalPotential(ExternalPotential):
             self.kpotential = np.fft.fftn(self.potential)
 
     def update_potential(self, natom, new_grid):
+        '''This function updates the potential energy of a system based on a new grid.
+        
+        Parameters
+        ----------
+        natom
+            The number of atoms in the guest molecule
+            A 3D numpy array representing a grid of boolean values indicating which points in the potential
+        grid should be updated.
+        
+        '''
         with log.section('FREEENER', 2, timer='HybridExtPot init'):
             # print(new_grid.shape, self.grid.points.shape[:-1])
             assert new_grid.shape == self.grid.points.shape[:-1]
@@ -1402,8 +1445,8 @@ class LDAFunctional(Functional):
         if eos is not None:
             self.eos.set_temperature(temperature)
     
-    def copy(self):
-        return LDAFunctional(self.eos.temperature, self.grid.copy(), self.eos)
+    def copy(self, grid):
+        return LDAFunctional(self.eos.temperature, grid, self.eos)
 
     def derive(self, krho):
         with log.section('LDA', 3, timer='LDA derive'):
@@ -1433,8 +1476,8 @@ class WDAVFunctional(LDAFunctional):
         self.D = D
         self._init_weight_function()
     
-    def copy(self):
-        return WDAVFunctional(self.eos.temperature, self.grid.copy(), self.D, self.eos)
+    def copy(self, grid):
+        return WDAVFunctional(self.eos.temperature, grid, self.D, self.eos)
     
     def _init_weight_function(self):
         """
@@ -1509,8 +1552,8 @@ class WDACorrFunctional(WDAVFunctional):
         self.Fmfa = WDAVFunctional(temperature, grid, 2*R, MFAEOS(sigma, epsilon))
         self._init_weight_function()
         
-    def copy(self):
-        return WDACorrFunctional(self.grid.copy(), self.temperature, self.R, self.epsilon, self.sigma)
+    def copy(self, grid):
+        return WDACorrFunctional(grid, self.temperature, self.R, self.epsilon, self.sigma)
     
     def derive(self, krho):
         deriv = self.Flj.derive(krho)

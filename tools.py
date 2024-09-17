@@ -27,56 +27,64 @@ __all__ = [
 
 
 def selection_sort(x):
+    '''The function implements selection sort algorithm to sort a given array of numbers in ascending order.
+    
+    Parameters
+    ----------
+    x
+        x is a list of numbers that needs to be sorted using the selection sort algorithm.
+    
+    Returns
+    -------
+        returns the sorted list `x` in ascending order.
+    
+    '''
     for i in range(len(x)):
         swap = i + np.argmin(x[i:])
         (x[i], x[swap]) = (x[swap], x[i])
     return x
 
-def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmin=1e-5, rmax=None, npoints=50, degree=7, style='sb'):
-    """
-    Calculate the hard-sphere radius according to Barker-Henderson:
-
-    Rhs = \frac{1}{2} \int_{0}^{\sigma} \left{ 1-\exp\(-\beta V(r)) \right} dr
-
-    where \sigma is the first and only zero of V(r).
-
-    **Arguments:**
-
-    ff
-        A ForceField instance which gives the interaction energy between two
-        spherically symmetric molecules (ie single atoms or multiple atoms at
-        the same position)
-
-    beta
-        The thermodynamic temperature
-
-    **Optional arguments:**
+def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmin=1e-5, rmax=None, npoints=50, degree=7, style='su'):
+    '''This function calculates the hard-sphere radius according to the Barker-Henderson method, given a
+    force field or Lennard-Jones parameters.
     
+    Parameters
+    ----------
+    beta
+        The thermodynamic temperature, expressed as 1/kT where k is the Boltzmann constant and T is the
+    temperature in Kelvin.
+    ff
+        `ff` is an instance of the yaff system class which gives the interaction energy between two
+    spherically symmetric molecules (i.e. single atoms or multiple atoms at the same position). If no
+    forcefield is provided, the Lennard-Jones parameters have to be given
     len_jon
-        Tuple containing the Lennard-Jones parameters, default is None. If these are given the hard-sphere radius 
-        is approximated by the formula below
-
-    natom
-        The number of atoms in each molecules
-
-    rmin
-        The potential is assumed to be infinite below this value
-
+        Tuple containing the Lennard-Jones parameters, default is None. If these are given the hard-sphere
+    radius is approximated by the formula below.
+    natom, optional
+        The number of atoms in each molecule.
+    rmin, optional
+        The potential is assumed to be infinite below this value. It is a minimum value for the radius at
+    which the potential is considered.
     rmax
-        A value for which the potential is attractive. If not provided, the
-        neighborlist cut-off is used
+        A value for which the potential is attractive. If not provided, the neighborlist cut-off is used.
+    npoints, optional
+        The number of grid points used in the numerical integration to calculate the hard-sphere radius.
+    degree, optional
+        The degree of the polynomial used to integrate over the orientational degrees of freedom of  
+    interaction potential. It is an optional argument used in the calculation of the potential energy 
+    between two non-spherically symmetric molecules. The default value is 7.
+    style, optional
+        The style parameter determines the type of potential used to calculate the interaction energy
+    between two spherically symmetric molecules. It can take one of three values: 'su' for
+    semi-uniform potential, 'bo' for Boltzmann potential, or 'ave' for the average potential.
+    
+    Returns
+    -------
+        two values: Rhs, which is the hard-sphere radius, and sigma, which is the first zero of the
+    potential.
+    
+    '''
 
-    npoints
-        The number of grid points used in the numerical integration
-
-    **Returns:**
-
-    Rhs
-        The hard-sphere radius
-
-    \sigma
-        The first zero of the potential
-    """
     if len_jon is not None: 
         sigma = len_jon[0]
         epsilon = len_jon[1]
@@ -84,14 +92,13 @@ def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmi
         Rhs = sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
         
     elif ff is not None:
-        # if natom>1:
-        #     return hard_spheres_barker_henderson_spherical_ave(beta, ff, natom, rmin=rmin, rmax=rmax, degree=degree, npoints=npoints)
+        #if the molecule is not spherically symmetric an orientational integration has te be done in order to obtain an interaction potential
         if natom>1:
             def potential(r):
                 if r<rmin:
                     return 1e+5*kjmol
                 else:
-                    if style == 'sb':
+                    if style == 'su':
                         return spherical_potential_semi_boltz(ff, r, natom, beta=beta, degree=degree)
                     elif style == 'bo':
                         return spherical_potential_boltz(ff, r, natom, beta=beta, degree=degree)
@@ -340,13 +347,40 @@ def spherical_potential_ave(ff, distance, natom, degree=5, limit_potential=1e+4*
 
 
 def spherical_rotations(ff, distance, natom, degree, limit_potential):
+    '''This function performs spherical rotations on two guest molecules in a force field and computes the
+    potential energy for each rotation. It returns a list of the potentials and the appropriate integration weights.
+    
+    Parameters
+    ----------
+    ff
+        The force field object used to compute the potential energy.
+    distance
+        The distance between the two guest molecules in the system.
+    natom
+        The number of atoms in each guest molecule.
+    degree
+        The degree parameter is the degree of the rotational quadrature which generates the discrete 
+    angles at which the molecules will be rotated during the simulation. 
+    limit_potential
+        `limit_potential` is a value that is used to replace infinite potential energy values that may
+    arise during the computation of the potential energy. If the potential energy of a configuration is
+    infinite, it means that the configuration is not physically possible and cannot be used in the
+    simulation.
+    
+    Returns
+    -------
+        three arrays: `pot` which contains the potential energy values for each rotation combination,
+    `weights_rot1` which contains the integration weights for the first set of rotations, and 
+    `weights_rot2` which contains the weights for the second set of rotations.
+    
+    '''
     ff.system.pos = ff.system.pos*(~np.isclose(np.zeros(ff.system.pos.shape),ff.system.pos))
     neutral_pos = np.copy(ff.system.pos)
     COM1 = np.sum(ff.system.pos[:natom]*ff.system.masses[:natom].reshape((natom,1)), axis=0)/np.sum(ff.system.masses[:natom]) #center of mass of the first guest molecule
     COM2 = np.sum(ff.system.pos[-natom:]*ff.system.masses[-natom:].reshape((natom,1)), axis=0)/np.sum(ff.system.masses[-natom:]) #center of mass of the second guest molecule
 
-    rotations1, weights = generate_rotation_matrix(degree, '3d') #swap axes to iterate over rotation matrices
-    rotations2 = generate_rotation_matrix(degree, '2d')
+    rotations1, weights = generate_rotation_matrix(degree, 3) #swap axes to iterate over rotation matrices
+    rotations2 = generate_rotation_matrix(degree, 2)
 
     pot = np.zeros((len(rotations1)*degree)**2)
     weights_rot1 = np.zeros((len(rotations1)*degree)**2)
@@ -392,7 +426,7 @@ def effective_potential_QU(ff, natom, beta):
     neutral_pos = np.copy(ff.system.pos)
     COM = np.sum(ff.system.pos[-natom:]*ff.system.masses[-natom:].reshape((natom,1)), axis=0)/np.sum(ff.system.masses[-natom:])
     
-    rotations, weights = generate_rotation_matrix(None, '4d')
+    rotations, weights = generate_rotation_matrix(None, 4)
 
     pot = np.zeros(len(rotations))
     for ii, rot in enumerate(rotations):
@@ -424,8 +458,8 @@ def effective_potential_Leb(ff, natom, beta, degree = 10, Taylor=None):
     neutral_pos = np.copy(ff.system.pos)
     COM = np.sum(neutral_pos[-natom:]*ff.system.masses[-natom:].reshape((natom,1)), axis=0)/np.sum(ff.system.masses[-natom:])
 
-    rotations1, weights = generate_rotation_matrix(degree, '3d')
-    rotations2 = generate_rotation_matrix(degree, '2d')
+    rotations1, weights = generate_rotation_matrix(degree, 3)
+    rotations2 = generate_rotation_matrix(degree, 2)
 
     pot = np.zeros((len(rotations1),len(rotations2)))
 
@@ -543,42 +577,29 @@ def effective_potential_precalc(ff, natom, beta, cutoff_pot=20, degree=7, Taylor
             new_pot, new_std = effective_potential_Leb(ff, natom, beta, degree = degree, Taylor=Taylor)
             return new_pot
 
-def effective_potential_dynamic(ff, natom, beta, a_tol=0.1*kjmol, r_tol=0.1, limit_potential=1e+4*kjmol):
-    degrees = [3, 5, 7, 9, 11, 15, 17, 19, 21, 27, 29, 31, 35, 41, 47]
-    rel_err = 50*kjmol
-    i = 0
-
-    def ln_except(input, limit):
-        if np.isclose(input, 0):
-            return -limit*beta
-        else:
-            return np.log(input)
-    potentials = []
-    prev_int, prev_std = effective_potential_Leb(ff, natom, beta, degree = degrees[i])
-    prev_pot = -ln_except(prev_int, limit_potential)/beta
-    potentials.append(prev_int)
-    if prev_pot >= 1e+4*kjmol:
-        print('Hard limit', "\n")
-        return 0, prev_std
-    elif prev_pot > 20/beta:
-        print('Soft limit', prev_pot/kjmol, "\n")
-        return prev_int, prev_std
-    else:
-        while np.abs(rel_err) > a_tol + r_tol*np.abs(prev_pot) and i < len(degrees) - 1:
-            i+=1
-            new_int, new_std = effective_potential_Leb(ff, natom, beta, degree = degrees[i])
-            new_pot = -ln_except(new_int, limit_potential)/beta
-            print('Dynamic')
-            print('Degree', degrees[i])
-            print('Relative error', rel_err)
-            print('Potential', new_pot/kjmol)
-            rel_err = np.abs((new_pot-prev_pot)/prev_pot)
-            prev_pot, prev_std, prev_int = new_pot, new_std, new_int
-        print('Final potential', prev_pot/kjmol)
-        print(f'Converged final degree is {degrees[i]}', "\n")
-        return prev_int, prev_std
-
 def effective_potential_MC(ff, natom, beta, nsteps=int(1e+4)):
+    '''This function calculates the effective potential of a guest molecule in a given force field using
+    Monte Carlo simulation.
+    
+    Parameters
+    ----------
+    ff
+        ff is an instance of a force field class that contains information about the system's potential
+    energy function and other relevant parameters such as atomic masses and charges.
+    natom
+        natom is the number of atoms in the guest molecule that is being inserted into the system.
+    beta
+        Beta is the inverse temperature in units of energy^-1. It is used in the calculation of the
+    potential energy of the system.
+    nsteps
+        The number of Monte Carlo steps to perform.
+    
+    Returns
+    -------
+        a tuple containing the effective potential and the standard deviation of the energies in units of
+    kJ/mol.
+    
+    '''
     neutral_pos = np.copy(ff.system.pos) #initiele positie van gastmolecule opslagen, COM berekenen en daarmee werken
     COM = np.sum(ff.system.pos[-natom:]*ff.system.masses[-natom:].reshape((natom,1)), axis=0)/np.sum(ff.system.masses[-natom:])
 
@@ -604,15 +625,32 @@ def effective_potential_MC(ff, natom, beta, nsteps=int(1e+4)):
     return potential, np.std(energies/kjmol)
 
 def generate_rotation_matrix(degree, dimension):
+    '''This function generates rotation matrices for 2D, 3D, and 4D dimensions based on the input degree.
+    
+    Parameters
+    ----------
+    degree
+        The degree parameter specifies the number of degrees of rotation to be applied.
+    dimension
+        The dimension of the rotation matrix, which can be 2, 3, or 4.
+    
+    Returns
+    -------
+        The function `generate_rotation_matrix` returns a rotation matrix based on the input degree and
+    dimension. If the dimension is 2D, it returns a 3D rotation matrix. If the dimension is 3D, it
+    returns a 3D rotation matrix and the weights of the angular grid. If the dimension is 4D, it returns
+    a 4D rotation matrix and the weights of
+    
+    '''
 
-    if dimension == '2d':
+    if dimension == 2:
         theta = np.arange(0,2*np.pi,2*np.pi/degree)
         zeros = np.zeros(len(theta))
         ones = np.ones(len(theta))
         rot_2 = np.array([[np.cos(theta),-np.sin(theta),zeros],[np.sin(theta),np.cos(theta),zeros],[zeros,zeros, ones]])      
         return  rot_2.swapaxes(2,0).swapaxes(1,2)
         
-    elif dimension == '3d':
+    elif dimension == 3:
         scheme1 = AngularGrid(degree=degree)
         xyz = scheme1.points
         phi1 = np.arctan2(np.sqrt(xyz[:,1]**2 + xyz[:,0]**2), xyz[:,2])
@@ -623,7 +661,7 @@ def generate_rotation_matrix(degree, dimension):
         rot_1 = np.array([[c1*c2, -s2, s1*c2],[c1*s2,c2,s1*s2],[-s1,zeros,c1]])       
         return rot_1.swapaxes(2,0).swapaxes(1,2), scheme1.weights
 
-    elif dimension == '4d':
+    elif dimension == 4:
         scheme = stroud_1969(4)
         xyz = scheme.points
         phi1 = np.arctan2(np.sqrt(xyz[:,3]**2 + xyz[:,2]**2 + xyz[:,1]**2), xyz[:,0])
@@ -636,9 +674,29 @@ def generate_rotation_matrix(degree, dimension):
         rot_tot = np.array([[c1*c3-c2*s1*s3,-c1*s3-c2*c3*s1,s1*s2],[c3*s1+c1*c2*s3,c1*c2*c3-s1*s3,-c1*s2],[s2*s3,c3*s2,c2]])      
         return rot_tot.swapaxes(2,0).swapaxes(1,2), scheme.weights
     else:
-        print('Must provide a string with a valid dimension, choices are "2d", "3d" or "4d"')
+        print('Must provide a string with a valid dimension, choices are 2, 3 or 4')
 
 def potential_from_mfa(points, potential):
+    '''The function takes mfa potential( as calculated in functionals.py) and gridpoints and returns the 
+    distances and potential values in order, so that they may be easily plotted.
+    
+    Parameters
+    ----------
+    points
+        It is a 4-dimensional numpy array containing the x, y, z coordinates of points in space. see the
+    grid instance in system.py
+    potential
+        The potential parameter is a numpy array that contains the potential values at each point in a 3D
+    space. The potential values are calculated using the MFA (Mean Field Approximation) method, 
+    see functionals.py.
+    
+    Returns
+    -------
+        two arrays: distances and poten_in_ord. The distances array contains unique and sorted distances
+    from the last dimension of the input points array. The poten_in_ord array contains potential values
+    corresponding to the indices of the points array, sorted in the same order as the distances array.
+    
+    '''
     distances = np.unique(np.sort(points[:,:,:,-1].reshape(-1,1),0).round(decimals=7))
     indices = []
     for dist in distances:
@@ -649,6 +707,25 @@ def potential_from_mfa(points, potential):
     return distances, np.array(poten_in_ord)
 
 def find_local_maxima(density, points):
+    '''The function finds the local maxima in a 3D density array at given points.
+    
+    Parameters
+    ----------
+    density
+        The density parameter is a 3D array that represents the particel density values at each point in space. 
+    points
+        The variable "points" is a numpy array that represents the coordinates of the points in a 3D space.
+    It has a shape of (n,3), where n is the number of points and each row represents the (x,y,z)
+    coordinates of a point.
+    
+    Returns
+    -------
+        The function `find_local_maxima` returns a boolean array `local_maxima` of the same shape as the
+    input `density`, where `True` values indicate the positions of local maxima in the density array.
+    Additionally, the function returns a list `index_of_local_maxima` containing the indices of the
+    local maxima in the form of tuples (i,j,k).
+    
+    '''
     local_maxima = np.zeros(points.shape[:-1],dtype=bool)
     index_of_local_maxima = []
     for i in range(points.shape[0]):

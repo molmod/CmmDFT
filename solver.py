@@ -448,7 +448,6 @@ class Anderson(object):
                 alphas = opt.minimize(sum_res, np.full(mk-1,1/(mk-1)), method='SLSQP', tol=1e-15, bounds=bds, constraints={'type': 'eq', 'fun': lambda x:np.sum(x)-1}).x
 
                 # print(alphas)
-                print(self.prev_rhos[:mk-1].T.shape)
                 broad_alphas = np.broadcast_to(alphas, self.prev_rhos[:mk-1].T.shape).T
                 Grho_result = broad_alphas*(rho_diff+res_diff)
                 rho_new = rho + res_k[-1] + alpha_mix*np.sum(Grho_result,axis=0)

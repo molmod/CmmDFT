@@ -19,7 +19,7 @@ __all__ = ['Program']
 
 
 class Program(object):
-    def __init__(self, prefix='', hostname='', guestname='', ff_suffix='', funct_suffix='', grid_suffix='', suffix='', overwrite=False, fn_energy_tracking=None):
+    def __init__(self, prefix='', hostname='', guestname='', ff_suffix='', funct_suffix='', grid_suffix='', suffix='', overwrite=False, logfile=None):
         '''This is the initialization function for a class that sets various attributes and creates a work
         directory if it doesn't exist.
         
@@ -54,17 +54,16 @@ class Program(object):
         '''
         #Initializing
 
+        self.name_dict = {'prefix':prefix, 'hostname':hostname, 'guestname':guestname, 'ff_suffix':ff_suffix, 'funct_suffix':funct_suffix, 'grid_suffix':grid_suffix, 'suffix':suffix}
+
+        workdir = Path(prefix) / hostname /guestname / ff_suffix / funct_suffix / grid_suffix / suffix
+
+        if logfile is not None:
+            log_fn = workdir / logfile
+            log.write_to_file(log_fn)
+
         with log.section('PROGRAM', 1, timer='Initializing'):
 
-            self.prefix = prefix
-            self.hostname = hostname
-            self.guestname = guestname
-            self.ff_suffix = ff_suffix
-            self.funct_suffix = funct_suffix
-            self.grid_suffix  = grid_suffix
-            self.suffix = suffix
-
-            workdir = Path(prefix) / hostname /guestname / ff_suffix / funct_suffix / grid_suffix / suffix
             log.dump('Initializing work directory %s' %workdir)
             self.workdir = workdir
             self.overwrite = overwrite
@@ -79,18 +78,45 @@ class Program(object):
     def set_system(self, host, guest):
         self.system = System(host, guest)
     
-    def set_grid(self, npoints=None, spacing=0.25*angstrom, old=False):
+    def set_grid(self, npoints=None, spacing=0.25*angstrom):
+        '''This function sets up a grid for a given program with a specified number of points or spacing. npoints or spacing must be provided
+        
+        Parameters
+        ----------
+        npoints
+            The number of grid points to be generated in the grid. It should be a tuple of length 3, indicating all the
+             number of points in 3 dimesions If not specified, the default value is used.
+        spacing
+            The spacing parameter is the distance between two adjacent grid points in the Grid object. It is
+        specified in units of length, with the default value being 0.25 Angstroms.
+        '''
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
-        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, old=old)
+        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing)
     
     def init_free_energy(self, temperature, rewrite_RHS=False, RHS_style='sb'):
+        '''This function initializes the FreeEnergy object of a program at a given temperature.
+        
+        Parameters
+        ----------
+        temperature
+            The temperature at which the free energy calculation will be performed.
+        rewrite_RHS, optional
+            A boolean parameter that determines whether to overwrite the pre-existing hard sphere radius (RHS)
+        values for the free energy calculation. If set to True, the RHS values will be overwritten. If set to
+        False, the existing RHS values will be used for the calculation.
+        RHS_style, optional
+            RHS_style is a string parameter that specifies the averaging style of the hard sphere radius (RHS) used in the
+        calculation of the free energy. It can take one of three values: 'sb', 'bo', or 'ave'. 'sb' stands for semi-uniform averaging
+        'bo' for Boltzmann weighted averaging and ave for uniform
+        
+        '''
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
         assert self.grid is not None, "Grid must first be set using 'set_grid'"
         assert isinstance(self.grid, Grid), "self.grid is not an instance of Grid, aborting!"
         assert RHS_style in ['sb', 'bo', 'ave'], "style must be 'sb', 'bo' or 'ave'"
-        self.fener = FreeEnergy(self.grid, self.system, temperature, workdir=self.workdir, overwrite=self.overwrite, rewrite_RHS=rewrite_RHS, RHS_style=RHS_style)
+        self.fener = FreeEnergy(self.grid, self.system, temperature, workdir=self.workdir, overwrite=self.overwrite, rewrite_RHS=rewrite_RHS, RHS_style=RHS_style, name_dict=self.name_dict)
     
     def set_temperature(self, temperature):
         '''This function sets the temperature for a FreeEnergy object.
@@ -107,15 +133,22 @@ class Program(object):
         assert isinstance(self.fener, FreeEnergy), "self.fener is not an instance of FreeEnergy, aborting!"
         self.fener.set_temperature(temperature)
 
-    def calc_distance(self, again = False):
-        """
-        Calculates a distance matrix, where the distance to the closest atom of the host material is calculated and stored as a numpy file in the OutputFiles.
-        This matrix is used to calculate the regions of the framework.
-        """
-        dist_file = Path(self.prefix) / self.hostname / self.grid_suffix / 'distances.npy'
+    def calc_distance(self, rewrite=False):
+        '''The function calculates a distance matrix, this contains the distance of each point to the closest atom 
+        of the host material and stores it as a numpy file, which is used to calculate the regions of the framework.
+        
+        Parameters
+        ----------
+        rewrite, optional
+            A boolean parameter that determines whether to overwrite an existing distance matrix file or not.
+        If set to True, the existing file will be deleted and a new one will be created. If set to False,
+        the existing file will be loaded and used.
+        
+        '''
+        dist_file = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['grid_suffix'] / 'distances.npy'
         if not dist_file.parent.is_dir():
             dist_file.parent.mkdir()
-        if again:
+        if rewrite:
             dist_file.unlink()
         if not dist_file.is_file():
             grid_pos = self.grid.copy()
@@ -135,7 +168,7 @@ class Program(object):
         else:
             self.dis = np.load(dist_file)         
     
-    def calc_regions(self, energy_cutoff = 0.55, range_cutoff = 3.4*angstrom, mof_cutoff = 5):
+    def calc_regions(self, energy_cutoff=0.55, range_cutoff=3.4*angstrom, mof_cutoff=5):
         """
         Calculates 3 different regions of the MOFs based on a distance and an energy criterium. 
         The three regions are: MOF, enrgetically favored interaction sites, empty space in MOF.
@@ -149,7 +182,7 @@ class Program(object):
             Distance cut-off, points further from host atoms than this distance and which conform with the energy criterion are part of the empty space. 
             The default is 3.4*angstrom.
         mof_cutoff : Scalar, optional
-            Energy criterium, points with a potential energy larger than boltzmann*temperature*mof_cutoff are part of the MOF. The default is 2.5.
+            Energy criterium, points with a potential energy larger than boltzmann*temperature*mof_cutoff are part of the MOF. The default is 5.
 
         Returns: 3 masks in the shape of the grid indicating the different regions
         -------
@@ -182,12 +215,12 @@ class Program(object):
 
     def _set_initial_density(self, Ninit=None, chempot=None, rewrite=False, Temp=None, silent=False):
         """
-        Sets the initial density for the
+        Sets the initial density for the solving of the cDFT calculation
 
         Parameters
         ----------
         Ninit : Initial density:
-        If Ninit is a string: loads density profile from this string
+        If Ninit is a string or a Path object: loads density profile from this file, string or Path must be an existing density file
         If Ninit a float: set the density to this float
         
         chempot : Chemical potential sed to calculate the ideal gas density.  The default is None.
@@ -202,7 +235,7 @@ class Program(object):
                 self.rho0 = np.load(self.rho_fn)
             else:
                 if Ninit is not None:
-                    if isinstance(Ninit, str):
+                    if isinstance(Ninit, str) or isinstance(Ninit, Path):
                         if Path(Ninit).is_file():
                             log.dump('Loading initial guess for density from file %s' %(Ninit))
                             self.rho0 = np.load(Ninit) 
@@ -222,7 +255,7 @@ class Program(object):
                         self.rho0 = Ninit*np.exp(-0.1*epot_data/boltzmann/Temp)
                     elif isinstance(Ninit, float):
                         log.dump('Setting initial guess for density at %.3e/cellvolume' %(Ninit*self.system.host.cell.volume))
-                        self.rho0 = Ninit*np.ones(self.grid.npoints)          
+                        self.rho0 = np.full(self.grid.npoints, Ninit)          
                 else:
                     log.dump('Setting initial guess for density from ideal gas at chempot = %.3f kJ/mol' %(chempot/kjmol))
                     index = None
@@ -242,12 +275,12 @@ class Program(object):
                     
     def _set_split_density(self, masks, densities):
         """
-        Set the initial density to a split density according to a 
+        Set the initial density to a split density according to a given split of the system
 
         Parameters
         ----------
         masks : List of masks in the shape of the grid, indicating the different regions of densities
-        densities : List of densities corresponding to the masks.
+        densities : List of the densities respective to list of the masks.
 
         """
         with log.section('PROGRAM', 1, timer='Initializing'):
@@ -257,32 +290,55 @@ class Program(object):
             for rho,mask in zip(masks, densities):
                 self.rho0[mask] = rho  
             self.split = True
-        pass
     
-    def solve(self, chempot, threshold=1e-6, alpha_mix=0.1, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, 
-    energy_tracking=True, Initialization = None, method='hybrid',m=10, delta=0.01, silent=False):
-        """
-        Solve for the density profile
-
+    def solve(self, chempot, threshold=1e-6, method='hybrid', alpha_mix=0.1, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, m=10, delta=0.01, silent=False):
+        '''This function solves for the density profile at given a chemical potential and temperature
+        
         Parameters
         ----------
-        chempot : scalar giving the chemical potential of the simulation
-        threshold : scalar, optional
-            Gives the threshold of the relative error, which when obtained stops the calculation. The default is 1e-6.
-        alpha_mix : scalar, optional
-            Mixing parameter in the Picard solver. The default is 0.01.
-        nsteps : TYPE, optional
-            number of maximum steps for each solving phase. The default is 1000.
-        maxphases : number of maximum phases. The default is 20.
-        Ninit : Initial density (see _set_initial_density for more information). The default is None.
-        rewrite : Boolean, optional
-            If set to true the calculation will overwrite and ignore all previously calculated loadings. The default is False.
-        energy_tracking : Boolean, optional
-            If set to true, the program will log and save energetic values. The default is True.
-        Initialization : a list of three elements: (threshold, alpha_mix, nsteps), optional
-            Adding this initialization will add an initial solving phase with the specified parameters, 
-            allowing the simulation to initially get closer to the solution. The default is None.
-        """
+        chempot
+            The chemical potential of the simulation.
+        threshold
+            The threshold parameter is a scalar that gives the threshold of the relative error, which when
+        obtained stops the calculation. It is an optional parameter with a default value of 1e-6.
+        method, optional
+            The method parameter specifies the numerical method to be used for solving the density profile. It
+        can take the values 'uno', 'hybrid', 'Anderson', 'hybridanderson'
+        alpha_mix
+            Mixing parameter in the Picard solver. It is used to control the mixing of the previous and
+        current density profiles during the iteration process. A smaller value of alpha_mix will result in
+        a slower convergence but a more stable solution, while a larger value will result in faster
+        convergence but a less stable solution
+        nsteps, optional
+            number of maximum steps for each solving phase
+        maxphases, optional
+            The maximum number of phases allowed for the solving process. If the solution cannot be obtained
+        within this number of phases, the program will abort.
+        Ninit
+            Initial density (see _set_initial_density for more information).
+        rewrite, optional
+            A boolean parameter that determines whether to overwrite and ignore all previously calculated
+        loadings. 
+        energy_tracking, optional
+            A boolean parameter that determines whether the program will log and save energetic values during
+        the simulation. If set to True, the program will save the energetic values in a seperate file.
+        Initialization
+            A list of three elements that specifies an initial solving phase with the specified parameters,
+        allowing the simulation to initially get closer to the solution. The three elements are:
+        m, optional
+            The parameter `m` is used in the Anderson mixing method. It determines the number of previous 
+        solutions that are used to compute the next solution. A larger value of `m` can improve convergence,
+        but also increases computational cost.
+        delta
+            The delta parameter is used in the Anderson mixing method for solving the density profile. It
+        controls the mixing between the current and previous solutions, with smaller values leading to more
+        aggressive mixing.
+        silent, optional
+            A boolean parameter that determines whether or not to print log messages during the calculation.
+        If set to True, only critical log messages will be printed.
+        
+        '''
+
         if silent: log_level = 3
         else: log_level = 2
         with log.section('PROGRAM', log_level, timer='Solve'):
@@ -373,10 +429,26 @@ class Program(object):
                     log.warning('THE CALCULATION OF THE DENSITY at chemical potential %7.5f kJ/mol and temperature %5.3f K HAS FAILED DUE TO A ---FloatingPointError---'%(chempot/kjmol, self.fener.temperature), label_section='Solve')
 
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):
-        """
-        A method which calculates the reference potential which can be used to calculate the hybrid potential. This method calculates the adsorptions of the chemical potentials which are given
-        and returns the chemical potential which has the steepest incline in this eadsorption isotherm.
-        """
+        '''This function calculates the reference chemical potential by solving an adsorption isotherm and
+        finding the chemical potential with the steepest incline.
+        
+        Parameters
+        ----------
+        chempots
+            A numpy array containing the chemical potentials for which the adsorption isotherm needs to be
+        calculated.
+        silent, optional
+            The `silent` parameter is a boolean flag that determines whether or not to print out progress
+        messages during the calculation. If `silent=True`, then no progress messages will be printed.
+        rewrite, optional
+            The `rewrite` parameter is a boolean flag that determines whether to overwrite existing files or
+        not.
+        
+        Returns
+        -------
+            The calculated reference chemical potential.
+        
+        '''
         # calculate the reference chemical potential
         with log.section('PROGRAM', 1, timer='Initializing mu_ref'):
             temp = self.fener.temperature
@@ -398,9 +470,35 @@ class Program(object):
             return self.mu_ref
 
     def calculate_hybrid_potential(self, mu_ref, threshold, rewrite=False, chempots=None, silent=True, mse_version=False, site_version=False):
-        """
-        A method which calculates a hybrid potential from two models, in theory being a forcefield and an ab initio input.
-        """
+        '''This function calculates a hybrid potential from two models, a forcefield and an ab initio input
+        
+        Parameters
+        ----------
+        mu_ref
+            The reference chemical potential used for convergence of the hybrid potential calculation. 
+        See function calculate_reference_chemical_potential()
+        threshold
+            The convergence threshold for the adsorption isotherm or mean squared error (MSE) when calculating
+        the hybrid potential.
+        rewrite, optional
+            A boolean parameter that determines whether to overwrite existing files or not. If set to True,
+        existing files will be overwritten. Default is False.
+        chempots
+            A list of chemical potentials at which to calculate the loadings for the hybrid potential.
+        silent, optional
+            A boolean parameter that determines whether or not to print log messages during the calculation of
+        the hybrid potential. If set to True, no log messages will be printed. If set to False, log messages
+        will be printed.
+        mse_version, optional
+            A boolean parameter that determines whether the convergence of the hybrid potential is checked
+        using the mean squared error of the new densities.
+        site_version, optional
+            A boolean parameter that determines whether the secondary external potential is initialized at
+        points designated as adsorption sites or at local maxima of the loading density. If site_version is
+        True, the secondary external potential is initialized at points designated as adsorption sites. If
+        site_version is False, the secondary external potential is
+        
+        '''
 
         with log.section('PROGRAM', 1, timer='Initializing hybrid potential'):
             temp = self.fener.temperature
@@ -443,6 +541,7 @@ class Program(object):
             perc_non_mof = np.sum(Hybrid_External_Potential.sub_grid)/np.sum(~self.mask_mof)
             percentages.append([0,perc, perc_non_mof]) #count the percentage of points included in the subgrid
 
+            #mean squared error convergence
             if mse_version:
                 log.dump('Using the mean squared error of the new densities to check for convergence')
                 log.dump("")
@@ -501,112 +600,10 @@ class Program(object):
                     Hybrid_External_Potential.update_potential(natom, new_neighbours)
                     i+=1
 
-                    # print('new neighbours: ', new_neighbours)
-                    # print('Subgrid in the full ', Hybrid_External_Potential.sub_grid)            
                     perc = np.sum(Hybrid_External_Potential.sub_grid)/np.sum(Hybrid_External_Potential.sub_grid+~Hybrid_External_Potential.sub_grid)
                     perc_non_mof = np.sum(Hybrid_External_Potential.sub_grid)/np.sum(~self.mask_mof)
                     percentages.append([i,perc, perc_non_mof]) #count the percentage of points included in the subgrid #count the percentage of points included in the subgrid
                     log.dump(f'The error is {error}, threshold is {threshold}')
                     log.dump('New points have been added to the secondary external potential')
                     log.dump("")
-
-            # np.savetxt(self.workdir+f'/hybrid_loadings.csv', np.array([loadings, chempots]).T, delimiter=',', header='loading, chemical pot')
-            # np.save(self.workdir+f'/hybrid_loadings.npy', loadings)
-
-    def diffusion_constant(self, chempot, temperature, dT=0.001*kelvin, alpha=0.788, threshold=1e-6, alpha_mix=0.01, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, weighted_density=False):
-        """ 
-        Calculation of the diffusion constant with Rosenfeld's excess-entropy scaling method. Calculates the free energy through cDFt simulations at two temperatures, 
-        from this the excess entropy is calculated and subsequently the diffusion constant is approximated.
-        
-
-        Parameters
-        ----------
-        chempot : Scalar, is the external chemical potential of the simulation.
-        temperature: Scalar, is the central temperature to compute the derivative to temperatures
-        dT : Scalar, the temprature difference between the two simulations, the default is 0.001K as used by Yu Liu (2015)
-        alpha: A parameter in the excess entropy scaling relation
-        threshold : Scalar, optional
-            Determines the threshold of the solution in the Picard solver algorithm. The default is 1e-6.
-        nsteps : Integer, optional
-            Determines the maximal number of steps per phase in the Picard solver. The default is 1000.
-        maxphases : Integer, optional
-            Determines the maximum number of phases in the Picard solver algorithm. The default is 20.
-        Ninit : Initial density profile, check the function _set_initial_density for more information, optional
-            The default is None.
-        rewrite : Boolean, optional
-            Determines if the density profiles are rewritten or reused. The default is False
-
-        Returns
-        -------
-        Diffusion constant
-
-        """
-        with log.section('PROGRAM', 2, timer='Diffusion constant'):
-
-            T1 = temperature + dT/2
-            T2 = temperature - dT/2
-
-            log.dump(f'calculating the density at a temerature of {temperature:#7.5f}')
-            self.set_temperature(temperature)
-            self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True)
-            log.dump(f'calculating the density at a temerature of {T1:#7.5f}')
-            self.set_temperature(T1)
-            self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True)
-            log.dump(f'calculating the density at a temerature of {T2:#7.5f}')
-            self.set_temperature(T2)
-            self.solve(chempot, threshold=threshold, alpha_mix=alpha_mix, nsteps=nsteps, maxphases=maxphases, Ninit=Ninit, rewrite=rewrite, energy_tracking=True)
-
-            # log.dump('Reading Excess free energy from %s and %s'%(fn1, fn2))
-
-            # if isinstance(self.system.host, NanoporousHost):
-            #     vol = self.system.host.mol.cell.volume
-            # else:
-            #     vol = self.system.host.cell.volume
-            # rho_av = N/vol
-
-            # fn1 = '%s/rho_%7.5fkJmol_%7.5fK.npy' %(self.workdir, chempot/kjmol, T1/kelvin)
-            # assert os.path.isfile(fn1), 'No density found for %3.0f K and %4.5f kJ/mol' %(T1,chempot/kjmol)  
-            # rho1 = np.load(fn1)
-            # krho1 = np.fft.fftn(rho1)
-
-            # fn2 = '%s/rho_%7.5fkJmol_%7.5fK.npy' %(self.workdir, chempot/kjmol, T2/kelvin)
-            # assert os.path.isfile(fn2), 'No density found for %3.0f K and %4.5f kJ/mol' %(T2,chempot/kjmol)  
-            # rho2 = np.load(fn2)
-            # krho2 = np.fft.fftn(rho2)
-
-
-            fn = Path(f'{self.workdir}/rho_{self.chempot/kjmol:#7.5f}kJmol_{self.temp:#7.5f}K.npy')
-            assert fn.is_file(), f'No file found at {str(fn)}'
-            rho = np.load(fn)           
-
-            if weighted_density:
-                wda = WDAVFunctional((T1+T2)/2, self.grid, D=self.system.guest.Rhs, eos=None)
-                wda._init_weight_function()
-                rho = wda._get_weighted_density(np.fft.fft(rho)).real
-                fn = f'{self.workdir}/wrho_{chempot/kjmol:#7.5f}kJmol_{temperature:#7.5f}K.npy'
-                np.save(fn, rho)
-            mask = rho>10**-7 #remove densities which are close to zero or negative
-
-            
-            from .calculator import Calculator
-            calc = Calculator(self)
-            Fex1 = calc.excess_free_energy(T1, chempot, local=True, fn=fn)
-            Fex2 = calc.excess_free_energy(T2, chempot, local=True, fn=fn)
-            N = calc.loading(temperature, chempot)
-            rho_avg = N/self.grid.cell.volume
-            s_ex = -(Fex1 - Fex2)/dT/N/boltzmann #todo!!!! make position dependent you twat
-            s_exp = np.zeros_like(s_ex)
-            s_exp[mask] = np.exp(alpha*s_ex[mask])
-            mask2 = np.where(np.isinf(s_exp))
-
-            mass = np.sum(self.system.guest.mol.masses)
-
-            # log.dump(f'Reduced sef-diffusivity constant {0.585*np.exp(alpha*s_ex)}')
-            Ds_local = np.zeros_like(rho)
-            Ds_local[mask] = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(0.788*s_ex[mask])
-            Ds = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*self.grid.integrate(s_ex))
-
-            print(self.workdir+f'/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
-            log.dump(f'Saved the local diffusion constants to {self.workdir}/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
-            np.save(self.workdir+f'/local_diffusion_constants_{(T1+T2)/2:#7.5f}K_{chempot/kjmol:#7.5f}.npy', Ds_local)
-            return Ds                    
+                  

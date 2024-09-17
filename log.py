@@ -17,10 +17,10 @@ header = """
     a Python package for computing density profiles using classical DFT
 
                                Written by
-            Louis Vanduyfhuys(1)* and Steven Vandenbrande(1)
+            Louis Vanduyfhuys(1) and Vic De Ridder(1)* and Steven Vandenbrande(1)
 
          (1) Center for Molecular Modeling, Ghent University Belgium.
-                   * mailto: Louis.Vanduyfhuys@UGent.be
+                   * mailto: Vic.DeRidder@UGent.be
 
 ********************************************************************************
 """

@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import os, sys, numpy as np, matplotlib.pyplot as pp
+from pathlib import Path
 import matplotlib.cm as cmap
 
 from molmod.units import kjmol, kelvin, bar, parse_unit, angstrom
@@ -56,10 +57,41 @@ cm_temperatures = cmap.get_cmap('tab10')
 
 class Plotter(object):
     def __init__(self, calculator):
+        '''This plotter object is used to create plots of various results.
+        
+        Parameters
+        ----------
+        calculator
+            This is an instance of the calculator class, see calculator.py
+        
+        '''
         self.calculator = calculator
         
         
     def convergence(self, chempot, temp, max_num_phases=None, save_fig=False):
+        '''This function plots convergence data from a file for a given chemical potential and temperature.
+        This means that the energetic contributions of the various functionals are plotted as a fucntion of 
+        the solving step, together with the grand canoncial potential and the loading.
+        
+        Parameters
+        ----------
+        chempot
+            chempot is the chemical potential.
+        temp
+            Temperature in Kelvin.
+        max_num_phases
+            The maximum number of phases to be plotted. If not specified, it will be set to the maximum number
+        of phases in the convergence file.
+        save_fig, optional
+            A boolean parameter that determines whether or not to save the generated figure as a PNG file. If
+        set to True, the figure will be saved in the program working directory under the same name as the convergence
+        file, but as a PNG file. If set to False, the figure will not be saved.
+        
+        Returns
+        -------
+            a matplotlib figure object.
+        
+        '''
         self.fig = pp.figure()
         fn_name_file = os.path.join(self.calculator.workdir, 'name_file_%3.0fK.txt'%(temp/kelvin))
         assert os.path.isfile(fn_name_file), 'No name file found for %3.0f K, searched at %s' %(temp/kelvin,fn_name_file)
@@ -114,30 +146,48 @@ class Plotter(object):
         self.fig.savefig(fn.replace('txt', 'png'))
         return self.fig
 
-    def observable(self, temperatures, chempots, function, fn='isotherm.png', 
-                   xlabel='Chemical potential [%s]', xunit='kjmol', 
-                   ylabel='Observable [%s]', yunit='au', title='Observable vs chemical potential', 
-                   e_cutoff = None, r_cutoff = 3.7*angstrom, mof_cutoff = 2, rho = False, mask_MBWR = False):
-        '''
-            temperatures
-                            numpy array of temperatures, for each temperature an isotherm of the observable will be plotted 
-                            against the chemical potential.
-            
-            chempots
-                            numpy array of chemical potentials that specify the x-axis.
-            
-            function
-                            a function that allows to compute/extract the value of the observable that needs to be plotted
-                            using the temperature and chemical potential as arguments (in that order).
-                            
-            site_cutoff
-                            a scalar between 1 and 0 which determines the distinction between energetically favourable sites
-                            and the remainder of the pore volume. 1 means that the whole volume is classified as 'site'
-                            0 means that the whole volume is 'empty space'
-                            is None if the normal loading is wanted
-                            
-            rho
-                            True or False to output the density or the absolute loading respectively
+    def observable(self, temperatures, chempots, function, fn='isotherm.png',                    
+                   xlabel='Chemical potential [%s]', xunit='kjmol',                    
+                   ylabel='Observable [%s]', yunit='au', title='Observable vs chemical potential',   
+                   rho = False, mask_MBWR = False):
+        '''This is a Python function that takes in temperature, chemical potential, and a function to compute
+        the observable, and plots the observable against chemical potential for each temperature.
+        
+        Parameters
+        ----------
+        temperatures
+            A numpy array of temperatures, for each temperature an isotherm of the observable will be plotted
+        against the chemical potential.
+        chempots
+            A numpy array of chemical potentials that specify the x-axis.
+        function
+            The function that allows to compute/extract the value of the observable that needs to be plotted
+        using the temperature and chemical potential as arguments (in that order).
+        fn, optional
+            The filename (including extension) to save the plot as. If set to None, the plot will not be saved.
+        xlabel, optional
+            The label for the x-axis of the plot, with a placeholder for the unit of the chemical potential.
+        xunit, optional
+            The unit of the x-axis (chemical potential) in the plot, specified as a string. The default unit is
+        'kjmol'.
+        ylabel, optional
+            The label for the y-axis of the plot, with the unit specified by the yunit parameter.
+        yunit, optional
+            The unit of the y-axis observable that is being plotted.
+        title, optional
+            The title of the plot, which is "Observable vs chemical potential" by default.
+        rho, optional
+            A boolean parameter that determines whether the output should be the density or the absolute
+        loading respectively.
+        mask_MBWR, optional
+            A boolean parameter that determines whether to mask out data points where the density is too high
+        for the MBWR (Modified Benedict Webb Rubin equation of state) to be applicable. If set to True, the
+        function will plot two lines for each temperature, one with the valid data points and one with the
+        
+        Returns
+        -------
+            a matplotlib figure object.
+        
         '''
         self.fig = pp.figure()
         pp.clf()
@@ -145,34 +195,90 @@ class Plotter(object):
         axs = self.fig.gca()
         if not (isinstance(temperatures, list) or isinstance(temperatures,np.ndarray)):
             temperatures = [temperatures]
-        if e_cutoff is None:
-            try:
-                epot_data = np.load('%s/%s.npy' %(self.calculator.workdir,'epot'))    
-            except: epot_data = None
-            for temp in temperatures:
-                self.calculator.fener.set_temperature(temp)
-                if epot_data is not None:
-                    non_mof = epot_data<2*boltzmann*temp
-                    volume = self.calculator.grid.integrate(non_mof)**rho   
-                else: volume = 1
-                values = np.zeros(len(chempots), float)
-                if mask_MBWR: valuesMBWR = np.zeros(len(chempots), float)
-                for i, chempot in enumerate(chempots):
-                    try:
-                        if mask_MBWR:
-                            values[i],valuesMBWR[i] = function(temp, chempot, MBWR=True)
-                        else:
-                            values[i] = function(temp, chempot)
-                    except AssertionError:
-                        values[i] = np.nan
-                        if mask_MBWR: valuesMBWR[i] = np.nan
-                mask = ~np.isnan(values)
-                axs.plot(chempots[mask]/parse_unit(xunit), values[mask]/volume/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="%3.0fK" %temp)
-                if mask_MBWR: axs.plot(chempots[mask]/parse_unit(xunit), valuesMBWR[mask]/volume/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="Density too high for MBWR at T=%3.0f" %temp)
-                axs.set_xlabel('Chemical potential [kj/mol]', fontsize=14)
-                axs.set_ylabel(ylabel %yunit, fontsize=14)
-                #axs.set_title(title, fontsize=14)
-        else:
+
+        try:
+            epot_data = np.load(self.calculator.workdir / 'epot.npy')  
+        except: epot_data = None
+        for temp in temperatures:
+            self.calculator.fener.set_temperature(temp)
+            if epot_data is not None:
+                non_mof = epot_data<2*boltzmann*temp
+                volume = self.calculator.grid.integrate(non_mof)**rho   
+            else: volume = 1
+            values = np.zeros(len(chempots), float)
+            if mask_MBWR: valuesMBWR = np.zeros(len(chempots), float)
+            for i, chempot in enumerate(chempots):
+                try:
+                    if mask_MBWR:
+                        values[i],valuesMBWR[i] = function(temp, chempot, MBWR=True)
+                    else:
+                        values[i] = function(temp, chempot)
+                except AssertionError:
+                    values[i] = np.nan
+                    if mask_MBWR: valuesMBWR[i] = np.nan
+            mask = ~np.isnan(values)
+            axs.plot(chempots[mask]/parse_unit(xunit), values[mask]/volume/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="%3.0fK" %temp)
+            if mask_MBWR: axs.plot(chempots[mask]/parse_unit(xunit), valuesMBWR[mask]/volume/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="Density too high for MBWR at T=%3.0f" %temp)
+
+
+        axs.set_xlabel(xlabel %xunit, fontsize=14)
+        axs.set_ylabel(ylabel %yunit, fontsize=14)
+        axs.set_title(title, fontsize=14)      
+        axs.legend(loc='best', fontsize=14)
+        self.fig.set_size_inches([6,6])
+        self.fig.tight_layout()
+        if fn is not None:
+            self.fig.savefig('%s/%s' %(self.calculator.workdir, fn))
+        return self.fig
+
+    def loading_region(self, temperatures, chempots, fn='isotherm',                    
+                       xlabel='Chemical potential [%s]', xunit='kjmol', ylabel='Loading [%s]', yunit = 'au', title='Loading vs chemical potential in different regions',  
+                       e_cutoff = None, r_cutoff = 3.7*angstrom, mof_cutoff = 2, rho = False):
+        '''This function plots the loading of a molecule at different chemical potentials and temperatures in
+        different regions of a material.
+        
+        Parameters
+        ----------
+        temperatures
+            A list or numpy array of temperatures at which to calculate the loading.
+        chempots
+            A list or numpy array of chemical potentials to calculate the loading at.
+        fn, optional
+            The filename to save the plot as. If set to None, the plot will not be saved.
+        xlabel, optional
+            The label for the x-axis of the plot, with a placeholder for the unit (%s).
+        xunit, optional
+            The unit for the x-axis label, which is a string.
+        ylabel, optional
+            The label for the y-axis of the plot, which represents the loading in units specified by yunit.
+        yunit, optional
+            The unit of the y-axis in the plot, which is the loading.
+        title, optional
+            The title of the plot, which describes what is being plotted.
+        e_cutoff
+            Energy cutoff used to define the different regions in the system (sites, empty, overlap). Default
+        is None.
+        r_cutoff
+            The range cutoff used to define the distance between atoms in Angstroms.
+        mof_cutoff, optional
+            The mof_cutoff parameter is a cutoff distance (in Angstroms) used to define the region of the MOF
+        framework. Any grid point within this distance from the MOF atoms is considered to be part of the
+        MOF region.
+        rho, optional
+            rho is a boolean parameter that determines whether or not to normalize the volumes of the different
+        regions by the total volume of the system. If rho is True, the volumes will be normalized, otherwise
+        they will not be normalized.
+        
+        Returns
+        -------
+            matplotlib figure
+        '''
+        self.fig = pp.figure()
+        pp.clf()
+        self.fig.clear()
+        axs = self.fig.gca()
+        if not (isinstance(temperatures, list) or isinstance(temperatures,np.ndarray)):
+            temperatures = [temperatures]            
             mask_sites, mask_mof, mask_empty = self.calculator.program.calc_regions(energy_cutoff=e_cutoff, range_cutoff = r_cutoff, mof_cutoff = mof_cutoff)
             volume_sites = (self.calculator.grid.integrate(mask_sites)/(3.73*angstrom)**3)**rho
             volume_empty = (self.calculator.grid.integrate(mask_empty)/(3.73*angstrom)**3)**rho
@@ -198,9 +304,9 @@ class Plotter(object):
                 axs.plot(chempots[mask1]/parse_unit(xunit), loadings_sites[mask1]/volume_sites/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="T=%3.0f of sites" %temp)
                 axs.plot(chempots[mask2]/parse_unit(xunit), loadings_empty[mask2]/volume_empty/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="T=%3.0f of empty" %temp)
                 axs.plot(chempots[mask3]/parse_unit(xunit), loadings_mof[mask3]/volume_mof/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="T=%3.0f of overlap" %temp)
-                axs.set_xlabel(xlabel %xunit, fontsize=14)
-                axs.set_ylabel(ylabel %yunit, fontsize=14)
-                axs.set_title(title, fontsize=14)            
+        axs.set_xlabel(xlabel %xunit, fontsize=14)
+        axs.set_ylabel(ylabel %yunit, fontsize=14)
+        axs.set_title(title, fontsize=14)            
 
         axs.legend(loc='best', fontsize=14)
         self.fig.set_size_inches([6,6])
@@ -237,12 +343,10 @@ class Plotter(object):
                 try:
                     loadings[i] = self.calculator.loading(temp, chempot)
                 except AssertionError:
-    #                   print('oeie1')
                     loadings[i] = np.nan
                 try:
                     values[i] = function(temp, chempot)
                 except AssertionError:
-    #                    print('oeie2,rho_%4.1fkJmol_%3.0fK.npy' %(chempot/kjmol, temp/kelvin))
                     values[i] = np.nan
             mask = (~np.isnan(loadings))*(~np.isnan(values))
             axs.plot(loadings[mask], values[mask]/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="T=%3.0f" %temp)
@@ -256,10 +360,38 @@ class Plotter(object):
             self.fig.savefig('%s/%s' %(self.calculator.workdir, fn))
         return self.fig
     
-    def loading(self, temperatures, chempots, ylabel='Loading [%s]', 
-                yunit='au', title='Adsorption loading vs chemical potential', fn='adsorption_isotherm.png', e_cutoff = None, r_cutoff=3.7*angstrom, mof_cutoff = 2, rho=False, MBWR=None):
-        '''
-            Plot the adsorption isotherm (i.e. loading versus chemical potential) for several temperatures.
+    def loading(self, temperatures, chempots, ylabel='Loading [%s]',                 
+                yunit='au', title='Adsorption loading vs chemical potential', fn='adsorption_isotherm.png',  
+                rho=False, MBWR=None):
+        '''This function plots the adsorption isotherm (loading versus chemical potential) for several
+        temperatures.
+        
+        Parameters
+        ----------
+        temperatures
+            A list of temperatures at which to calculate the adsorption isotherm.
+        chempots
+            A list of chemical potentials for which the adsorption isotherm will be plotted.
+        ylabel, optional
+            The label for the y-axis of the plot, with a placeholder for the unit (specified by yunit).
+        yunit, optional
+            The unit of the y-axis in the plot.
+        title, optional
+            The title of the plot, which is "Adsorption loading vs chemical potential".
+        fn, optional
+            The filename to save the plot as.
+        rho, optional
+            A boolean parameter that specifies whether to plot the loading as a function of density instead of
+        chemical potential. If set to True, the y-axis label and unit will be changed accordingly.
+        MBWR
+            MBWR stands for Modified Benedict-Webb-Rubin equation of state, which is a thermodynamic model used
+        to describe the behavior of fluids. In this function, it is used as a parameter to determine whether
+        to mask the MBWR or not.
+        
+        Returns
+        -------
+            the output of the `observable` method called with the specified arguments.
+        
         '''
         for i in range(len(chempots)):
             swap = i + np.argmin(chempots[i:])
@@ -278,7 +410,7 @@ class Plotter(object):
         else:
             mask_MBWR = MBWR
                     
-        return self.observable(temperatures, chempots, self.calculator.loading, ylabel=ylabel, yunit=yunit, title=title, fn=fn, e_cutoff = e_cutoff, r_cutoff=r_cutoff, mof_cutoff = mof_cutoff,rho = rho, mask_MBWR=mask_MBWR)
+        return self.observable(temperatures, chempots, self.calculator.loading, ylabel=ylabel, yunit=yunit, title=title, fn=fn, rho=rho, mask_MBWR=mask_MBWR)
         
     def free_energy(self, temperatures, chempots, ylabel='Energy [%s]', yunit='kjmol', title='Free Energy vs chemical potential', fn='free_energy_isotherm.png'):
         '''
@@ -332,7 +464,7 @@ class Plotter(object):
                         the chemical potential for which the contour plot should be made
             
             obs
-                        either rho, epot or mfa
+                        either rho, log_rho, sites, diffusion, s_ex, epot or mfa
             
             slice_dimension
                         the dimension along which the slice is taken to make a contourplot in, should be 'x', 'y' or 'z'
@@ -349,8 +481,8 @@ class Plotter(object):
         #read data for given observable
         self.fig = pp.figure(0)
         if obs.lower() == 'log_rho':
-            fn = '%s/%s_%7.5fkJmol_%7.5fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin)
-            assert os.path.isfile(fn)
+            fn = self.calculator.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temperature/kelvin:#7.5f}K.npy'
+            assert fn.is_file()
             data = np.load(fn)
             mask = data!=0
             data[data==0] = np.amin(data[mask])
@@ -359,27 +491,25 @@ class Plotter(object):
             mask_site, mask_mof, mask_empty = self.calculator.program.calc_regions(energy_cutoff, range_cutoff*angstrom)
             data = mask_site*0 + mask_empty*1 - mask_mof*1
         elif obs.lower() == 'diffusion':
-            data = np.load(self.calculator.workdir+f'/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
+            data = np.load(self.calculator.workdir / f'/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
         elif obs.lower() == 's_ex':
-            data = np.load(f'{self.calculator.workdir}/sex_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
+            data = np.load(self.calculator.workdir / f'sex_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
         elif obs.lower()!='rho':
             try:
-                data = np.load('%s/%s.npy' %(self.calculator.workdir,obs)).real
+                data = np.load(self.calculator.workdir / obs).real
             except:
-                lis = self.calculator.workdir.split('/')[:-2]
-                lis.append(self.calculator.workdir.split('/')[-1])
-                epot_fn = ''
-                for l in lis: epot_fn += l +'/'
-                epot_file = epot_fn + 'eff_epot_%3.2f.npy'%(temperature)
+                epot_dir = Path(self.calculator.prefix) / self.calculator.hostname / self.calculator.guestname / self.calculator.ff_suffix / self.calculator.grid_suffix / self.calculator.suffix
+                epot_file = epot_dir / 'eff_epot_%3.2f.npy'%(temperature)
                 data = np.load(epot_file)
         else:
-            fn = '%s/%s_%7.5fkJmol_%7.5fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin)
-            assert os.path.isfile(fn)
+            
+            fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temperature/kelvin:#7.5f}K.npy'
+            assert fn.is_file(), f'No file found at {fn}'
             data = np.load(fn)
 
         #set some default values if not specified in keyword arguments
         if fn is None:
-            fn = '%s/%s_%3.0fkJmol_%3.0fK_x.png' %(self.calculator.workdir,obs,chempot/kjmol,temperature/kelvin)        
+            fn = self.calculator.workdir / f'{obs}_{chempot/kjmol:#3.0f}kJmol_{temperature:#3.0f}K.png'
         if unit is None:
             if obs.lower().startswith('rho'):
                 unit = '1/A**3'
@@ -464,11 +594,41 @@ class Plotter(object):
         if fn is not None:
             self.fig.savefig(fn)
         return self.fig
-        
+    
     def plot_free_energy_path(self, temperature, mu, title=None, fn=None, density=False, density_probability=False, Free_energy=False):
+        '''This function plots the free energy path of a system as a function of the distance to the diffusion
+        window, with the option to also plot the adsorption density or probability density.
+        
+        Parameters
+        ----------
+        temperature
+            The temperature at which the free energy path is plotted, in Kelvin.
+        mu
+            `mu` is the chemical potential of the adsorbate (in units of Hartree). It is used to calculate the
+        free energy profile of the adsorbate as a function of the distance to the diffusion window.
+        title
+            The title of the plot. It is an optional parameter.
+        fn
+            `fn` is a string parameter that specifies the filename to save the plot as. If `fn` is not
+        provided, the plot will not be saved as a file.
+        density, optional
+            A boolean parameter that determines whether to plot the number of adsorbed guests with
+        corresponding collective variable (CV) as a function of the distance to the diffusion window. If
+        True, the plot will have two y-axes, with the left y-axis showing the free energy and the right
+        y-axis showing
+        density_probability, optional
+            A boolean parameter that determines whether to plot the probability density of adsorption with
+        corresponding collective variable (CV) values. If set to True, the plot will show the probability
+        density on the secondary y-axis. If set to False, the plot will not show the probability density.
+        
+        Returns
+        -------
+            a matplotlib figure object.
+        
+        '''
         
         assert not(density and density_probability), 'can only plot the density or the density probability'
-        data = np.loadtxt(self.calculator.workdir+f'/free_energy_profile_{mu/kjmol:#0.8f}kjmol_{temperature:#0.3f}K.csv', delimiter = ',', ).T
+        data = np.loadtxt(self.calculator.workdir / +f'free_energy_profile_{mu/kjmol:#0.8f}kjmol_{temperature:#0.3f}K.csv', delimiter = ',', ).T
         collectives = data[0]
         densities = data[1]
         prob_densities = data[2]
@@ -520,10 +680,10 @@ class Plotter(object):
             self.fig.savefig(fn, dpi=150)
         return self.fig
 
-
+        
 class MultiPlotter(Plotter):
     '''
-        Compare and plot observables of various calculators, i.e. with various values of the used functional, force field, 
+        Compare and plot observables of various calculators, i.e. with differences in the used functionals, force-fields, 
         grid, ...
     '''
     def __init__(self, calculators, markerstyles=None, workdir=os.getcwd()):
@@ -667,29 +827,43 @@ class MultiPlotter(Plotter):
         
         return self.observable(temperatures, chempots, function, ylabel=ylabel, title=title, yunit=yunit, fn=fn)
 
-    def free_energy_contribution(self, temperatures, chempots, contrib_name, ylabel='Energy [%s]', yunit='kjmol', title=None, fn=None):
-        '''
-            Plot the contribution to the free energy specified by <contrib_name> as function of chemical potential for several temperatures.
-        '''
-        if title==None:
-            title = '%s contribution vs chemical potential' %(contrib_name)
-        if fn==None:
-            fn = '%s_contribution_isotherm.png' %(contrib_name)
+    def free_energy_contribution(self, temperatures, chempots, contrib_name, ylabel='Energy [%s]', yunit='kjmol', title=None, fn=None, over_loading=False):
+        '''This function plots the contribution to the free energy specified by a given name as a function of
+        chemical potential for several temperatures.
         
-        def function(calculator, Ts, mus):
-            return calculator.free_energy_contrib(Ts, mus, contrib_name)
+        Parameters
+        ----------
+        temperatures
+            a list of temperatures at which to calculate the free energy contribution
+        chempots
+            A list of chemical potentials to plot the contribution to free energy against.
+        contrib_name
+            The name of the contribution to the free energy that will be plotted. It can be a string or a list
+        of strings. A list can be provided when the different calculator instances use different functionals that 
+        need to be compared.
+        ylabel, optional
+            The label for the y-axis of the plot, with a placeholder for the unit specified by yunit.
+        yunit, optional
+            The unit of the y-axis label in the plot. It is set to 'kjmol' by default.
+        title
+            The title of the plot. It describes the type of data being plotted.
+        fn
+            The filename to save the plot as.
+        over_loading, optional
+            A boolean parameter that specifies whether to calculate the free energy contribution per unit cell
+        or per loading. If set to True, the contribution will be calculated per loading. If set to False,
+        the contribution will be calculated per unit cell.
         
-        return self.observable(temperatures, chempots, function, ylabel=ylabel, title=title, yunit=yunit, fn=fn)
-
-    def free_energy_contribution_vs_loading(self, temperatures, chempots, contrib_name, ylabel='Energy [%s]', yunit='kjmol', title=None, fn=None, over_loading=False):
+        Returns
+        -------
+            A plot comparing the contribution to the free energy specified by 'contrib_name' as a function of the
+        chemical potential for geiven temperatures and the different calculator objects
+        
         '''
-            Plot the contribution to the free energy specified by <contrib_name> as function of chemical potential for several temperatures.
-        '''
-
         if isinstance(contrib_name, list):
             contrib_names = ''
             for name in contrib_name:
-                contrib_names += name
+                contrib_names += f' {name}'
             if title==None:
                 title = '%s contribution vs loading' %(contrib_names)
             if fn==None:

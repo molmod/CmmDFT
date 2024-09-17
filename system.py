@@ -5,6 +5,7 @@
 from __future__ import division
 
 import numpy as np, sys, os
+from pathlib import Path
 import json
 
 from molmod.constants import *
@@ -18,10 +19,30 @@ __all__ = ['System', 'EmptyHost', 'NanoporousHost', 'Guest', 'Grid']
 
 class System(object):
     def __init__(self, host, guest):
+        '''This is a constructor function that initializes the "host" and "guest" attributes of an object.
+        
+        Parameters
+        ----------
+        host
+            An instance of the Host class, defined later in this file
+        guest
+            An instance of the Guest class, as defined alter
+        
+        '''
         self.host = host
         self.guest = guest
     
     def add_hybrid_system(self, second_host):
+        '''This function adds a secondary host to the initial host system, with the condition that they have
+        the same position but different forcefields.
+        
+        Parameters
+        ----------
+        second_host
+            `second_host` is a parameter that represents a second host system that is being added to the
+        current system, this is also an instaance of the Host class
+        
+        '''
         assert (second_host.mol.pos == self.host.mol.pos).all(), 'The secondary host must be the same system as the initial host, albeit with a different forcefield'
         self.second_host = second_host
     
@@ -44,6 +65,17 @@ class Host(object):
     
 class NanoporousHost(Host):
     def __init__(self, name, chk, par):
+        '''This function initializes a nanoporous host system
+        
+        Parameters
+        ----------
+        name
+            The name of the system being initialized.
+        chk
+            The path to a .chk file containing the host structure information.
+        par
+            The "par" parameter is .txt a file containing the force-field parameters
+        '''
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Reading host structure from %s with parameters from %s' %(chk,par))
             self.mol = YaffSystem.from_file(chk)
@@ -97,8 +129,21 @@ class Guest(object):
         if hasattr(self, 'sigma'): guest.sigma, guest.epsilon = self.sigma, self.epsilon
         return guest
 
-    def compute_hardsphere_radius(self, temperature, rcut=12*angstrom, style='sb'):
-        "Get hard sphere radius (for FMT/MFMT) and zero radius (for MFA)"
+    def compute_hardsphere_radius(self, temperature, rcut=12*angstrom, style='su'):
+        '''This function computes the hard sphere radius and zero radius for FMT/MFMT and MFA using the Barker
+        and Henderson formula at a given temperature.
+        
+        Parameters
+        ----------
+        temperature
+            The temperature at which the hard sphere radius is being computed, in Kelvin.
+        rcut
+            The cutoff radius used in calculating the interatomic potential. It is set to 12 angstroms by
+        default.
+        style, optional
+            The style parameter determines the type of hard sphere potential used in the calculation. It can be
+        'su' for the semi-uniform averaging, 'bo' for the Boltzmann averaging or 'ave' for uniform averaging
+        '''
         with log.section('GUEST', 2, timer="Rhs calculation"):
             log.dump('Computing hard sphere radius from barker and henderson formula at temperature of %.0f K' %(temperature))
             beta = 1.0/(temperature*boltzmann)
@@ -109,18 +154,37 @@ class Guest(object):
                 self.Rhs, self.Rzero = hard_spheres_barker_henderson(beta, ff_int, natom=self.mol.natom, style=style)
             log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
 
-    def compute_hardsphere_radius_bis(self, temperature, fn, rcut=12*angstrom, rewrite=False, style='sb'):
+    def compute_hardsphere_radius_bis(self, temperature, fn, name_dict, rcut=12*angstrom, rewrite=False, style='su'):
+        '''This function calculates and saves the hard sphere radius and volume for a given temperature and
+        potential function.
+        
+        Parameters
+        ----------
+        temperature
+            The temperature at which to compute the hard sphere radius.
+        fn
+            `fn` is a file path object that specifies the location and name of a file. It is used to read and
+        write data related to the calculation of the hard sphere radius.
+        rcut
+            The cutoff radius for the hard sphere potential.
+        rewrite, optional
+            The `rewrite` parameter is a boolean flag that determines whether to overwrite an existing file
+        containing pre-calculated values of `Rhs` and `Rzero` for a given temperature or not. If `rewrite`
+        is set to `True`, the function will always recalculate and overwrite the file.
+        style, optional
+            The style parameter specifies the type of rotational averaging scheme is used in the calculation of 
+        the hard sphere radius to use. It can be 'su' for the semi-uniform averaging, 'bo' for the 
+        Boltzmann averaging or 'ave' for uniform averaging
+        '''
         with log.section('GUEST', 2, timer="Initializing"):
             if hasattr(self, "set_Rhs"):
                 self.Rhs = self.set_Rhs
                 self.Rzero = self.set_Rzero
             else:
-                fn_list = ''
-                for l in fn.split('/')[:-1]:
-                    fn_list += l + '/'
-                file_name = fn_list + 'rhs_sig.json'
+                dr_name = Path(name_dict['prefix']) / name_dict['hostname'] / name_dict['guestname'] / name_dict['ff_suffix'] 
+                file_name = dr_name / 'rhs_sig.json'
 
-                if os.path.isfile(file_name) and not rewrite:
+                if file_name.is_file() and not rewrite:
                     f_sig = open(file_name, 'r')
                     dict_sig = json.load(f_sig)
                     f_sig.close()  

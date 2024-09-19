@@ -145,7 +145,7 @@ class Calculator(object):
             for file_name in namefiles:
                 numeric_const_pattern = '[-+]? (?: (?: \d* \. \d+ ) | (?: \d+ \.? ) )(?: [Ee] [+-]? \d+ ) ?'
                 rx = re.compile(numeric_const_pattern, re.VERBOSE)
-                Temps.append(float(rx.findall(str(file_name))[0]))
+                Temps.append(float(rx.findall(str(file_name))[-1]))
         
         if chempot_dict is None:
             chempot_dict = self.get_chemical_potential(Temps)
@@ -172,20 +172,20 @@ class Calculator(object):
                 np.savetxt(self.workdir / f'loads_{T:#3.0f}K.csv', load_chem, delimiter=',', header='chempot, loadings', comments='')
         
     def free_energy_contrib(self, temp, chempot, partname, over_loading=False, local=False, fn=None):
-        '''This function calculates the free energy contribution of a given particle type at a specified
+        '''This function calculates the free energy contribution of a given functional at a specified
         temperature and chemical potential.
         
         Parameters
         ----------
         temp
-            temperature at which the free energy contribution is being calculated
+            temperature in Kelvin
 
         chempot
             The chemical potential in atomic units.
         partname
             The name of the energy contribution being calculated. It can be either "fid" or "fideal" for the
         ideal gas contribution, or the name of a specific energy contribution term (e.g. "MFMT", "FMT",
-        "WDA-V", "WDA-N", "COR
+        "WDA-V",...)
         over_loading, optional
             A boolean parameter that determines whether the free energy contribution should be calculated per
         particle or per unit volume. If set to True, the contribution will be divided by the total number of
@@ -233,18 +233,60 @@ class Calculator(object):
                 if part.name == partname:
                     if partname in ['MFMT', 'FMT', 'WDA-V', 'WDA-N', 'CORR']:
                         if self.fener.temperature != temp: self.fener.set_temperature(temp)
-                    if over_loading: return part.value(krho, local).real/N
-                    else: return part.value(krho, local).real
+                    if over_loading: 
+                        return part.value(krho, local).real/N
+                    else: 
+                        return part.value(krho, local).real
             raise IOError(f"Recieved partname ({partname}) not present in functional (contains: {','.join([part.name for part in self.fener.parts])})" )
 
 
     def free_energy(self, temp, chempot, local=False):
+        '''This function calculates the total free energy of a system at a given temperature and chemical
+        potential.
+        
+        Parameters
+        ----------
+        temp
+            temperature at which the free energy is being calculated
+        chempot
+            Chemical potential at which the free energy is calculated
+        local, optional
+            `local` is a boolean parameter that determines whether to return local contributions to the free
+        energy calculation or only the global free energy. 
+        
+        Returns
+        -------
+            The function `free_energy` returns the total free energy of the system. It is a scalar value if 
+            `local` is set to False and is a matrix of the shape of the grid if `local`is set to True
+        
+        '''
         value = self.free_energy_contrib(temp, chempot, 'fid')
         for part in self.fener.parts:
             value += self.free_energy_contrib(temp, chempot, part.name, local=local)
         return value
     
     def excess_free_energy(self, temp, chempot, local=False, fn=None):
+        '''This function calculates the excess free energy of a system at a given temperature and chemical
+        potential.
+        
+        Parameters
+        ----------
+        temp
+            The temperature at which the excess free energy is being calculated.
+        chempot
+            The chemical potential at which te excess free energy is being calculated.
+        local, optional
+            `local` is a boolean parameter that determines whether to return local contributions to the free
+        energy calculation or only the global free energy. 
+        fn
+            The "fn" parameter is an optional argument which can be used to specify a certain density file
+        
+        Returns
+        -------
+            The function `excess_free_energy` returns the total excess free energy of the system. It is a scalar value if 
+            `local` is set to False and is a matrix of the shape of the grid if `local`is set to True
+
+        '''
         value = 0
         for part in self.fener.parts:
             if part.name in self.fener.excess_table:
@@ -274,7 +316,7 @@ class Calculator(object):
         -------
             The function `grand_potential` returns the grand potential of the system, which is calculated based
         on the free energy, temperature, and chemical potential.  It is a scalar value if 
-        `local` is set to False and is a matrix of the shape of the grid if `local`is set to True        
+        `local` is set to False and is a matrix of the shape of the grid if `local`is set to True      
         '''
         value = self.free_energy(temp, chempot, local=local)
         if local:

@@ -139,7 +139,7 @@ class Calculator(object):
         '''
 
         if Temps is None:
-            namefiles = [fn for fn in Path.glob(self.workdir) if str(fn).startswith('name_file')]
+            namefiles = [fn for fn in Path.glob(self.workdir, 'name_file*')]
     
             Temps = []
             for file_name in namefiles:

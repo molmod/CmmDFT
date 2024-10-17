@@ -18,27 +18,13 @@ from .tools import selection_sort
 __all__ = ['Picard', 'Anderson']
 
 
-def plot_quad(a, b, c, alpha_max,  alphas_o, omega_o):
-    #plt.close('all')
-    fig = plt.figure()
-    ax = fig.gca()
-    alphas = np.linspace(0,alpha_max,1000)
-    x = a + b*alphas + c*alphas**2
-    alpha_min = -b/2/c
-    x_min = a + b*alpha_min + c*alpha_min**2 
-    if alpha_min<alpha_max: ax.plot(alpha_min, x_min/kjmol, marker='o')
-    ax.plot(alphas, x/kjmol)
-    ax.plot(alphas_o, omega_o/kjmol, marker='v', linestyle='')
-    plt.show()
-
-
 class Picard(object):
     def __init__(self, grid, fener):
         self.grid = grid
         self.fener = fener
         self.iphase = 0
 
-    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.001, method='uno', silent=False):
+    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.1, method='uno', silent=False, correction_factor=1):
         """
             Implementing Picard iterative solver to find equilibrium density.
             
@@ -71,9 +57,9 @@ class Picard(object):
             for istep in range(nsteps):
                 self.curr_step = istep +1
                 if method == 'uno':
-                    rho_new = self.update_rho(rho, fugacity, alpha_mix=alpha_mix)
+                    rho_new = self.update_rho(rho, fugacity, alpha_mix=alpha_mix, correction_factor=correction_factor)
                 elif method == 'hybrid':
-                    rho_new = self.update_rho_hybrid(rho, chempot, fugacity, alpha_mix=alpha_mix)
+                    rho_new = self.update_rho_hybrid(rho, chempot, fugacity, alpha_mix=alpha_mix, correction_factor=correction_factor)
                 else:
                     raise ValueError('Must provide a valid solver, options are: uno, bis, res, hybrid, Anderson')
                 N_new = self.grid.integrate(rho_new).real
@@ -112,7 +98,7 @@ class Picard(object):
             log.dump('#################################################################################')
             return N_new, rho_new
 
-    def update_rho(self, rho, fugacity, alpha_mix=0.01):
+    def update_rho(self, rho, fugacity, alpha_mix=0.01, correction_factor=1):
         with log.section('PICARD', 3, timer='Update rho'):
             dF = 0
             krho = np.fft.fftn(rho)*self.grid.dr
@@ -122,12 +108,12 @@ class Picard(object):
                 return np.nan*rho
             rho_new = self.fener.beta*np.exp(-self.fener.beta*dF.real)*fugacity
             krho_new = np.fft.fftn(rho_new)*self.grid.dr
-            rho_new = (1.0-alpha_mix)*rho+alpha_mix*rho_new
+            alpha_mix_cor = alpha_mix*correction_factor
+            rho_new = (1.0-alpha_mix_cor)*rho+alpha_mix_cor*rho_new
             rho_new[rho_new<1e-10/angstrom**3] = 0.0
             return rho_new
 
-    def update_rho_hybrid(self, rho, chempot, fugacity, alpha_mix, break_nstep=80):
-        # A hybrid solving algorithm, combining two versions of line search for a Picard iteration
+    def update_rho_hybrid(self, rho, chempot, fugacity, alpha_mix, break_nstep=80, correction_factor=1):
         with log.section('PICARD', self.log_level, timer='Update rho'):
             dF = 0
             krho = np.fft.fftn(rho)*self.grid.dr
@@ -135,7 +121,12 @@ class Picard(object):
             for part in self.fener.parts:
                 dF += part.derive(krho).real
 
-            rho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity     
+            rho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity
+            if np.any(rho_new<0): 
+                log.dump('#####################################################')
+                log.dump('NEGATIVE DENSITIES ENCOUTERED In the initial density')
+                log.dump('#####################################################')            
+
             krho_new = np.fft.fftn(rho_new)*self.grid.dr
 
             #calculating the weighted densities from the FMT to calculate the alpha max and check certain conditions
@@ -210,7 +201,7 @@ class Picard(object):
                 log.dump('Quadratic approximation failed.')
                 log.dump(f'Manually set the value of alpha_mix to: {alpha_mix}')
                 log.dump('######################################################')
-            rho_new = (1-alpha_opt)*rho + alpha_opt*rho_new
+            rho_new = (1-alpha_opt*correction_factor)*rho + alpha_opt*correction_factor*rho_new
             if np.any(rho_new<0): 
                 log.dump('#####################################################')
                 log.dump('NEGATIVE DENSITIES ENCOUTERED')
@@ -295,10 +286,6 @@ class Anderson(object):
                     log.dump("Converged after %d Picard steps"%(istep+1))
                     log.dump("")
                     break
-                # elif f==0 and np.isnan(RIUE):
-                #     log.dump("Converged after %d Picard steps"%(istep+1))
-                #     log.dump("Loading is zero")
-                #     break
                 rho = rho_new.copy()
             if istep==nsteps-1:
                 log.dump("Solution not converged after %d Picard steps \n"%(nsteps))
@@ -314,7 +301,7 @@ class Anderson(object):
                     dF += part.derive(krho).real
                 self.Grho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity     
 
-            # print('rho_new', rho_new)     
+   
             krho_new = np.fft.fftn(self.Grho_new)*self.grid.dr
 
 
@@ -333,7 +320,6 @@ class Anderson(object):
                 if part.name in ['FMT', 'MFMT', 'WBII']:
                     n3_max = np.max(part.get_n3(krho)).real
                     n3_max_new = np.max(part.get_n3(krho_new)).real   
-                    # print(n3_max, n3_max_new)
 
             #first quadratic approximation
             alpha_max = np.min([abs((1-n3_max)/(n3_max_new - n3_max)), 1])
@@ -372,16 +358,13 @@ class Anderson(object):
                 alpha_opt_new = opt.minimize(calc_G_rho, [alpha_mix*alpha_max], bounds=bounds, method='SLSQP', options= {'ftol':1e-8}).x
 
                 tstop = time.perf_counter()
-                #self.plot_solvers(rho, rho_new, chempot, alpha_max, alpha_opt, alpha_opt_new, alpha1, alpha2, omega1, omega2,a,b,c)
 
                 alpha_opt = alpha_opt_new
-                #print('Omega_min: ', omega_min, 'Alpha_min: ', alpha_min)
                 print('######################')
                 print('alternate method')
                 print('######################')
                 print(f'time needed to calculate alpha_opt: {tstop-tstart}')
 
-                # print('Real minimum', alpha_min)
                 print('alpha opt ', alpha_opt)
             elif alpha_opt <= 0 and max_pot-min_pot<thresh:
                 alpha_opt = alpha_mix*alpha_max
@@ -426,14 +409,9 @@ class Anderson(object):
             res_k = self.prev_Grhos[:mk]-self.prev_rhos[:mk]
             res_diff = res_k[1:]-res_k[:-1]
             rhos = self.prev_rhos[:mk]
-            print(res_diff.shape)
             rho_diff = rhos[1:] - rhos[:-1]
-            print(rho_diff.shape)
-            # print('rhos', self.prev_rhos[:mk,0])
-            # print('Grhos', self.prev_Grhos[:mk,0])
 
             def sum_res(alps):
-                #print('alphas', alps)
                 residual_k = self.Grho_new-rho
                 broad_alps = np.broadcast_to(alps, res_diff.T.shape).T
                 result = residual_k - broad_alps*res_diff
@@ -443,11 +421,9 @@ class Anderson(object):
             if mk == 1:
                 rho_new = (1-alpha_mix)*rho +  alpha_mix*(rho + res_k[-1])
             else:
-                # Q, R = np.linalg.qr(res_diff)
-                # alphas = R/(Q*res_diff[-1])
+
                 alphas = opt.minimize(sum_res, np.full(mk-1,1/(mk-1)), method='SLSQP', tol=1e-15, bounds=bds, constraints={'type': 'eq', 'fun': lambda x:np.sum(x)-1}).x
 
-                # print(alphas)
                 broad_alphas = np.broadcast_to(alphas, self.prev_rhos[:mk-1].T.shape).T
                 Grho_result = broad_alphas*(rho_diff+res_diff)
                 rho_new = rho + res_k[-1] + alpha_mix*np.sum(Grho_result,axis=0)
@@ -480,7 +456,6 @@ class Anderson(object):
                 self.prev_rhos[-1] = np.copy(rho)
                 self.prev_Grhos = np.roll(self.prev_Grhos,-1, axis=0)
                 self.prev_Grhos[-1] = np.copy(self.Grho_new)
-
 
             def sum_res(alps):
                 res = self.prev_Grhos[:mk] - self.prev_rhos[:mk]

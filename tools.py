@@ -44,6 +44,36 @@ def selection_sort(x):
         (x[i], x[swap]) = (x[swap], x[i])
     return x
 
+def bisect_left(a, x, lo=0, hi=None, *, key=None):
+    """Return the index where to insert item x in list a, assuming a is sorted.
+    The return value i is such that all e in a[:i] have e < x, and all e in
+    a[i:] have e >= x.  So if x already appears in the list, a.insert(i, x) will
+    insert just before the leftmost x already there.
+    Optional args lo (default 0) and hi (default len(a)) bound the
+    slice of a to be searched.
+    """
+
+    if lo < 0:
+        raise ValueError('lo must be non-negative')
+    if hi is None:
+        hi = len(a)
+    # Note, the comparison uses "<" to match the
+    # __lt__() logic in list.sort() and in heapq.
+    if key is None:
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if a[mid] < x:
+                lo = mid + 1
+            else:
+                hi = mid
+    else:
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if key(a[mid]) < x:
+                lo = mid + 1
+            else:
+                hi = mid
+    return lo
 def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmin=1e-5, rmax=None, npoints=50, degree=7, style='su'):
     '''This function calculates the hard-sphere radius according to the Barker-Henderson method, given a
     force field or Lennard-Jones parameters.
@@ -120,7 +150,7 @@ def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmi
             rmax = 0.9*ff.nlist.rcut
         assert potential(rmax)<0.0, str(potential(rmax)/kjmol)+' '+str(rmax/1.88)
         # Find the only zero of the potential
-        sigma = brentq(potential, rmin, rmax,xtol=2e-20)
+        sigma = brentq(potential, rmin, rmax)
         # Numerical integration
         grid = np.linspace(0.0, sigma, num=npoints)
         e = np.zeros(grid.shape)
@@ -503,7 +533,7 @@ def effective_potential_Leb(ff, natom, beta, degree = 10, Taylor=None):
     else:
         return potential, np.std(pot/kjmol)
 
-def effective_potential_precalc(ff, natom, beta, cutoff_pot=20, degree=7, Taylor=None):
+def effective_potential_precalc(ff, natom, beta, cutoff_pot=100, degree=7, Taylor=None):
     """
     A method to compute the effective external potential as described by Dandan Hong (2021), where the degree of the scheme
     used to rotate the molecule is determined by an initial trial calculation of degree 3. Points with a high standard deviation are 
@@ -674,7 +704,60 @@ def generate_rotation_matrix(degree, dimension):
         rot_tot = np.array([[c1*c3-c2*s1*s3,-c1*s3-c2*c3*s1,s1*s2],[c3*s1+c1*c2*s3,c1*c2*c3-s1*s3,-c1*s2],[s2*s3,c3*s2,c2]])      
         return rot_tot.swapaxes(2,0).swapaxes(1,2), scheme.weights
     else:
-        print('Must provide a string with a valid dimension, choices are 2, 3 or 4')
+        print('Must provide an integer with a valid dimension, choices are 2, 3 or 4')
+
+def calculate_along_diffusion(ff, grid, ring_indices, natom, step_dist, cvs_limits=None, beta=1/boltzmann/300, degree=9):
+    '''
+    Calculate the external potential along a (diffusion) axis going through a ring
+    '''
+    neutral_pos = np.copy(ff.system.pos)
+    diffusion_path = np.empty((2,3))
+    center = np.mean(ff.system.pos[ring_indices], axis=0)
+    points = ff.system.pos[ring_indices] - center
+    u, s, vh = np.linalg.svd(points)            
+    diffusion_path[0] = center
+    diffusion_path[1] = (vh[-1,:] + center)/np.linalg.norm(vh[-1,:] + center)
+
+    # Calculate the collective variables of the points in the grid and list them in ascending order
+    points = grid.points[:,:,:,:-1]
+
+    unit_vector = (diffusion_path[1] - diffusion_path[0])/np.linalg.norm(diffusion_path[1] - diffusion_path[0])
+    shifted_points = points - diffusion_path[0]
+    cvs_mat = shifted_points@unit_vector
+    # print(cvs_mat)
+    # cvs = np.linspace(np.min(cvs_mat), np.max(cvs_mat), nbins+1) #sift out values which virtually identical and sort the cv in ascending order
+    cvs_min = selection_sort(np.arange(0, np.min(cvs_mat), - step_dist))
+    # print(cvs_min)
+    cvs_pos = np.arange(0, np.max(cvs_mat), step_dist)
+    cvs = np.concatenate((cvs_min[:-1], cvs_pos))
+    # print(cvs/angstrom)
+    cvss = (cvs[1:] + cvs[:-1])/2
+
+    if cvs_limits is not None:
+        assert len(cvs_limits) == 2, 'cvs_limits must be a tuple of two numbers constraining the cvs values for which the free energy is calculated'
+        small_limit = np.min(np.array(cvs_limits))
+        large_limit = np.max(np.array(cvs_limits))
+        left_index = bisect_left(cvss, small_limit)
+        right_index = bisect_left(cvss, large_limit)
+        cvss = cvss[left_index: right_index]
+    # print(cvss/angstrom)
+
+    axis_positions = unit_vector*cvss.reshape(len(cvss),1) + center
+    potentials = np.empty(len(cvss))
+    for e, pos in enumerate(axis_positions):
+        ff.system.pos[-natom:] = neutral_pos[-natom:] + pos
+        ff.update_pos(ff.system.pos)
+        if natom > 1:
+            integrand = effective_potential_precalc(ff, natom, beta, degree=degree)
+            try:
+                potentials[e]  = -np.log(integrand)/beta
+            except FloatingPointError:
+                potentials[e] = np.nan
+
+        else:
+            potentials[e] = ff.compute()
+
+    return cvss, potentials
 
 def potential_from_mfa(points, potential):
     '''The function takes mfa potential( as calculated in functionals.py) and gridpoints and returns the 
@@ -811,33 +894,32 @@ def find_neighbours(index, data, direct=True):
 
     return np.array(neighbours), new_indices
 
-def bisect_left(a, x, lo=0, hi=None, *, key=None):
-    """Return the index where to insert item x in list a, assuming a is sorted.
-    The return value i is such that all e in a[:i] have e < x, and all e in
-    a[i:] have e >= x.  So if x already appears in the list, a.insert(i, x) will
-    insert just before the leftmost x already there.
-    Optional args lo (default 0) and hi (default len(a)) bound the
-    slice of a to be searched.
-    """
 
-    if lo < 0:
-        raise ValueError('lo must be non-negative')
-    if hi is None:
-        hi = len(a)
-    # Note, the comparison uses "<" to match the
-    # __lt__() logic in list.sort() and in heapq.
-    if key is None:
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if a[mid] < x:
-                lo = mid + 1
-            else:
-                hi = mid
+def make_supercell(data, grid_points, grid_spacings, periodic=True):
+    if periodic:
+        shape = (data.shape[0]*3, data.shape[1]*3, data.shape[2]*3)
     else:
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if key(a[mid]) < x:
-                lo = mid + 1
+        shape = (data.shape[0]*3, data.shape[1]*3, data.shape[2]*3,3)
+    sup_cell = np.zeros(shape)
+
+    nop = np.array(grid_points.shape[:-1])
+    point_dict_x = {1:(2*nop[0],3*nop[0]), 0:(nop[0],2*nop[0]),-1:(0,nop[0])}
+    point_dict_y = {1:(2*nop[1],3*nop[1]), 0:(nop[1],2*nop[1]),-1:(0,nop[1])}
+    point_dict_z = {1:(2*nop[2],3*nop[2]), 0:(nop[2],2*nop[2]),-1:(0,nop[2])}
+    index_list = [np.array([1,0,0]), np.array([0,1,0]), np.array([0,0,1]), np.array([0,0,0]), 
+                np.array([1,1,0]), np.array([1,0,1]), np.array([0,1,1]), np.array([1,-1,0]), np.array([1,0,-1]), np.array([0,-1,1]),
+                np.array([1,1,1]), np.array([1,1,-1]), np.array([1,-1,1]), np.array([-1,1,1])]
+
+    for i in [-1,1]:
+        for index in index_list:
+            index = i*index
+            ind_x = point_dict_x[index[0]]
+            ind_y = point_dict_y[index[1]]
+            ind_z = point_dict_z[index[2]]
+
+            if periodic:
+                sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data
             else:
-                hi = mid
-    return lo
+                sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data + index*np.array(grid_spacings)*nop   
+
+    return sup_cell

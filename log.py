@@ -3,6 +3,7 @@
 from __future__ import print_function, absolute_import, unicode_literals
 from io import IOBase
 import os, sys, datetime, getpass, atexit
+from pathlib import Path
 import numpy, scipy, matplotlib
 
 
@@ -84,6 +85,9 @@ class Logger(object):
         self.add_blank_line = False
         self.timetable = []
         self.warnings = []
+        self.second_log = False
+        self.dr = ''
+        self.f2 = None
 
     def set_level(self, level):
         if isinstance(level, int):
@@ -99,13 +103,42 @@ class Logger(object):
                 raise ValueError('String level should be silent, low, medium, high or highest.')
         self.section_level = None
 
-    def write_to_file(self, f):
-        if isinstance(f, str):
-            self._f = open(f, 'w')
-        elif isinstance(f, IOBase):
-            self._f = f
+    def write_to_file(self, dr=None, f=None, second_log=False, overwrite=True):
+        """
+        dr: the directory in which the logfile is stored
+        f: the filename of the logfile
+        """
+        assert dr is not None, 'Must provide a directory in which to store the logfile, can be an empty string'
+        self.dr = dr
+        if not isinstance(dr, os.PathLike):
+            dr = Path(dr)
+
+        if f is None:
+            f =  sys.stdout
+        elif f is not None:
+            f = dr / f
+            self.f2 = f
+        self.second_log = second_log
+
+        if overwrite:
+            mode = 'w'
         else:
-            raise ValueError('File argument f should be a string representing a filename or a File instance')
+            mode = 'a'
+        
+        if second_log:
+            if isinstance(f, str) or isinstance(f, os.PathLike):
+                self._f2 = open(f, mode)
+            elif isinstance(f, IOBase):
+                self._f2 = f  
+            else:      
+                raise ValueError('File argument f should be a string representing a filename or a File instance')
+        else:
+            if isinstance(f, str) or isinstance(f, os.PathLike):
+                self._f = open(f, mode)
+            elif isinstance(f, IOBase):
+                self._f = f        
+            else:
+                raise ValueError('File argument f should be a string representing a filename or a File instance')            
 
     def section(self, label, level, timer=None):
         '''
@@ -114,7 +147,7 @@ class Logger(object):
         '''
         return Section(self, label, level, timer)
 
-    def dump(self, message, new_line=True):
+    def dump(self, message, new_line=True, write=True):
         if self.section_level<=self.log_level:
             if not self._active:
                 self._active = True
@@ -122,6 +155,8 @@ class Logger(object):
             assert self.label is not None
             if new_line and self.add_blank_line:
                 print('', file=self._f)
+                if self.second_log:
+                    print('', file=self._f2)
                 self.add_blank_line = False
             line = ''
             for piece in splitstring(message, self.ll-self.mll):
@@ -130,7 +165,17 @@ class Logger(object):
                 line += piece
                 line += '\n'
             line = line.rstrip('\n')
+            # self._f.write(line)
             print(line, file=self._f)
+            if self.second_log:
+                # self._f2.write(line)
+                print(line, file=self._f2)
+            if write:
+                if self.second_log:
+                    self._f2.close()
+                self.write_to_file(self.dr, self.f2, self.second_log, overwrite=False)
+
+
 
     def warning(self, message, new_line=True, label_section=None):
         '''
@@ -157,11 +202,18 @@ class Logger(object):
             else:
                 self.warnings.append((label_section, message))
             print(line, file=self._f)
+            if self.second_log:
+                print(line, file=self._f2)
+
 
     def print_header(self):
         if self.log_level>0:
             print(header, file=self._f)
             print('', file=self._f)
+            if self.second_log:
+                print(header, file=self._f2)
+                print('', file=self._f2)
+
         mll = self.mll
         self.mll = 20
         with self.section('USER', 1): self.dump(getpass.getuser(), new_line=False)
@@ -178,6 +230,10 @@ class Logger(object):
         if self.log_level>0:
             print('', file=self._f)
             print('~'*80, file=self._f)
+            if self.second_log:
+                print('', file=self._f2)
+                print('~'*80, file=self._f2)
+
 
     def exit(self):
         if self._active:
@@ -189,11 +245,18 @@ class Logger(object):
     def print_footer(self):
         if self.log_level>0:
             print(footer, file=self._f)
+            if self.second_log:
+                print(footer, file=self._f2)
+
 
     def print_timetable(self):
         if self.log_level>0:
             print('', file=self._f)
             print('~'*80, file=self._f)
+            if self.second_log:
+                print('', file=self._f2)
+                print('~'*80, file=self._f2)
+
         with self.section('TIMING', 1):
             for label, time in self.timetable:
                 line = '%30s  ' %(label+' '*(30-len(label)))
@@ -216,6 +279,8 @@ class Logger(object):
     def close(self):
         if isinstance(self._f, IOBase):
             self._f.close()
+            if self.second_log:
+                self._f2.close()
 
 log = Logger('medium')
 atexit.register(log.exit)

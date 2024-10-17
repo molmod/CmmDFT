@@ -183,7 +183,6 @@ class Guest(object):
             else:
                 dr_name = Path(name_dict['prefix']) / name_dict['hostname'] / name_dict['guestname'] / name_dict['ff_suffix'] 
                 file_name = dr_name / 'rhs_sig.json'
-
                 if file_name.is_file() and not rewrite:
                     f_sig = open(file_name, 'r')
                     dict_sig = json.load(f_sig)

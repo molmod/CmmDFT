@@ -50,6 +50,8 @@ class FreeEnergy(object):
         fenercopy = FreeEnergy(grid, self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
         for part in self.parts:
             fenercopy.parts.append(part.copy(grid))
+        for part_name in self.part_names:
+            fenercopy.part_names.append(part_name)
         if hasattr(self, 'epot_fn'): fenercopy.epot_fn = self.epot_fn
         return fenercopy
     
@@ -118,6 +120,20 @@ class FreeEnergy(object):
                         part.generate_potential(self.system.guest.Rzero, temperature, natom=self.system.guest.mol.natom)
                         log.dump('writing coarsened interaction potential to %s' %coarse_fn)
                         part.dump_potential(coarse_fn)                    
+
+    def remove_part(self, part_name):
+        """
+        Removes a functional from the list of parts
+
+        Parameters
+        ----------
+        part_name : str
+            Name of the functional to be removed
+
+        """
+        index = self.part_names.index(part_name)
+        self.parts.pop(index)
+        self.part_names.pop(index)
                     
     def init_tracking(self, fn):
         """
@@ -1143,7 +1159,7 @@ class ExternalPotential(Functional):
         with log.section('ExtPot', 3, timer='ExtPot value'):
             rho = np.fft.ifftn(krho)/self.grid.dr
             if local:
-                rho*self.potential
+                return rho*self.potential
             else:
                 return self.grid.integrate(rho*self.potential)
 
@@ -1219,10 +1235,10 @@ class EffectiveExternalPotential(ExternalPotential):
                             integrand = effective_potential_Leb(self.ff, natom, 1/boltzmann/temperature, degree = self.degree)[0]
                         elif self.method.lower() == 'pre':
                             integrand = effective_potential_precalc(self.ff, natom, 1/boltzmann/temperature, degree = self.degree)
-                        if np.isclose(integrand,0): 
-                            self.potential[i,j,k] = self.limit_potential
-                        else: 
+                        try:
                             self.potential[i,j,k] = -boltzmann*temperature*np.log(integrand) 
+                        except FloatingPointError:
+                            self.potential[i,j,k] = self.limit_potential
 
                 if inter_save:
                     inter_fn = self.epot_fn / f"inter_effpot_{i}_{temperature}K.npy"
@@ -1289,10 +1305,10 @@ class EffectiveExternalPotentialTaylor(ExternalPotential):
                                 integrand, derivative, second_derivative = effective_potential_Leb(self.ff, natom, 1/boltzmann/temperature, degree = self.degree, Taylor=2)[0:1]
                             elif self.method.lower() == 'pre':
                                 integrand, derivative, second_derivative = effective_potential_precalc(self.ff, natom, 1/boltzmann/temperature, degree = self.degree, Taylor=2)
-                        if np.isclose(integrand,0): 
-                            self.potential_three[i,j,k] = self.limit_potential
-                        else: 
+                        try:
                             self.potential_three[i,j,k] = -boltzmann*temperature*np.log(integrand) 
+                        except FloatingPointError: 
+                            self.potential_three[i,j,k] = self.limit_potential
                         self.derivative[i,j,k] = derivative
                         if order == 2: self.second_derivative[i,j,k] = second_derivative
             self.kpotential_three = np.fft.fftn(self.potential_three)

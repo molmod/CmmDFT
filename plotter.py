@@ -7,6 +7,7 @@ import matplotlib.cm as cmap
 from molmod.units import kjmol, kelvin, bar, parse_unit, angstrom
 from molmod.constants import boltzmann
 from yaff import log as ylog
+from gemmi import cif
 ylog.set_level(ylog.silent)
 
 from .system import System, Grid
@@ -494,6 +495,21 @@ class Plotter(object):
             data = np.load(self.calculator.workdir / f'/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
         elif obs.lower() == 's_ex':
             data = np.load(self.calculator.workdir / f'sex_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
+
+        if obs.lower() == 'epot':
+            print(self.calculator.fener.part_names)
+            if "ExtPot" in self.calculator.fener.part_names:
+                index = self.calculator.fener.part_names.index("ExtPot")
+            elif "EffExtPot" in self.calculator.fener.part_names:
+                index = self.calculator.fener.part_names.index("EffExtPot")
+            elif "EffExtPotTay" in self.calculator.fener.part_names:
+                index = self.calculator.fener.part_names.index("EffExtPotTay")
+            elif "HybExtPot" in self.calculator.fener.part_names:
+                index = self.calculator.fener.part_names.index("HybExtPot")
+            else:
+                raise TypeError('No external potential present to plot')
+            data = self.calculator.fener.parts[index].potential
+        
         elif obs.lower()!='rho':
             try:
                 data = np.load(self.calculator.workdir / obs).real
@@ -628,7 +644,7 @@ class Plotter(object):
         '''
         
         assert not(density and density_probability), 'can only plot the density or the density probability'
-        data = np.loadtxt(self.calculator.workdir / +f'free_energy_profile_{mu/kjmol:#0.8f}kjmol_{temperature:#0.3f}K.csv', delimiter = ',', ).T
+        data = np.loadtxt(self.calculator.workdir / f'free_energy_profile_{mu/kjmol:#0.8f}kjmol_{temperature:#0.3f}K.csv', delimiter = ',', ).T[:,:-2]
         collectives = data[0]
         densities = data[1]
         prob_densities = data[2]
@@ -679,6 +695,26 @@ class Plotter(object):
         if fn is not None:
             self.fig.savefig(fn, dpi=150)
         return self.fig
+
+    def plot_loading_AIF(self, temperature, x_key='pressure',  y_keys='amount'):
+        fn = f'{self.workdir}/loading_{temperature}K.aif'
+        aif = cif.read(fn)
+        block = aif.sole_block()
+        values = []
+        for key in y_keys:
+            values.append(np.array(block.find_loop(f'_adsorp_{key}'), dtype=float))
+        self.fig = pp.figure()
+        ax = self.fig.gca()
+
+        ax.plot(values[0], values[1], label=f'')
+        unit_x = block.find_pair(f'_units_{x_key[0]}')
+        unit_y = block.find_pair(f'_units_{y_keys[1]}')
+        pp.xlabel(f'{key[0]} [{unit_x}]')
+        pp.ylabel(f'{key[1]} [{unit_y}]')
+
+        pp.show()
+
+        pass
 
         
 class MultiPlotter(Plotter):

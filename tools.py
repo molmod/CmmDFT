@@ -12,6 +12,7 @@ from .rotations._stroud_1969 import stroud_1969
 from .rotations.AngGrid import AngularGrid
 
 from molmod.units import kjmol, angstrom
+from molmod.constants import boltzmann
 
 from yaff import System, ForceField, Parameters
 

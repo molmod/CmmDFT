@@ -24,7 +24,7 @@ class Picard(object):
         self.fener = fener
         self.iphase = 0
 
-    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.1, method='uno', silent=False, correction_factor=1):
+    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.1, method='uno', silent=False, correction_factor=1, thresh=1*kjmol):
         """
             Implementing Picard iterative solver to find equilibrium density.
             
@@ -59,7 +59,7 @@ class Picard(object):
                 if method == 'uno':
                     rho_new = self.update_rho(rho, fugacity, alpha_mix=alpha_mix, correction_factor=correction_factor)
                 elif method == 'hybrid':
-                    rho_new = self.update_rho_hybrid(rho, chempot, fugacity, alpha_mix=alpha_mix, correction_factor=correction_factor)
+                    rho_new = self.update_rho_hybrid(rho, chempot, fugacity, alpha_mix=alpha_mix, correction_factor=correction_factor, thresh=thresh)
                 else:
                     raise ValueError('Must provide a valid solver, options are: uno, bis, res, hybrid, Anderson')
                 N_new = self.grid.integrate(rho_new).real
@@ -113,7 +113,7 @@ class Picard(object):
             rho_new[rho_new<1e-10/angstrom**3] = 0.0
             return rho_new
 
-    def update_rho_hybrid(self, rho, chempot, fugacity, alpha_mix, break_nstep=80, correction_factor=1):
+    def update_rho_hybrid(self, rho, chempot, fugacity, alpha_mix, break_nstep=40, correction_factor=1, thresh=1*kjmol):
         with log.section('PICARD', self.log_level, timer='Update rho'):
             dF = 0
             krho = np.fft.fftn(rho)*self.grid.dr
@@ -140,6 +140,8 @@ class Picard(object):
             
             min_pot = 0
             max_pot = 0
+            alpha_opt = 0
+
 
             if np.isclose(alpha_max,0):
                 alpha_opt = 0
@@ -166,7 +168,6 @@ class Picard(object):
 
             min_pot = np.min(omegas)/kjmol
             max_pot = np.max(omegas)/kjmol    
-            thresh = 5e-4
 
             # if alpha_opt <= 0 and max_pot-min_pot>thres:
             if alpha_opt <= 0 and max_pot-min_pot>thresh:
@@ -196,10 +197,14 @@ class Picard(object):
                 # log.dump('Real minimum', alpha_min) 
                 log.dump('alpha opt: %5.5f'%alpha_opt)
             elif alpha_opt <= 0 and max_pot-min_pot<thresh:
+                if self.curr_step>break_nstep:
+                    alpha_mix /= 2
+                elif self.curr_step>break_nstep*2:
+                    alpha_mix /= 4
                 alpha_opt = alpha_mix*alpha_max
                 log.dump('######################################################')
                 log.dump('Quadratic approximation failed.')
-                log.dump(f'Manually set the value of alpha_mix to: {alpha_mix}')
+                log.dump(f'Manually set the value of alpha_mix to: {alpha_mix*correction_factor}')
                 log.dump('######################################################')
             rho_new = (1-alpha_opt*correction_factor)*rho + alpha_opt*correction_factor*rho_new
             if np.any(rho_new<0): 

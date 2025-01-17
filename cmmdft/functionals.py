@@ -7,8 +7,6 @@ simulations.
 from __future__ import division
 
 import numpy as np, os, copy, re
-from multiprocessing import Process, Pool
-from functools import partial
 from pathlib import Path
 from molmod.units import kjmol, angstrom
 from molmod.constants import planck, boltzmann
@@ -26,7 +24,7 @@ __all__ = [
 
 
 class FreeEnergy(object):
-    def __init__(self, grid, system, temperature, workdir='.', name_dict={}, overwrite=False, rewrite_RHS=False, RHS_style='sb'):
+    def __init__(self, grid, system, temperature, workdir='.', name_dict={}, overwrite=False, rewrite_RHS=False, RHS_style='LJ'):
         self.grid = grid
         self.system = system
         self.temperature = temperature
@@ -41,7 +39,7 @@ class FreeEnergy(object):
         self.RHS_style = RHS_style
         self.excess_table = ['FMT', 'MFMT', 'WBII', 'MFA', 'LJMFA', 'COARSE', 'LDA', 'WDA-V', 'CORR'] #list of names of excess functionals
         self.part_names = []
-        self.set_temperature(temperature)
+        self.set_temperature(temperature, rewrite_RHS=rewrite_RHS, RHS_style=RHS_style)
     
     def copy(self, grid=None):
         if grid is None:
@@ -56,7 +54,7 @@ class FreeEnergy(object):
         if hasattr(self, 'epot_fn'): fenercopy.epot_fn = self.epot_fn
         return fenercopy
     
-    def set_temperature(self, temperature):
+    def set_temperature(self, temperature, rewrite_RHS=False, RHS_style='LJ'):
         """
         Adjusts temperature sensitive components when the temperature is changed.
         
@@ -66,6 +64,7 @@ class FreeEnergy(object):
 
         """
         with log.section('FREEENER', 2, timer='Initializing'):
+            self.system.guest.compute_hardsphere_radius(temperature, self.workdir, self.name_dict, rewrite=rewrite_RHS, style=RHS_style)
             self.temperature = temperature
             self.beta = 1.0/(boltzmann*temperature)
             #compute barker and henderson hard sphere radius
@@ -206,7 +205,7 @@ class FreeEnergy(object):
             self.tracking_step += 1
         return G
     
-    def add_external_potential(self, rcut=12*angstrom, upper_limit=1e6*kjmol, positive=False, rewrite=False):
+    def add_external_potential(self, rcut=12*angstrom, upper_limit=1e6*kjmol, positive=False, rewrite=False, fn=None):
         '''The `add_external_potential` function adds an external potential contribution for spherical
         particles in a system.
         
@@ -226,6 +225,9 @@ class FreeEnergy(object):
             `rewrite` is a boolean parameter that determines whether to overwrite an existing external
         potential file or not. If `rewrite` is `True`, the existing file will be overwritten, otherwise it
         will be loaded from the file.
+        fn, optional
+            The file path and name where the external potential will be saved. If None, the potential will 
+        be saved in the work directory with the name epot.npy.
         
         '''
         with log.section('FREEENER', 2, timer='ExtPot init'):
@@ -233,8 +235,12 @@ class FreeEnergy(object):
             assert self.system.guest.mol.natom == 1, 'The guest atom must be a spherical molecule, otherwise use add_effective_external_potential'
             log.dump('Initializing external potential')
             epot = ExternalPotential(self.grid)
-            if positive: epot_fn = self.workdir / 'pos_epot.npy'
-            else: epot_fn = self.workdir / 'epot.npy'
+            if fn is None:
+                if positive: epot_fn = self.workdir / 'pos_epot.npy'
+                else: epot_fn = self.workdir / 'epot.npy'
+            else:
+                assert str(fn).endswith('.npy'), 'fn must be a filename of an external potential'
+                epot_fn = Path(fn)
             if not os.path.isfile(epot_fn) or self.overwrite or rewrite:
                 pars_fn = self.workdir / 'pars.txt'
                 merge_ffpar_files(pars_fn, self.system.host.par, self.system.guest.par)
@@ -257,7 +263,7 @@ class FreeEnergy(object):
         self.parts.append(epot)
         self.part_names.append(epot.name)
         
-    def add_effective_external_potential(self, temperature, method='pre', rcut=12*angstrom, upper_limit=1e5*kjmol, rewrite=False, degree=10, fn=None, inter_save=False):
+    def add_effective_external_potential(self, temperature, method='pre', rcut=12*angstrom, upper_limit=1e5*kjmol, rewrite=False, degree=5, fn=None, inter_save=False):
         '''This function adds an effective external potential contribution for non-spherical particles,
         orientationally averaged, with various optional parameters.
         
@@ -299,8 +305,10 @@ class FreeEnergy(object):
             log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.host.par, self.system.guest.par, pars_fn))
             ff_ext = get_ff(self.system.host.mol, self.system.guest.mol, pars_fn, rcut)
             if fn is not None:
-                self.epot_fn = Path(fn)
-                epot_file = self.epot_fn / 'eff_epot_%3.2f.npy'%(temperature)
+                assert str(fn).endswith('.npy'), 'fn must be a filename of an external potential'
+                fn = Path(fn)
+                epot_file = fn
+                self.epot_fn = fn.parent
             else:
                 self.epot_fn = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] 
                 epot_file = self.epot_fn / f'eff_epot_{temperature:#3.2f}.npy'
@@ -410,8 +418,6 @@ class FreeEnergy(object):
         with log.section('FREEENER', 2, timer='WDA-v init'):
             log.dump('Initializing WDA-v functional for attractive interaction contribution')
             eos.set_temperature(self.temperature)
-            self.system.guest.compute_hardsphere_radius(self.temperature, self.workdir, self.name_dict, rewrite=self.rewrite_RHS, style=self.RHS_style)
-            print('Rhs: ', self.system.guest.Rhs/angstrom)
             wda = WDAVFunctional(self.temperature, self.grid, self.system.guest.Rhs, eos)
         self.parts.append(wda)
         self.part_names.append(wda.name)
@@ -544,8 +550,8 @@ class FreeEnergy(object):
             assert style.lower() in ['su', 'ave', 'bo'], 'Style of averaging must be "su", "bo" or "ave"'
 
 
-            coarse_fn = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix']
-            coarse_file = coarse_fn + f'coarse_int_{temperature:#3.2f}_{style.lower()}.npy'
+            coarse_fn = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] 
+            coarse_file = coarse_fn / f'coarse_int_{temperature:#3.2f}_{style.lower()}.npy'
             if not coarse_fn.is_dir(): coarse_fn.mkdir(parents=True)
 
             ff_int = get_ff(self.system.guest.mol, self.system.guest.mol, self.system.guest.par, rcut)
@@ -959,7 +965,6 @@ class MFAFunctional(Functional):
         """
         ff.system.pos[:] = limit_potential
         self.potential = np.zeros(self.grid.points.shape[:3])
-        r_prev = None
         for r in np.unique(self.grid.points[:,:,:,3].round(decimals=4)):
             if r<rmin: continue
             mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
@@ -1243,13 +1248,13 @@ class EffectiveExternalPotential(ExternalPotential):
                     inter_fn = self.epot_fn / f"inter_effpot_{i}_{temperature}K.npy"
                     self.dump_potential(inter_fn)
                     log.dump(f'Saving an intermediary effective potential at {inter_fn}')
-                    if i != 0:
-                        try:
+                    try:
+                        if i != 0:
                             previous_fn = self.epot_fn / f"inter_effpot_{i-1}_{temperature}K.npy"
                             previous_fn.unlink()
-                        except FileNotFoundError:
-                            print(f'unable to remove {previous_fn}')
-                            pass
+                    except FileNotFoundError:
+                        log.dump(f'unable to remove {previous_fn}')
+                        pass
             self.kpotential = np.fft.fftn(self.potential)
             try:
                 (self.epot_fn / f"inter_effpot_{i}_{temperature}K.npy").unlink()

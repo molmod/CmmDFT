@@ -180,7 +180,7 @@ class Guest(object):
                 self.Rhs, self.Rzero = hard_spheres_barker_henderson(beta, ff_int, natom=self.mol.natom, style=style)
             log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
 
-    def compute_hardsphere_radius(self, temperature, fn, name_dict, rcut=12*angstrom, rewrite=False, style='su'):
+    def compute_hardsphere_radius(self, temperature, fn, name_dict, rcut=12*angstrom, rewrite=False, style='LJ'):
         '''This function calculates and saves the hard sphere radius and volume for a given temperature and
         potential function.
         
@@ -238,7 +238,6 @@ class Guest(object):
                     self._calculate_Rhs(temperature, rcut=rcut, style=style)
                     dict_sig = {'%7.5f'%(temperature): (self.Rhs, self.Rzero)}
                     json.dump(dict_sig, open(file_name, 'w'))
-
 
 
 class Grid(object):

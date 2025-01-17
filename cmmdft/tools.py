@@ -6,6 +6,7 @@ Tools required for the CDFT program
 from __future__ import division
 
 import numpy as np
+import itertools
 import numpy.random as rd
 from scipy.optimize import brentq
 from .rotations._stroud_1969 import stroud_1969
@@ -75,7 +76,7 @@ def bisect_left(a, x, lo=0, hi=None, *, key=None):
             else:
                 hi = mid
     return lo
-def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmin=1e-5, rmax=None, npoints=50, degree=7, style='su'):
+def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmin=1e-5, rmax=None, npoints=50, degree=7, style='LJ'):
     '''This function calculates the hard-sphere radius according to the Barker-Henderson method, given a
     force field or Lennard-Jones parameters.
     
@@ -116,7 +117,8 @@ def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmi
     
     '''
 
-    if len_jon is not None: 
+    if style == 'LJ': 
+        assert len_jon is not None, 'Must provide Lennard-Jones parameters'
         sigma = len_jon[0]
         epsilon = len_jon[1]
         Tt = 1/beta/epsilon
@@ -237,7 +239,7 @@ def get_ff(system1, system2, pars, rcut, nlow=None, nhigh=None, tailcorrections=
     if nlow is None or nhigh is None:
         nlow = system1.natom
         nhigh = system1.natom
-    ff = ForceField.generate(system, pars, rcut=rcut, smooth_ei=True, nlow=nlow, nhigh=nhigh, tailcorrections=tailcorrections)
+    ff = ForceField.generate(system, str(pars), rcut=rcut, smooth_ei=True, nlow=nlow, nhigh=nhigh, tailcorrections=tailcorrections)
     return ff
 
 def merge_yaff_systems(system0, system1):
@@ -896,30 +898,28 @@ def find_neighbours(index, data, direct=True):
     return np.array(neighbours), new_indices
 
 
-def make_supercell(data, grid_npoints, grid_spacings, periodic=True):
+def make_supercell(data, grid_points, grid_spacings, periodic=True):
     if periodic:
         shape = (data.shape[0]*3, data.shape[1]*3, data.shape[2]*3)
     else:
         shape = (data.shape[0]*3, data.shape[1]*3, data.shape[2]*3,3)
     sup_cell = np.zeros(shape)
 
-    point_dict_x = {1:(2*grid_npoints[0],3*grid_npoints[0]), 0:(grid_npoints[0],2*grid_npoints[0]),-1:(0,grid_npoints[0])}
-    point_dict_y = {1:(2*grid_npoints[1],3*grid_npoints[1]), 0:(grid_npoints[1],2*grid_npoints[1]),-1:(0,grid_npoints[1])}
-    point_dict_z = {1:(2*grid_npoints[2],3*grid_npoints[2]), 0:(grid_npoints[2],2*grid_npoints[2]),-1:(0,grid_npoints[2])}
-    index_list = [np.array([1,0,0]), np.array([0,1,0]), np.array([0,0,1]), np.array([0,0,0]), 
-                np.array([1,1,0]), np.array([1,0,1]), np.array([0,1,1]), np.array([1,-1,0]), np.array([1,0,-1]), np.array([0,-1,1]),
-                np.array([1,1,1]), np.array([1,1,-1]), np.array([1,-1,1]), np.array([-1,1,1])]
+    nop = grid_points
+    point_dict_x = {1:(2*nop[0],3*nop[0]), 0:(nop[0],2*nop[0]),-1:(0,nop[0])}
+    point_dict_y = {1:(2*nop[1],3*nop[1]), 0:(nop[1],2*nop[1]),-1:(0,nop[1])}
+    point_dict_z = {1:(2*nop[2],3*nop[2]), 0:(nop[2],2*nop[2]),-1:(0,nop[2])}
+    index_list = np.array(list(itertools.product((-1,0,1), repeat=3)))
 
-    for i in [-1,1]:
-        for index in index_list:
-            index = i*index
-            ind_x = point_dict_x[index[0]]
-            ind_y = point_dict_y[index[1]]
-            ind_z = point_dict_z[index[2]]
+    for index in index_list:
+        index = index
+        ind_x = point_dict_x[index[0]]
+        ind_y = point_dict_y[index[1]]
+        ind_z = point_dict_z[index[2]]
 
-            if periodic:
-                sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data
-            else:
-                sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data + index*np.array(grid_spacings)*grid_npoints   
+        if periodic:
+            sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data
+        else:
+            sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data + index*np.array(grid_spacings)*nop   
 
     return sup_cell

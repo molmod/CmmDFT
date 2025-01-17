@@ -150,9 +150,9 @@ class Logger(object):
     def dump(self, message, new_line=True, write=True):
         if self.section_level<=self.log_level:
             if not self._active:
+                self.start_time = datetime.datetime.now()
                 self._active = True
                 self.print_header()
-                self.start_time = datetime.datetime.now()
             assert self.label is not None
             if new_line and self.add_blank_line:
                 print('', file=self._f)
@@ -166,10 +166,8 @@ class Logger(object):
                 line += piece
                 line += '\n'
             line = line.rstrip('\n')
-            # self._f.write(line)
             print(line, file=self._f)
             if self.second_log:
-                # self._f2.write(line)
                 print(line, file=self._f2)
             if write:
                 if self.second_log:

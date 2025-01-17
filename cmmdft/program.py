@@ -8,10 +8,10 @@ import numpy as np, sys, os, time
 from pathlib import Path
 
 from molmod.constants import boltzmann
-from molmod.units import angstrom, kelvin, kjmol, bar, mol, joule
+from molmod.units import angstrom, kelvin, kjmol, bar
 
-from .functionals import FreeEnergy, WDAVFunctional
-from .system import System, Grid, NanoporousHost
+from .functionals import FreeEnergy
+from .system import System, Grid
 from .solver import Picard, Anderson
 from .log import log
 from .tools import find_local_maxima, find_neighbours
@@ -94,7 +94,7 @@ class Program(object):
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
         self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing)
     
-    def init_free_energy(self, temperature, rewrite_RHS=False, RHS_style='sb'):
+    def init_free_energy(self, temperature, rewrite_RHS=False, RHS_style='LJ'):
         '''This function initializes the FreeEnergy object of a program at a given temperature.
         
         Parameters
@@ -107,7 +107,7 @@ class Program(object):
         False, the existing RHS values will be used for the calculation.
         RHS_style, optional
             RHS_style is a string parameter that specifies the averaging style of the hard sphere radius (RHS) used in the
-        calculation of the free energy. It can take one of three values: 'sb', 'bo', or 'ave'. 'sb' stands for semi-uniform averaging
+        calculation of the free energy. It can take one of three values: 'sb', 'bo', or 'ave'. 'su' stands for semi-uniform averaging
         'bo' for Boltzmann weighted averaging and ave for uniform
         
         '''
@@ -115,7 +115,7 @@ class Program(object):
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
         assert self.grid is not None, "Grid must first be set using 'set_grid'"
         assert isinstance(self.grid, Grid), "self.grid is not an instance of Grid, aborting!"
-        assert RHS_style in ['sb', 'bo', 'ave'], "style must be 'sb', 'bo' or 'ave'"
+        assert RHS_style.lower() in ['su', 'bo', 'ave', 'lj'], "style must be 'sb', 'bo', 'ave' or 'LJ'"
         self.fener = FreeEnergy(self.grid, self.system, temperature, workdir=self.workdir, overwrite=self.overwrite, rewrite_RHS=rewrite_RHS, RHS_style=RHS_style, name_dict=self.name_dict)
     
     def set_temperature(self, temperature):
@@ -182,7 +182,7 @@ class Program(object):
             Distance cut-off, points further from host atoms than this distance and which conform with the energy criterion are part of the empty space. 
             The default is 3.4*angstrom.
         mof_cutoff : Scalar, optional
-            Energy criterium, points with a potential energy larger than boltzmann*temperature*mof_cutoff are part of the MOF. The default is 5.
+            Energy criterium, points with a potential energy larger than boltzmann*temperature*mof_cutoff are part of the MOF. The default is 2.5.
 
         Returns: 3 masks in the shape of the grid indicating the different regions
         -------
@@ -295,7 +295,8 @@ class Program(object):
                 self.rho0[mask] = rho  
             self.split = True
     
-    def solve(self, chempot, threshold=1e-6, method='hybrid', alpha_mix=0.1, nsteps=1000, maxphases=20, Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, m=10, delta=0.01, silent=False):
+    def solve(self, chempot, threshold=1e-6, method='hybrid', alpha_mix=0.1, nsteps=1000, maxphases=5, threshold_energy=1*kjmol,
+              Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, m=10, delta=0.01, silent=False):
         '''This function solves for the density profile at given a chemical potential and temperature
         
         Parameters
@@ -403,7 +404,7 @@ class Program(object):
                     log.dump('#################################################################################')
                     log.dump('#'*10+'      PHASE % 2i (threshold = %.1e  alpha_mix = %.1e)    ' %(picard.iphase, current_threshold, current_alpha_mix) + ('#'*10))
                     log.dump('#################################################################################')
-                    N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix, method=method, silent=silent)
+                    N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix, method=method, silent=silent, thresh=threshold_energy)
                     if rho is None:
                         todo.append([min(1e-1,current_threshold*5),current_alpha_mix/10,100])
                         if len(todo)>maxphases:

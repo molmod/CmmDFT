@@ -1,0 +1,21 @@
+# van der Waals
+#==============
+
+MM3:UNIT SIGMA angstrom
+MM3:UNIT EPSILON kcalmol
+MM3:SCALE 1 0.0
+MM3:SCALE 2 0.0
+MM3:SCALE 3 1.0
+
+# ---------------------------------------------
+# KEY      ffatype  SIGMA  EPSILON  ONLYPAULI
+# ---------------------------------------------
+
+MM3:PARS      AL     2.360   0.116      0
+MM3:PARS    O_HY     1.820   0.059      0
+MM3:PARS    H_HY     1.600   0.016      0
+MM3:PARS    O_CA     1.820   0.059      0
+MM3:PARS    C_CA     1.940   0.056      0
+MM3:PARS    C_PC     1.940   0.056      0
+MM3:PARS    C_PH     1.940   0.056      0
+MM3:PARS    H_PH     1.620   0.020      0

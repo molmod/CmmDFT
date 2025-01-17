@@ -1,0 +1,15 @@
+# van der Waals
+#==============
+
+LJ:UNIT SIGMA angstrom
+LJ:UNIT EPSILON kcalmol
+LJ:SCALE 1 0.0
+LJ:SCALE 2 0.0
+LJ:SCALE 3 1.0
+
+# ---------------------------------
+# KEY      ffatype  SIGMA  EPSILON
+# ---------------------------------
+
+LJ:PARS     ET_C  3.310   0.007949
+LJ:PARS     ET_H  3.310   0.030404

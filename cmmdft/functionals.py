@@ -41,6 +41,7 @@ class FreeEnergy(object):
         self.RHS_style = RHS_style
         self.excess_table = ['FMT', 'MFMT', 'WBII', 'MFA', 'LJMFA', 'COARSE', 'LDA', 'WDA-V', 'CORR'] #list of names of excess functionals
         self.part_names = []
+        self.set_temperature(temperature)
     
     def copy(self, grid=None):
         if grid is None:
@@ -65,7 +66,6 @@ class FreeEnergy(object):
 
         """
         with log.section('FREEENER', 2, timer='Initializing'):
-            self.system.guest.compute_hardsphere_radius_bis(temperature, self.workdir, self.name_dict, rewrite=self.rewrite_RHS, style=self.RHS_style)
             self.temperature = temperature
             self.beta = 1.0/(boltzmann*temperature)
             #compute barker and henderson hard sphere radius
@@ -410,7 +410,7 @@ class FreeEnergy(object):
         with log.section('FREEENER', 2, timer='WDA-v init'):
             log.dump('Initializing WDA-v functional for attractive interaction contribution')
             eos.set_temperature(self.temperature)
-            self.system.guest.compute_hardsphere_radius_bis(self.temperature, self.workdir, self.name_dict, rewrite=self.rewrite_RHS, style=self.RHS_style)
+            self.system.guest.compute_hardsphere_radius(self.temperature, self.workdir, self.name_dict, rewrite=self.rewrite_RHS, style=self.RHS_style)
             print('Rhs: ', self.system.guest.Rhs/angstrom)
             wda = WDAVFunctional(self.temperature, self.grid, self.system.guest.Rhs, eos)
         self.parts.append(wda)
@@ -427,7 +427,6 @@ class FreeEnergy(object):
 
         """
         with log.section("FREEENER", 2, timer='(M)FMT init'):
-            self.system.guest.compute_hardsphere_radius_bis(self.temperature, self.workdir, self.name_dict, rewrite=self.rewrite_RHS, style=self.RHS_style)
             if version=='MFMT':
                 log.dump('Initializing MFMT functional for hard-sphere contribution')
                 part = MFMTFunctional(self.system.guest.Rhs, self.temperature, self.grid)
@@ -1207,7 +1206,7 @@ class EffectiveExternalPotential(ExternalPotential):
         new potentials will be saved with
         
         '''
-        with log.section('FREEENER', 2, timer='EffExtPot init'):
+        with log.section('FREEENER', 2):
             assert natom>1
             points = self.grid.points
             self.potential = np.zeros(points.shape[:3], dtype='complex128')
@@ -1244,12 +1243,13 @@ class EffectiveExternalPotential(ExternalPotential):
                     inter_fn = self.epot_fn / f"inter_effpot_{i}_{temperature}K.npy"
                     self.dump_potential(inter_fn)
                     log.dump(f'Saving an intermediary effective potential at {inter_fn}')
-                    try:
-                        previous_fn = self.epot_fn / f"inter_effpot_{i-1}_{temperature}K.npy"
-                        previous_fn.unlink()
-                    except FileNotFoundError:
-                        print(f'unable to remove {previous_fn}')
-                        pass
+                    if i != 0:
+                        try:
+                            previous_fn = self.epot_fn / f"inter_effpot_{i-1}_{temperature}K.npy"
+                            previous_fn.unlink()
+                        except FileNotFoundError:
+                            print(f'unable to remove {previous_fn}')
+                            pass
             self.kpotential = np.fft.fftn(self.potential)
             try:
                 (self.epot_fn / f"inter_effpot_{i}_{temperature}K.npy").unlink()
@@ -1282,7 +1282,7 @@ class EffectiveExternalPotentialTaylor(ExternalPotential):
         return extpot 
 
     def generate_potential_derivative(self, temperature, natom, order):
-        with log.section('FREEENER', 2, timer='EffExtPot init'):
+        with log.section('FREEENER', 2):
             assert natom>1
             points = self.grid.points
             self.potential_three = np.zeros(points.shape[:3], dtype='complex128')

@@ -896,17 +896,16 @@ def find_neighbours(index, data, direct=True):
     return np.array(neighbours), new_indices
 
 
-def make_supercell(data, grid_points, grid_spacings, periodic=True):
+def make_supercell(data, grid_npoints, grid_spacings, periodic=True):
     if periodic:
         shape = (data.shape[0]*3, data.shape[1]*3, data.shape[2]*3)
     else:
         shape = (data.shape[0]*3, data.shape[1]*3, data.shape[2]*3,3)
     sup_cell = np.zeros(shape)
 
-    nop = np.array(grid_points.shape[:-1])
-    point_dict_x = {1:(2*nop[0],3*nop[0]), 0:(nop[0],2*nop[0]),-1:(0,nop[0])}
-    point_dict_y = {1:(2*nop[1],3*nop[1]), 0:(nop[1],2*nop[1]),-1:(0,nop[1])}
-    point_dict_z = {1:(2*nop[2],3*nop[2]), 0:(nop[2],2*nop[2]),-1:(0,nop[2])}
+    point_dict_x = {1:(2*grid_npoints[0],3*grid_npoints[0]), 0:(grid_npoints[0],2*grid_npoints[0]),-1:(0,grid_npoints[0])}
+    point_dict_y = {1:(2*grid_npoints[1],3*grid_npoints[1]), 0:(grid_npoints[1],2*grid_npoints[1]),-1:(0,grid_npoints[1])}
+    point_dict_z = {1:(2*grid_npoints[2],3*grid_npoints[2]), 0:(grid_npoints[2],2*grid_npoints[2]),-1:(0,grid_npoints[2])}
     index_list = [np.array([1,0,0]), np.array([0,1,0]), np.array([0,0,1]), np.array([0,0,0]), 
                 np.array([1,1,0]), np.array([1,0,1]), np.array([0,1,1]), np.array([1,-1,0]), np.array([1,0,-1]), np.array([0,-1,1]),
                 np.array([1,1,1]), np.array([1,1,-1]), np.array([1,-1,1]), np.array([-1,1,1])]
@@ -921,6 +920,6 @@ def make_supercell(data, grid_points, grid_spacings, periodic=True):
             if periodic:
                 sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data
             else:
-                sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data + index*np.array(grid_spacings)*nop   
+                sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data + index*np.array(grid_spacings)*grid_npoints   
 
     return sup_cell

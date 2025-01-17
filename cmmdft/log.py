@@ -152,6 +152,7 @@ class Logger(object):
             if not self._active:
                 self._active = True
                 self.print_header()
+                self.start_time = datetime.datetime.now()
             assert self.label is not None
             if new_line and self.add_blank_line:
                 print('', file=self._f)
@@ -237,6 +238,7 @@ class Logger(object):
 
     def exit(self):
         if self._active:
+            self.end_time = datetime.datetime.now()
             self.print_timetable()
             self.print_warnings()
             self.print_footer()
@@ -262,6 +264,9 @@ class Logger(object):
                 line = '%30s  ' %(label+' '*(30-len(label)))
                 line += str(time)
                 self.dump(line)
+            line = '%30s  ' %('TOTAL TIME' +' '*(30-len('TOTAL TIME')))
+            line += str(self.end_time-self.start_time)
+            self.dump(line)
 
     def print_warnings(self):
         if len(self.warnings):

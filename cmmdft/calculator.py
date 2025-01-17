@@ -101,25 +101,20 @@ class Calculator(object):
                 loading_list[i] = np.nan
         return loading_list
 
-    def get_chemical_potential(self, temps):
+    def get_chemical_potential(self, temperature):
         """
         Returns a dictionary containing all the chemical potentials for which the density is calculated for a given temperature
         """
-        if not isinstance(temps, list) and not isinstance(temps, np.ndarray):
-            temps = [temps]
 
-        chempots_dict = {}
-        for T in temps:
-            chempots = []
-            with open(self.workdir / f"name_file_{T:#7.5f}K.txt") as n:
-                for x in n:
-                    l = x.split(",")
-                    chempots.append(float(l[1])*kjmol)
-                chempots_dict[T] = selection_sort(np.array(chempots))
+        chempots = []
+        with open(self.workdir / f"name_file_{temperature:#7.5f}K.txt") as n:
+            for x in n:
+                l = x.split(",")
+                chempots.append(float(l[1])*kjmol)
         
-        return chempots_dict
+        return chempots
 
-    def save_loadings(self, temps=None, chempot_dict=None, pressure=False, eos=None):
+    def save_loadings(self, temperature, chempots=None, pressure=False, eos=None):
         '''This function saves the loadings of all the calculated densities at the specified temperatures in a csv
         file vs the chemical potential or pressure.
         
@@ -142,42 +137,26 @@ class Calculator(object):
         temperature and chemical potential
         
         '''
-
-
-        if temps is None:
-            namefiles = [fn for fn in Path.glob(self.workdir, 'name_file*')]
-    
-            temps = []
-            for file_name in namefiles:
-                numeric_const_pattern = '[-+]? (?: (?: \d* \. \d+ ) | (?: \d+ \.? ) )(?: [Ee] [+-]? \d+ ) ?'
-                rx = re.compile(numeric_const_pattern, re.VERBOSE)
-                temps.append(float(rx.findall(str(file_name))[-1]))
-        elif not hasattr(temps, '__iter__'):
-            temps = [temps]
             
-        if chempot_dict is None:
-            chempot_dict = self.get_chemical_potential(temps)
-        else:
-            assert np.isclose(np.array(list(chempot_dict.keys())), np.array(temps)).all(), 'Temperatures in chempot_dict must be the same as the temperatures for which the density is saved'
+        if chempots is None:
+            chempots = self.get_chemical_potential(temperature)
 
         def hack(P, eos, mu, temperature):
             return eos.calculate_mu(temperature, P) - mu
 
-        for T in temps:
-            load_chem = np.empty((2,len(chempot_dict[T])))
-            if pressure:
-                if eos is not None:
-                    load_chem[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, T))/bar for chem in chempot_dict[T]])
-                else:
-                    raise ValueError('Must provide an equation of state object, with the function calculate_mu')
+        if pressure:
+            if eos is not None:
+                load_chem[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, temperature)) for chem in chempots])
             else:
-                load_chem[0] = chempot_dict[T]
-            load_chem[1] = self.return_loading(T, chempot_dict[T])
-            load_chem = load_chem.T
-            if pressure:
-                np.savetxt(self.workdir / f'loads_{T:#3.0f}K_vs_P.csv', load_chem, delimiter=',', header='pressures, loadings', comments='')
-            else:    
-                np.savetxt(self.workdir / f'loads_{T:#3.0f}K.csv', load_chem, delimiter=',', header='chempot, loadings', comments='')
+                raise ValueError('Must provide an equation of state object, with the function calculate_mu')
+        else:
+            load_chem[0] = chempots
+        load_chem[1] = self.return_loading(temperature, chempots)
+        load_chem = load_chem.T
+        if pressure:
+            np.savetxt(self.workdir / f'loads_{temperature:#3.0f}K_vs_P.csv', load_chem, delimiter=',', header='pressures, loadings', comments='')
+        else:    
+            np.savetxt(self.workdir / f'loads_{temperature:#3.0f}K.csv', load_chem, delimiter=',', header='chempot, loadings', comments='')
         
     def free_energy_contrib(self, temp, chempot, partname, over_loading=False, local=False, fn=None):
         '''This function calculates the free energy contribution of a given functional at a specified
@@ -399,7 +378,7 @@ class Calculator(object):
         # print('number of cvs bins', len(cvs))
 
         if supercell:
-            points = make_supercell(points, self.grid.points[:,:,:,:-1], self.grid.spacings,  periodic=False)
+            points = make_supercell(points, self.grid.npoints, self.grid.spacings,  periodic=False)
             cvs_mat = (points - diffusion_path[0])@unit_vector
 
         dist_mask = np.ones_like(cvs_mat)
@@ -469,7 +448,7 @@ class Calculator(object):
                         assert os.path.isfile(fn), f'No density found for {fn}'
                     rho = np.load(fn).real
                     if supercell:
-                        rho = make_supercell(rho, self.grid.points[:,:,:,:-1], self.grid.spacings, periodic=True)
+                        rho = make_supercell(rho, self.grid.npoints, self.grid.spacings, periodic=True)
                     n_list[e] =  self.grid.integrate(mask*rho)
                 q_list = (cvs[1:]+cvs[:-1])/2
 
@@ -549,7 +528,7 @@ class Calculator(object):
                     else:
                         data = self.free_energy_contrib(temp, chempot, contrib_name, local=True)
                     if supercell:
-                        data = make_supercell(data, self.grid.points[:,:,:,:-1], self.grid.spacings, periodic=True)
+                        data = make_supercell(data, self.grid.npoints, self.grid.spacings, periodic=True)
                     if 'pure_extpot' in contrib_name.lower():
                         contrib_list[e] =  np.sum(mask*data)/np.sum(mask)
                     else:
@@ -676,9 +655,7 @@ class Calculator(object):
 
             for e in range(q_len):  # now calculating n and p for the different input collective variables
  
-                
                 integrand = np.zeros(len(it_chems))
-
                 for i, mu in enumerate(it_chems):
                     n = n_dict[f'{mu:0.8f}'][e]
                     integrand[i] = n*np.exp(-beta*dens_omega_dict[f'{mu:0.8f}'][1])

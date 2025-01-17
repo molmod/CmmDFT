@@ -116,10 +116,36 @@ class Guest(object):
                 self.mass = self.mol.masses.sum()
             
     def add_len_jon_parameters(self, sigma, epsilon):
+        '''Add Lennard-Jones parameters to the guest molecule. This will ensure that the hard sphere radius is calculated with the approximate formula.
+        
+        Parameters
+        ----------
+        sigma
+            Sigma is a parameter commonly used in statistics and mathematics. It represents the standard
+        deviation of a probability distribution or the spread of data points in a dataset. It is a measure
+        of how much individual data points differ from the mean of the dataset.
+        epsilon
+            Epsilon is a parameter used in the differential privacy framework. It represents the privacy budget
+        or the level of privacy protection provided by a mechanism. A smaller value of epsilon indicates a
+        higher level of privacy protection, while a larger value allows for more information to be
+        disclosed.
+        
+        '''
+
         self.sigma = sigma
         self.epsilon = epsilon
     
     def add_rhs_sig(self, rhs, sig):
+        '''The function `add_rhs_sig` sets the hard sphere radius of the guest molecule (normally denpendent on the temperature)
+        and the zero radius for the guest molecule (which is not a function of temperature).
+        
+        Parameters
+        ----------
+        rhs
+            Hard spehere radius
+        sig
+            sigma parameter in Lennard-Jones potential. (Radius for which the LJ potential is equal to 0)      
+        '''
         self.set_Rhs = rhs
         self.set_Rzero = sig
 
@@ -129,7 +155,7 @@ class Guest(object):
         if hasattr(self, 'sigma'): guest.sigma, guest.epsilon = self.sigma, self.epsilon
         return guest
 
-    def compute_hardsphere_radius(self, temperature, rcut=12*angstrom, style='su'):
+    def _calculate_Rhs(self, temperature, rcut=12*angstrom, style='su'):
         '''This function computes the hard sphere radius and zero radius for FMT/MFMT and MFA using the Barker
         and Henderson formula at a given temperature.
         
@@ -154,7 +180,7 @@ class Guest(object):
                 self.Rhs, self.Rzero = hard_spheres_barker_henderson(beta, ff_int, natom=self.mol.natom, style=style)
             log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
 
-    def compute_hardsphere_radius_bis(self, temperature, fn, name_dict, rcut=12*angstrom, rewrite=False, style='su'):
+    def compute_hardsphere_radius(self, temperature, fn, name_dict, rcut=12*angstrom, rewrite=False, style='su'):
         '''This function calculates and saves the hard sphere radius and volume for a given temperature and
         potential function.
         
@@ -178,15 +204,14 @@ class Guest(object):
         '''
         with log.section('GUEST', 2, timer="Initializing"):
             if hasattr(self, "set_Rhs"):
+                log.dump('Using pre-set Rhs and Rzero')
                 self.Rhs = self.set_Rhs
                 self.Rzero = self.set_Rzero
             else:
                 dr_name = Path(name_dict['prefix']) / name_dict['hostname'] / name_dict['guestname'] / name_dict['ff_suffix'] 
                 file_name = dr_name / 'rhs_sig.json'
                 if file_name.is_file() and not rewrite:
-                    f_sig = open(file_name, 'r')
-                    dict_sig = json.load(f_sig)
-                    f_sig.close()  
+                    dict_sig = json.load(open(file_name, 'r'))
 
                     if '%7.5f'%(temperature) in dict_sig.keys():
                         log.dump('Reading Rhs and Rzero from %s at %7.5fK'%(file_name, temperature))
@@ -195,30 +220,25 @@ class Guest(object):
                                 
                     else:
                         log.dump('Calculating Rhs and Rzero at %7.5f and writing to %s'%(temperature, file_name))
-                        self.compute_hardsphere_radius(temperature, rcut=rcut, style=style)
+                        self._calculate_Rhs(temperature, rcut=rcut, style=style)
                         dict_sig['%7.5f'%(temperature)] = self.Rhs, self.Rzero
-                        f_sig = open(file_name, 'w')
-                        json.dump(dict_sig, f_sig)
-                        f_sig.close()
+                        json.dump(dict_sig, open(file_name, 'w'))
 
                 elif os.path.isfile(file_name) and rewrite:
                     log.dump('Calculating Rhs and Rzero at %7.5f and writing to %s'%(temperature, file_name))
-                    self.compute_hardsphere_radius(temperature, rcut=rcut, style=style)
-                    f_sig = open(file_name, 'r')
-                    dict_sig = json.load(f_sig)
-                    f_sig.close()
+                    self._calculate_Rhs(temperature, rcut=rcut, style=style)
+
+                    dict_sig = json.load(open(file_name, 'r'))
                     dict_sig['%7.5f'%(temperature)] = self.Rhs, self.Rzero
-                    f_sig = open(file_name, 'w')
-                    json.dump(dict_sig, f_sig)
-                    f_sig.close()   
+
+                    json.dump(dict_sig, open(file_name, 'w'))
                                 
                 else:
                     log.dump('Calculating Rhs and Rzero at %7.5f and writing to %s'%(temperature, file_name))
-                    self.compute_hardsphere_radius(temperature, rcut=rcut, style=style)
+                    self._calculate_Rhs(temperature, rcut=rcut, style=style)
                     dict_sig = {'%7.5f'%(temperature): (self.Rhs, self.Rzero)}
-                    f_sig = open(file_name, 'w')
-                    json.dump(dict_sig, f_sig)
-                    f_sig.close()
+                    json.dump(dict_sig, open(file_name, 'w'))
+
 
 
 class Grid(object):

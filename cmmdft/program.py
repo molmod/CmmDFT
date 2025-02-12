@@ -284,14 +284,9 @@ class Program(object):
                 else:
                     log.dump('Setting initial guess for density from ideal gas at chempot = %.3f kJ/mol' %(chempot/kjmol))
                     index = None
-                    if "ExtPot" in self.fener.part_names:
-                        index = self.fener.part_names.index("ExtPot")
-                    elif "EffExtPot" in self.fener.part_names:
-                        index = self.fener.part_names.index("EffExtPot")
-                    elif "EffExtPotTay" in self.fener.part_names:
-                        index = self.fener.part_names.index("EffExtPotTay")
-                    elif "HybExtPot" in self.fener.part_names:
-                        index = self.fener.part_names.index("HybExtPot")
+                    for partname in self.fener.part_names:
+                        if 'ExtPot' in partname:
+                            index = self.fener.part_names.index(partname)
                     if index is not None:
                         epot_data = self.fener.parts[index].potential        
                     else:

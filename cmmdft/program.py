@@ -12,7 +12,7 @@ from molmod.units import angstrom, kelvin, kjmol, bar
 
 from .functionals import FreeEnergy
 from .system import System, Grid
-from .solver import Picard, Anderson
+from .solver import Solver, Picard, Anderson
 from .log import log
 from .tools import find_local_maxima, find_neighbours
 __all__ = ['Program']
@@ -72,9 +72,33 @@ class Program(object):
             self.overwrite = overwrite
             self.rho_fn = None
             self.pars_fn = None
-            self.chempot = None
-            self.fugacity = None
     
+    def copy(self):
+        '''Creates a copy of the current Program instance.'''
+        new_instance = Program(
+            prefix=self.name_dict['prefix'],
+            hostname=self.name_dict['hostname'],
+            guestname=self.name_dict['guestname'],
+            ff_suffix=self.name_dict['ff_suffix'],
+            funct_suffix=self.name_dict['funct_suffix'],
+            grid_suffix=self.name_dict['grid_suffix'],
+            suffix=self.name_dict['suffix'],
+            overwrite=self.overwrite,
+            logfile=None
+        )
+        new_instance.workdir = self.workdir
+        new_instance.rho_fn = self.rho_fn
+        new_instance.pars_fn = self.pars_fn
+        if hasattr(self, 'system'):
+            new_instance.system = self.system
+        if hasattr(self, 'grid'):
+            new_instance.grid = self.grid
+        if hasattr(self, 'fener'):
+            new_instance.fener = self.fener
+        if hasattr(self, 'solver'):
+            new_instance.solver = self.solver
+        return new_instance
+
     def set_system(self, host, guest):
         self.system = System(host, guest)
     
@@ -241,21 +265,18 @@ class Program(object):
                             self.rho0 = np.load(Ninit) 
                         else:
                             raise FileNotFoundError('File %s for setting initial density not found' %Ninit)
-                    elif isinstance(Ninit, float) and ("ExtPot" in self.fener.part_names or "EffExtPot" in self.fener.part_names or "EffExtPotTay" in self.fener.part_names or "HybExtPot" in self.fener.part_names):
-                        log.dump('Setting initial guess for density at %.3e/cellvolume in pores' %Ninit)
-                        if "ExtPot" in self.fener.part_names:
-                            index = self.fener.part_names.index("ExtPot")
-                        elif "EffExtPot" in self.fener.part_names:
-                            index = self.fener.part_names.index("EffExtPot")
-                        elif "EffExtPotTay" in self.fener.part_names:
-                            index = self.fener.part_names.index("EffExtPotTay")
-                        elif "HybExtPot" in self.fener.part_names:
-                            index = self.fener.part_names.index("HybExtPot")
-                        epot_data = self.fener.parts[index].potential
-                        self.rho0 = Ninit*np.exp(-0.1*epot_data/boltzmann/Temp)
                     elif isinstance(Ninit, float):
-                        log.dump('Setting initial guess for density at %.3e/cellvolume' %(Ninit*self.system.host.cell.volume))
-                        self.rho0 = np.full(self.grid.npoints, Ninit)          
+                        index = None
+                        for partname in self.fener.part_names:
+                            if 'ExtPot' in partname:
+                                index = self.fener.part_names.index(partname)
+                        if index is not None:
+                            epot_data = self.fener.parts[index].potential
+                            self.rho0 = Ninit*np.exp(-0.1*epot_data/boltzmann/Temp)
+                            log.dump('Setting initial guess for density at %.3e/cellvolume in pores' %Ninit)
+                        else:
+                            log.dump('Setting initial guess for density at %.3e/cellvolume' %(Ninit*self.system.host.cell.volume))
+                            self.rho0 = np.full(self.grid.npoints, Ninit)  
                     elif isinstance(Ninit, np.ndarray):
                         assert Ninit.shape == tuple(self.grid.npoints), 'Ninit must have the same shape as the grid'
                         log.dump('Setting initial guess for density from array')
@@ -295,30 +316,20 @@ class Program(object):
                 self.rho0[mask] = rho  
             self.split = True
     
-    def solve(self, chempot, threshold=1e-6, method='hybrid', alpha_mix=0.1, nsteps=1000, maxphases=5, threshold_energy=1*kjmol,
-              Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, m=10, delta=0.01, silent=False):
+    def set_solver(self, solver):
+        '''This function sets the solver for a program.'''
+        with log.section('PROGRAM', 1, timer='Initializing'):
+            assert isinstance(solver, Solver), "solver is not an instance of Solver, aborting!"
+            self.solver = solver
+            log.dump('Solver set to %s' %solver.name)
+    
+    def solve(self, chempot, Ninit=None, rewrite=False, energy_tracking=True, silent=False):
         '''This function solves for the density profile at given a chemical potential and temperature
         
         Parameters
         ----------
         chempot
             The chemical potential of the simulation.
-        threshold
-            The threshold parameter is a scalar that gives the threshold of the relative error, which when
-        obtained stops the calculation. It is an optional parameter with a default value of 1e-6.
-        method, optional
-            The method parameter specifies the numerical method to be used for solving the density profile. It
-        can take the values 'uno', 'hybrid', 'Anderson', 'hybridanderson'
-        alpha_mix
-            Mixing parameter in the Picard solver. It is used to control the mixing of the previous and
-        current density profiles during the iteration process. A smaller value of alpha_mix will result in
-        a slower convergence but a more stable solution, while a larger value will result in faster
-        convergence but a less stable solution
-        nsteps, optional
-            number of maximum steps for each solving phase
-        maxphases, optional
-            The maximum number of phases allowed for the solving process. If the solution cannot be obtained
-        within this number of phases, the program will abort.
         Ninit
             Initial density (see _set_initial_density for more information).
         rewrite, optional
@@ -327,17 +338,6 @@ class Program(object):
         energy_tracking, optional
             A boolean parameter that determines whether the program will log and save energetic values during
         the simulation. If set to True, the program will save the energetic values in a seperate file.
-        Initialization
-            A list of three elements that specifies an initial solving phase with the specified parameters,
-        allowing the simulation to initially get closer to the solution. The three elements are:
-        m, optional
-            The parameter `m` is used in the Anderson mixing method. It determines the number of previous 
-        solutions that are used to compute the next solution. A larger value of `m` can improve convergence,
-        but also increases computational cost.
-        delta
-            The delta parameter is used in the Anderson mixing method for solving the density profile. It
-        controls the mixing between the current and previous solutions, with smaller values leading to more
-        aggressive mixing.
         silent, optional
             A boolean parameter that determines whether or not to print log messages during the calculation.
         If set to True, only critical log messages will be printed.
@@ -349,38 +349,8 @@ class Program(object):
         with log.section('PROGRAM', log_level, timer='Solve'):
 
             if energy_tracking:
-                fn_name_file = self.workdir / f'name_file_{self.fener.temperature/kelvin:#7.5f}K.txt'
-                if not fn_name_file.is_file():
-                    with open(fn_name_file, 'w') as g:
-                        self.name_suffix = "convergence_%7.5fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,0)
-                        g.write("%s,%7.5f\n"%(self.name_suffix,chempot/kjmol))
-                elif os.path.isfile(fn_name_file):
-                    with open(fn_name_file, 'r') as n:
-                        lines = n.readlines()   
-                    for ii,line in enumerate(lines):
-                        x = line.strip("\n")
-                        l = x.split(",")
-                        chem_file = l[1]
-                        old_fn = l[0].replace(".","_").split("_")
-                        if chem_file == '%7.5f'%(chempot/kjmol):
-                            step = float(old_fn[-2])
-                            index = ii
-                            break
-                        step = float(old_fn[-2])+1
-                        index = ii+2
-                    self.name_suffix = "convergence_%7.5fK_step_%1.0f.txt" %(self.fener.temperature/kelvin,step)
-                    with open(fn_name_file, 'w') as g:
-                        if index>len(lines):
-                            for line in lines:
-                                g.write(line)
-                            g.write("%s,%7.5f\n"%(self.name_suffix,chempot/kjmol))
-                        else:
-                            for iii,line in enumerate(lines):
-                                if index == iii:
-                                    g.write("%s,%7.5f\n"%(self.name_suffix,chempot/kjmol))
-                                else:
-                                    g.write(line)
-                self.fener.init_tracking(os.path.join(self.workdir, '%s'%(self.name_suffix)))
+                convergence_fn = os.path.join(self.workdir,  "convergence_%7.5fK_step_%7.5fkJmol.txt" %(self.fener.temperature/kelvin, chempot/kjmol))
+                self.fener.init_tracking(convergence_fn)
 
             fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
             log.dump('Thermodynamic conditions:')
@@ -391,64 +361,9 @@ class Program(object):
             self.file_suffix = '_%7.5fkJmol_%7.5fK' %(chempot/kjmol,self.fener.temperature/kelvin)
             self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.file_suffix))
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
-            picard = Picard(self.grid, self.fener)
             rho_old = self.rho0.copy()
-            if method == 'uno':
-                if Initialization is not None:
-                    todo = [(threshold, alpha_mix, nsteps), Initialization]
-                else:
-                    todo = [(threshold, alpha_mix, nsteps)]
-                while len(todo)>0:
-                    picard.iphase = len(todo)
-                    current_threshold, current_alpha_mix, current_nsteps = todo[-1]
-                    log.dump('#################################################################################')
-                    log.dump('#'*10+'      PHASE % 2i (threshold = %.1e  alpha_mix = %.1e)    ' %(picard.iphase, current_threshold, current_alpha_mix) + ('#'*10))
-                    log.dump('#################################################################################')
-                    N, rho = picard.solve(chempot, rho_old, nsteps=current_nsteps, threshold=current_threshold, alpha_mix=current_alpha_mix, method=method, silent=silent, thresh=threshold_energy)
-                    if rho is None:
-                        todo.append([min(1e-1,current_threshold*5),current_alpha_mix/10,100])
-                        if len(todo)>maxphases:
-                            log.dump('Could not solve in less then %i phases. Aborting!' %maxphases)
-                            sys.exit()
-                        else:
-                            log.dump('Could not determine density, adding a cycle with smaller alpha_mix')
-                    else:
-                        del todo[-1]
-                        np.save(self.rho_fn, rho)
-                        rho_old = rho.copy()
-            elif method.endswith('Anderson'):
-                anderson = Anderson(self.grid, self.fener)
-                log.dump('#################################################################################')
-                anderson.iphase = 1
-                N, rho = anderson.solve(chempot, rho_old, nsteps=nsteps, threshold=threshold, method=method, alpha_mix=alpha_mix, m=m, delta=delta)
-                np.save(self.rho_fn, rho)
-                rho_old = rho.copy()
-            else:
-                log.dump('#################################################################################')
-                picard.iphase = 1
-                try:
-                    N, rho = picard.solve(chempot, rho_old, nsteps=nsteps, threshold=threshold, method=method, alpha_mix=alpha_mix, silent=silent)
-                    np.save(self.rho_fn, rho)
-                    rho_old = rho.copy()
-                except FloatingPointError:
-                    log.warning('THE CALCULATION OF THE DENSITY at chemical potential %7.5f kJ/mol and temperature %5.3f K HAS FAILED DUE TO A ---FloatingPointError---'%(chempot/kjmol, self.fener.temperature), label_section='Solve')
-                    try:
-                        correction_factor = 1/2
-                        log.dump(f'Adding a cycle with a correction factor of {correction_factor}')
-                        N, rho = picard.solve(chempot, rho_old, nsteps=nsteps, threshold=threshold, method=method, alpha_mix=alpha_mix, silent=silent, correction_factor=correction_factor)
-                        np.save(self.rho_fn, rho)
-                        rho_old = rho.copy()
-                    except FloatingPointError:
-                        log.warning('THE CALCULATION OF THE DENSITY at chemical potential %7.5f kJ/mol and temperature %5.3f K and a correction factor of %0.3f HAS FAILED DUE TO A ---FloatingPointError---'%(chempot/kjmol, self.fener.temperature, correction_factor), label_section='Solve')
-                        try:
-                            correction_factor = 1/4
-                            log.dump(f'Adding a cycle with a correction factor of {correction_factor}')
-                            N, rho = picard.solve(chempot, rho_old, nsteps=nsteps, threshold=threshold, method=method, alpha_mix=alpha_mix, silent=silent, correction_factor=correction_factor)
-                            np.save(self.rho_fn, rho)
-                            rho_old = rho.copy()
-                        except FloatingPointError:
-                            log.warning('THE CALCULATION OF THE DENSITY at chemical potential %7.5f kJ/mol and temperature %5.3f K and a correction factor of %0.3f HAS FAILED DUE TO A ---FloatingPointError---'%(chempot/kjmol, self.fener.temperature, correction_factor), label_section='Solve')
- 
+            N, rho = self.solver.solve(chempot, rho_old, log_level)
+            np.save(self.rho_fn, rho)
 
 
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):
@@ -484,7 +399,7 @@ class Program(object):
             numbers = np.empty_like(chempots)
             for e, chempot in enumerate(chempots):
                 self.solve(chempot, Ninit=fn, rewrite=rewrite, silent=silent)
-                fn = Path(f'{self.workdir}/rho_{self.chempot/kjmol:#7.5f}kJmol_{self.temp:#7.5f}K.npy')
+                fn = Path(f'{self.workdir}/rho_{chempot/kjmol:#7.5f}kJmol_{self.temp:#7.5f}K.npy')
                 assert fn.is_file(), f'No file found at {str(fn)}'
                 numbers[e] = self.grid.integrate(np.load(fn))
             deriv = np.gradient(numbers, chempots, edge_order=2) 

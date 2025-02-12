@@ -94,19 +94,10 @@ class Plotter(object):
         
         '''
         self.fig = pp.figure()
-        fn_name_file = os.path.join(self.calculator.workdir, 'name_file_%3.0fK.txt'%(temp/kelvin))
-        assert os.path.isfile(fn_name_file), 'No name file found for %3.0f K, searched at %s' %(temp/kelvin,fn_name_file)
-        fn_suffix=""
-        with open(fn_name_file) as n:
-            for x in n:
-                l = x.split(",")
-                ln = l[1].translate({ord('\n'): None})
-                # print(float(ln))
-                # print(float('%7.5f'%(chempot/kjmol)))
-                if float(ln) == float('%7.5f'%(chempot/kjmol)):
-                    fn_suffix = l[0]
-        fn = os.path.join(self.calculator.workdir, fn_suffix)
-        assert os.path.isfile(fn), 'No convergence file found for %3.0f K and %3.0f kJ/mol, searched at %s' %(temp,chempot/kjmol,fn)
+        fn_suffix = 'convergence_%7.5fkJmol_%7.5fK.txt' %(chempot/kjmol,temp)
+
+        fn = self.calculator.workdir / fn_suffix
+        assert fn.is_file(), 'No convergence file found for %3.0f K and %3.0f kJ/mol, searched at %s' %(temp,chempot/kjmol,fn)
         # get data from header of convergence file
         with open(fn) as f:
             header = f.readline()

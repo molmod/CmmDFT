@@ -55,12 +55,14 @@ class System(object):
             return System(self.host.copy(), self.guest.copy())
 
     
+
 class Host(object):
-    def __init__(self, cell):
+    def __init__(self, name, cell):
+        self.name = name
         self.cell = cell
         
     def copy(self):
-        return Host(self.cell)
+        return type(self)(self.name, self.cell)
 
     
 class NanoporousHost(Host):
@@ -81,8 +83,7 @@ class NanoporousHost(Host):
             self.mol = YaffSystem.from_file(chk)
             #shift molecule so that center of positions is the origin (as cDFT grid will be centered around this origin)
             self.mol.pos -= self.mol.pos.sum(axis=0)/len(self.mol.pos) 
-            Host.__init__(self, self.mol.cell)
-            self.name = name
+            Host.__init__(self, name, self.mol.cell)
             self.chk = chk
             self.par = par
     
@@ -91,7 +92,7 @@ class NanoporousHost(Host):
 
     
 class EmptyHost(Host):
-    def __init__(self, cell=None, volume=None):
+    def __init__(self, name, cell=None, volume=None):
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Configuring empty space host')
             if cell is None:
@@ -101,143 +102,109 @@ class EmptyHost(Host):
                 cell = Cell(cell)
             else:
                 assert isinstance(cell, Cell), 'cell should be numpy array or yaff.pes.ext.Cell instance'
-            Host.__init__(self, cell)
-            
+            Host.__init__(self, name, cell)
+
+
 
 class Guest(object):
-    def __init__(self, name, chk, par):
-        with log.section('SYSTEM', 1, timer='Initializing'):
-            log.dump('Reading guest from %s with parameters from %s' %(chk,par))
-            self.mol = YaffSystem.from_file(chk)
-            self.name = name
-            self.chk = chk
-            self.par = par
-            if self.mol.masses is not None:
-                self.mass = self.mol.masses.sum()
-            
-    def add_len_jon_parameters(self, sigma, epsilon):
-        '''Add Lennard-Jones parameters to the guest molecule. This will ensure that the hard sphere radius is calculated with the approximate formula.
-        
-        Parameters
-        ----------
-        sigma
-            Sigma is a parameter commonly used in statistics and mathematics. It represents the standard
-        deviation of a probability distribution or the spread of data points in a dataset. It is a measure
-        of how much individual data points differ from the mean of the dataset.
-        epsilon
-            Epsilon is a parameter used in the differential privacy framework. It represents the privacy budget
-        or the level of privacy protection provided by a mechanism. A smaller value of epsilon indicates a
-        higher level of privacy protection, while a larger value allows for more information to be
-        disclosed.
-        
-        '''
+    def __init__(self, name, mass):
+        self.name = name
+        self.mass = mass
+        self.preset_Rhs = None
+        self.preset_Rhs_zero = None
+        self.Rhs = None
+        self.Rhs_zero = None
+    
+    def copy(self):
+        return type(self)(self.name, self.mass)
 
+    def wavelength(self, temperature):
+        kT = boltzmann*temperature
+        return planck/np.sqrt(2*np.pi*self.mass*kT)
+
+    def set_fixed_rhs(self, Rhs, Rhs_zero):
+        self.preset_Rhs = Rhs
+        self.preset_Rhs_zero = Rhs_zero
+
+    def _calculate_hardsphere_radius(self, temperature, **kwargs):
+        raise NotImplementedError
+    
+    def compute_hardsphere_radius(self, temperature, **kwargs):
+        with log.section('GUEST', 2, timer="Initializing"):
+            if self.preset_Rhs_zero is not None:
+                log.dump('Using preset Rhs and Rhs_zero')
+                self.Rhs = self.preset_Rhs
+                self.Rhs_zero = self.preset_Rhs_zero
+            else:
+                path = kwargs.get('fn', None)
+                if path is None:
+                    log.dump('Computing Rhs and Rhs_zero at %7.5f without storing...' %(temperature))
+                    self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
+                elif path.exists():
+                    dict_sig = json.load(path.open())
+                    if kwargs.get('rewrite', False):
+                        log.dump('Computing Rhs and Rhs_zero at %7.5f and overwriting %s...'%(temperature, path))
+                        self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
+                        dict_sig['%7.5f'%(temperature)] = self.Rhs, self.Rhs_zero
+                        json.dump(dict_sig, path.open(mode='w'))
+                    else:
+                        log.dump('Reading Rhs and Rhs_zero at %7.5f from %s...'%(temperature, path))
+                        self.Rhs, self.Rhs_zero = dict_sig['%7.5f'%(temperature)]
+                else:
+                    log.dump('Computing Rhs and Rhs_zero at %7.5f and writing to %s...'%(temperature, path))
+                    self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
+                    dict_sig = {'%7.5f'%(temperature): (self.Rhs, self.Rhs_zero)}
+                    json.dump(dict_sig, path.open(mode='w'))
+                log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
+                    
+
+class SphericalLJGuest(Guest):
+    def __init__(self, name, mass, sigma, epsilon):
+        Guest.__init__(self, name, mass)
         self.sigma = sigma
         self.epsilon = epsilon
+        self.natom = 1
     
-    def add_rhs_sig(self, rhs, sig):
-        '''The function `add_rhs_sig` sets the hard sphere radius of the guest molecule (normally denpendent on the temperature)
-        and the zero radius for the guest molecule (which is not a function of temperature).
-        
-        Parameters
-        ----------
-        rhs
-            Hard spehere radius
-        sig
-            sigma parameter in Lennard-Jones potential. (Radius for which the LJ potential is equal to 0)      
-        '''
-        self.set_Rhs = rhs
-        self.set_Rzero = sig
+    def copy(self):
+        return type(self)(self.name, self.mass, self.sigma, self.epsilon)
+
+    def _calculate_hardsphere_radius(self, temperature, **kwargs):
+        beta = 1/(boltzmann*temperature)
+        return hard_spheres_barker_henderson(beta, len_jon=(self.sigma,self.epsilon), natom=1)
+
+
+class NonSphericalGuest(Guest):
+    def __init__(self, name, chk, par):
+        with log.section('SYSTEM', 1, timer='Initializing'):
+            log.dump('Reading guest from %s with parameters from %s' %(chk, par))
+            self.mol = YaffSystem.from_file(chk)
+            self.natom = self.mol.natom
+            self.chk = chk
+            self.par = par
+            mass = None
+            if self.mol.masses is not None:
+                mass = self.mol.masses.sum()
+            Guest.__init__(self, name, mass)
 
     def copy(self):
-        guest = Guest(self.name, self.chk, self.par)
-        if hasattr(guest, 'Rhs'): guest.Rhs, guest.Rzero = self.Rhs, self.Rzero
-        if hasattr(self, 'sigma'): guest.sigma, guest.epsilon = self.sigma, self.epsilon
-        return guest
+        return type(self)(self.name, self.chk, self.par)
 
-    def _calculate_Rhs(self, temperature, rcut=12*angstrom, style='su'):
-        '''This function computes the hard sphere radius and zero radius for FMT/MFMT and MFA using the Barker
-        and Henderson formula at a given temperature.
-        
-        Parameters
-        ----------
-        temperature
-            The temperature at which the hard sphere radius is being computed, in Kelvin.
-        rcut
-            The cutoff radius used in calculating the interatomic potential. It is set to 12 angstroms by
-        default.
-        style, optional
-            The style parameter determines the type of hard sphere potential used in the calculation. It can be
-        'su' for the semi-uniform averaging, 'bo' for the Boltzmann averaging or 'ave' for uniform averaging
-        '''
-        with log.section('GUEST', 2, timer="Rhs calculation"):
-            log.dump('Computing hard sphere radius from barker and henderson formula at temperature of %.0f K' %(temperature))
-            beta = 1.0/(temperature*boltzmann)
-            if hasattr(self, 'sigma') and hasattr(self, 'epsilon'): 
-                self.Rhs, self.Rzero = hard_spheres_barker_henderson(beta, len_jon=(self.sigma,self.epsilon), natom=self.mol.natom)
-            else:
-                ff_int = get_ff(self.mol, self.mol, self.par, rcut)
-                self.Rhs, self.Rzero = hard_spheres_barker_henderson(beta, ff_int, natom=self.mol.natom, style=style)
-            log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
+    def _calculate_hardsphere_radius(self, temperature, **kwargs):
+        beta = 1/(boltzmann*temperature)
+        ff_int = get_ff(self.mol, self.mol, self.par, kwargs.get('rcut', 12*angstrom))
+        return hard_spheres_barker_henderson(beta, ff_int, natom=self.mol.natom, style=kwargs.get('style', 'su'))
 
-    def compute_hardsphere_radius(self, temperature, fn, name_dict, rcut=12*angstrom, rewrite=False, style='LJ'):
-        '''This function calculates and saves the hard sphere radius and volume for a given temperature and
-        potential function.
-        
-        Parameters
-        ----------
-        temperature
-            The temperature at which to compute the hard sphere radius.
-        fn
-            `fn` is a file path object that specifies the location and name of a file. It is used to read and
-        write data related to the calculation of the hard sphere radius.
-        rcut
-            The cutoff radius for the hard sphere potential.
-        rewrite, optional
-            The `rewrite` parameter is a boolean flag that determines whether to overwrite an existing file
-        containing pre-calculated values of `Rhs` and `Rzero` for a given temperature or not. If `rewrite`
-        is set to `True`, the function will always recalculate and overwrite the file.
-        style, optional
-            The style parameter specifies the type of rotational averaging scheme is used in the calculation of 
-        the hard sphere radius to use. It can be 'su' for the semi-uniform averaging, 'bo' for the 
-        Boltzmann averaging or 'ave' for uniform averaging
-        '''
-        with log.section('GUEST', 2, timer="Initializing"):
-            if hasattr(self, "set_Rhs"):
-                log.dump('Using pre-set Rhs and Rzero')
-                self.Rhs = self.set_Rhs
-                self.Rzero = self.set_Rzero
-            else:
-                dr_name = Path(name_dict['prefix']) / name_dict['hostname'] / name_dict['guestname'] / name_dict['ff_suffix'] 
-                file_name = dr_name / 'rhs_sig.json'
-                if file_name.is_file() and not rewrite:
-                    dict_sig = json.load(open(file_name, 'r'))
+class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
+    def __init__(self, name, mass, sigma, epsilon, chk, par):
+        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon)
+        NonSphericalGuest.__init__(self, name, chk, par)
 
-                    if '%7.5f'%(temperature) in dict_sig.keys():
-                        log.dump('Reading Rhs and Rzero from %s at %7.5fK'%(file_name, temperature))
-                        self.Rhs, self.Rzero = dict_sig['%7.5f'%(temperature)]
-                        log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
-                                
-                    else:
-                        log.dump('Calculating Rhs and Rzero at %7.5f and writing to %s'%(temperature, file_name))
-                        self._calculate_Rhs(temperature, rcut=rcut, style=style)
-                        dict_sig['%7.5f'%(temperature)] = self.Rhs, self.Rzero
-                        json.dump(dict_sig, open(file_name, 'w'))
+    def copy(self):
+        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.chk, self.par)
+    
+    def _calculate_hardsphere_radius(self, temperature, **kwargs):
+        return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)
 
-                elif os.path.isfile(file_name) and rewrite:
-                    log.dump('Calculating Rhs and Rzero at %7.5f and writing to %s'%(temperature, file_name))
-                    self._calculate_Rhs(temperature, rcut=rcut, style=style)
-
-                    dict_sig = json.load(open(file_name, 'r'))
-                    dict_sig['%7.5f'%(temperature)] = self.Rhs, self.Rzero
-
-                    json.dump(dict_sig, open(file_name, 'w'))
-                                
-                else:
-                    log.dump('Calculating Rhs and Rzero at %7.5f and writing to %s'%(temperature, file_name))
-                    self._calculate_Rhs(temperature, rcut=rcut, style=style)
-                    dict_sig = {'%7.5f'%(temperature): (self.Rhs, self.Rzero)}
-                    json.dump(dict_sig, open(file_name, 'w'))
 
 
 class Grid(object):
@@ -293,21 +260,36 @@ class Grid(object):
             self.points[:,:,:,3] = np.sqrt(self.points[:,:,:,0]**2+self.points[:,:,:,1]**2+self.points[:,:,:,2]**2)
             # Fourier grid
             self.kpoints = np.zeros(self.npoints+[4])
-            kgrid = [np.fft.fftfreq(self.npoints[alpha],d=np.linalg.norm(self.cell.rvecs[alpha])/self.npoints[alpha]) for alpha in range(3)] #TODO: (louis) recycle grid variable (instead of new kgrid)
+            kgrid = [np.fft.fftfreq(self.npoints[alpha],d=self.spacings[alpha]) for alpha in range(3)]
             gridpoints = np.meshgrid(kgrid[0],kgrid[1],kgrid[2], indexing='ij')
             for alpha in range(3):
                 self.kpoints[:,:,:,alpha] = gridpoints[alpha] #TODO: (louis) could be condensed using np.einsum('aijk->ijka', gridpoints)
             self.kpoints[:,:,:,3] = np.sqrt(self.kpoints[:,:,:,0]**2+self.kpoints[:,:,:,1]**2+self.kpoints[:,:,:,2]**2)
             # Indication of even and odd grid points, even means sum of indexes is even
-            self.parity = np.zeros(self.npoints,dtype=int)
-            i,j,k = np.unravel_index(np.arange(np.prod(self.npoints)),self.npoints)
-            self.parity[i,j,k] = (-1)**(i+j+k)
+            #ADDED Louis: commented out lines below for testing
+            #self.parity = np.zeros(self.npoints,dtype=int)
+            #i,j,k = np.unravel_index(np.arange(np.prod(self.npoints)),self.npoints)
+            #self.parity[i,j,k] = (-1)**(i+j+k)
+            
+            #ADDED Louis: something needed in the fft functions defined below
+            self.scalprod = self.kpoints[:,:,:,0]*self.spacings[0]*self.npoints[0] + self.kpoints[:,:,:,1]*self.spacings[1]*self.npoints[1] + self.kpoints[:,:,:,2]*self.spacings[2]*self.npoints[2]
     
     def copy(self):
         return Grid(self.cell, npoints=self.npoints)
     
     def integrate(self, data):
         return np.sum(data)*self.dr
-
-    def convolute(self, data0, data1):
-        raise NotImplementedError
+    
+    def fft(self, rdata, norm=True):
+        if norm:
+            f = np.fft.fftn(rdata, norm='forward')*np.exp(1j*np.pi*self.scalprod)
+        else:
+            f = np.fft.fftn(rdata)
+        return f
+    
+    def ifft(self, fdata, norm=True):
+        if norm:
+            r = np.fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm='forward')
+        else:
+            r = np.fft.ifftn(fdata)
+        return r

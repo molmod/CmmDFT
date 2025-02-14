@@ -6,26 +6,37 @@ simulations.
 
 from __future__ import division
 
-import numpy as np, os
+import numpy as np
+from scipy.optimize import brentq, root
 
-from molmod.units import kjmol, angstrom
+from molmod.units import kjmol, angstrom, kelvin, bar
 from molmod.constants import planck, boltzmann
 
 from .log import log
 
 
 __all__ = [
-    'VanderWaalsEOS', 'ModifiedBenedictWebbRubinEOS', 'CarnahanStarlingEOS', 'MFAEOS', 'EquationOfState'
+    'SumOfEOS', 'VanderWaalsEOS', 'ModifiedBenedictWebbRubinEOS', 'CarnahanStarlingEOS', 'MFAEOS', 'EquationOfState', 'MFMT_MFA_EOS'
 ]
 
 class EquationOfState(object):
 
-    def __init__(self):
+    def __init__(self, mass):
+        self.mass = mass
         self.temperature = None
     
     def set_temperature(self, temperature):
         self.temperature = temperature
+        self.wvl = planck/np.sqrt(2*np.pi*self.mass*boltzmann*temperature)
         
+    def compute_chempot(self, rho):
+        kT = boltzmann*self.temperature
+        return kT*np.log(self.wvl**3*rho) + self.derivative_excess_free_energy_volume(rho)
+
+    def compute_pressure(self, rho):
+        kT = boltzmann*self.temperature
+        return kT*rho + rho**2*self.derivative_excess_free_energy_particle(rho)
+    
     def excess_free_energy_particle(self, rho):
         "Returns the excess free energy per particle"
         raise NotImplementedError
@@ -43,6 +54,180 @@ class EquationOfState(object):
         value  = rho*self.derivative_excess_free_energy_particle(rho)
         value += self.excess_free_energy_particle(rho)
         return value
+
+    def derivative2_excess_free_energy_particle(self, rho):
+        raise NotImplementedError
+
+    def derivative2_excess_free_energy_volume(self, rho):
+        value  = 2*self.derivative_excess_free_energy_particle(rho)
+        value += rho*self.derivative2_excess_free_energy_particle(rho)
+        return value
+    
+    def derivative3_excess_free_energy_particle(self, rho):
+        raise NotImplementedError
+
+    def derivative3_excess_free_energy_volume(self, rho):
+        value  = 3*self.derivative2_excess_free_energy_particle(rho)
+        value += rho*self.derivative3_excess_free_energy_particle(rho)
+        return value
+     
+    def get_rough_density_grid(self, npoints):
+        "Get a rough logarithmic grid in density in a range that is practically accessible"
+        return np.logspace(-6,0,npoints)/angstrom**3
+    
+    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=10000):
+        """
+            Solve EOS for density as function of chemical potential at fixed (given) temperature in a given density interval. For this we need to solve the following equation for rho
+
+            ..math:: \mu = k_B T\ln(\rho\Lambda^3) + f^N_{ex}(\rho,T) + \rho\frac{\partial f^N_{ex}}{\partial \rho}(\rho,T)
+        
+            This is done by first defining a rough grid of densities for which the corresponding chemical potential is computed according to the above equation. This rough grid is used to bracket possible solutions who are then fed into the brentq routine of scipy.optimize to find all solutions.
+        """
+        #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
+        rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
+        #compute the chemical potential on this rough grid
+        kT = boltzmann*self.temperature
+        rough_chempot_grid = kT*np.log(self.wvl**3*rough_density_grid) + self.excess_free_energy_particle(rough_density_grid) + rough_density_grid*self.derivative_excess_free_energy_particle(rough_density_grid)
+        #determine in which interval in rough_chempot_grid the given chempots lies and
+        density_intervals = [None,]*len(chempots)
+        for i,mu in enumerate(chempots):
+            for j in range(1,n_rough_gridpoints):
+                if rough_chempot_grid[j-1]<=mu<=rough_chempot_grid[j]:
+                    interval = [rough_density_grid[j-1],rough_density_grid[j]]
+                    if density_intervals[i] is None:
+                        density_intervals[i] = [interval]
+                    else:
+                        density_intervals[i].append(interval)
+        #for each chemical potential, find a solution in each proposed interval using the brentq method
+        densities = np.zeros([len(chempots), 2])*np.nan
+        for i,mu in enumerate(chempots):
+            solutions = []
+            def fun(rho):
+                return kT*np.log(self.wvl**3*rho) + self.excess_free_energy_particle(rho) + rho*self.derivative_excess_free_energy_particle(rho) - mu
+            if density_intervals[i] is not None:
+                for interval in density_intervals[i]:
+                    sol = brentq(fun, interval[0], interval[1])
+                    solutions.append(sol)
+            if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            densities[i,:len(solutions)] = np.array(sorted(solutions))
+        return densities
+
+    def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000):
+        """
+            Solve EOS for density as function of pressure at fixed (given) temperature in a given density interval. For this we need to solve the following equation for rho
+
+            ..math:: p = k_B T\rho + \rho^2\frac{\partial^2 f^N_{ex}}{\partial \rho^2}(\rho,T)
+        
+            This is done by first defining a rough grid of densities for which the corresponding pressure is computed according to the above equation. This rough grid is used to bracket possible solutions who are then fed into the brentq routine of scipy.optimize to find all solutions.
+        """
+        #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
+        rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
+        #compute the pressure on this rough grid
+        kT = boltzmann*self.temperature
+        rough_pressure_grid = kT*rough_density_grid + rough_density_grid**2*self.derivative_excess_free_energy_particle(rough_density_grid)
+        #determine in which interval in rough_pressure_grid the given pressure lies 
+        density_intervals = [None,]*len(pressures)
+        for i,p in enumerate(pressures):
+            for j in range(1,n_rough_gridpoints):
+                if rough_pressure_grid[j-1]<=p<=rough_pressure_grid[j]:
+                    interval = [rough_density_grid[j-1],rough_density_grid[j]]
+                    if density_intervals[i] is None:
+                        density_intervals[i] = [interval]
+                    else:
+                        density_intervals[i].append(interval)
+        #for each chemical potential, find a solution in each proposed interval using the brentq method
+        densities = np.zeros([len(pressures), 3])*np.nan
+        for i,p in enumerate(pressures):
+            solutions = []
+            def fun(rho):
+                return kT*rho + rho**2*self.derivative_excess_free_energy_particle(rho) - p
+            if density_intervals[i] is not None:
+                for interval in density_intervals[i]:
+                    sol = brentq(fun, interval[0], interval[1])
+                    solutions.append(sol)
+            if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            densities[i,:len(solutions)] = np.array(sorted(solutions))
+        return densities
+
+    def find_critical_point(self, rho_scale=1.0/angstrom**3, T_scale=kelvin, p_scale=kjmol/angstrom, rho_red_init=0.0005, T_red_init=300, rho_red_upper=np.inf, T_red_upper=np.inf):
+        """
+            Critical point is defined as the point where both dP/dV and d2P/dV2 are zero. In terms of the excess free energy per volume, this criterion becomes:
+
+                rho    \frac{\partial^2 f_V}{\partial \rho^2} &= -kT
+                \rho^2 \frac{\partial^3 f_V}{\partial \rho^3} &=  kT
+            
+            rho_scale and T_scale   determine how the reduced density and temperature are computed, i.e. rho_red = rho/rho_scale and similar for temperature
+            *_red_init              determine the initial value for the reduced properties in the iterative solving procedure
+            *_red_upper             determine the upper limit for the reduced critical properties, i.e. if temp or density is above its allowed value, no 
+                                    critical point will be returned
+        """
+        with log.section('EOS', 2, timer="Initializing"):
+            log.dump('Computing critical point ...')
+            #define vector function with 2 components and dependent on density and temperature whose root is the critical point:
+            orig_temp = self.temperature
+            def fun(xT):
+                rho = xT[0]*rho_scale
+                T = xT[1]*T_scale
+                self.set_temperature(T)
+                f1 = rho*self.derivative2_excess_free_energy_volume(rho)+boltzmann*T
+                f2 = rho**2*self.derivative3_excess_free_energy_volume(rho)-boltzmann*T
+                return (f1,f2)
+            try:
+                rho_red_crit, T_red_crit = root(fun, (rho_red_init, T_red_init), method='hybr')['x']
+                if T_red_crit > T_red_upper or T_red_crit < 0 or rho_red_crit < 0 or rho_red_crit > rho_red_upper:
+                    raise ValueError
+                rho_crit, T_crit = rho_red_crit*rho_scale, T_red_crit*T_scale
+                self.set_temperature(T_crit)
+                p_crit = rho_crit*boltzmann*T_crit-self.excess_free_energy_volume(rho_crit)+rho_crit*self.derivative_excess_free_energy_volume(rho_crit)
+                log.dump('... found at rho = %.3e 1/A^3, T = %.3i K , p = %i bar' %(rho_crit*angstrom**3, T_crit/kelvin, p_crit/bar))
+                log.dump('...          rho = %.3e, T = %.3f , p = %.3f (in reduced units))' %(rho_red_crit, T_red_crit, p_crit/p_scale))
+            except ValueError:
+                log.dump('... no critical point found')
+                rho_crit, T_crit, p_crit = np.nan, np.nan, np.nan
+            if orig_temp is not None:
+                self.set_temperature(orig_temp)
+            else:
+                self.temperature = None
+                self.wavelength = None
+            return rho_crit, T_crit, p_crit 
+        
+
+
+class SumOfEOS(EquationOfState):
+    def __init__(self, mass, list_eos):
+        assert isinstance(list_eos, list), 'list_eos argument should be a list'
+        assert len(list_eos)>1, 'list_eos should contain more than 1 eos'
+        EquationOfState.__init__(self, mass)
+        self.list_eos = list_eos
+
+    def set_temperature(self, temperature):
+        for eos in self.list_eos:
+            eos.set_temperature(temperature)
+        EquationOfState.set_temperature(self, temperature)
+
+    def excess_free_energy_particle(self, rho):
+        result = rho*0.0
+        for eos in self.list_eos:
+            result += eos.excess_free_energy_particle(rho)
+        return result
+    
+    def excess_free_energy_volume(self, rho):
+        result = rho*0.0
+        for eos in self.list_eos:
+            result += eos.excess_free_energy_volume(rho)
+        return result
+
+    def derivative_excess_free_energy_particle(self, rho):
+        result = rho*0.0
+        for eos in self.list_eos:
+            result += eos.derivative_excess_free_energy_particle(rho)
+        return result
+
+    def derivative_excess_free_energy_volume(self, rho):
+        result = rho*0.0
+        for eos in self.list_eos:
+            result += eos.derivative_excess_free_energy_volume(rho)
+        return result
 
 
 class VanderWaalsEOS(EquationOfState):
@@ -62,15 +247,14 @@ class VanderWaalsEOS(EquationOfState):
         kT = boltzmann*self.temperature
         return kT*self.b/(1.0-self.b*rho) - self.a
     
-    def der_derivative_excess_free_energy_particle(self,rho):
+    def derivative2_excess_free_energy_particle(self,rho):
         kT = boltzmann*self.temperature
         return kT*self.b**2/(1.0-self.b*rho)**2
     
-    def der_der_derivative_excess_free_energy_particle(self, rho):
+    def derivative3_excess_free_energy_particle(self, rho):
         kT = boltzmann*self.temperature
         return 2*kT*self.b**3/(1.0-self.b*rho)**3
     
-
 
 class ModifiedBenedictWebbRubinEOS(EquationOfState):
     
@@ -81,8 +265,8 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
     taken from http://dx.doi.org/10.1080/00268979300100411
     """
     
-    def __init__(self, sigma, epsilon, logging = False):
-        EquationOfState.__init__(self)
+    def __init__(self, mass, sigma, epsilon, logging = False):
+        EquationOfState.__init__(self, mass)
         self.sigma = sigma
         self.epsilon = epsilon
         self._init_regression_parameters()
@@ -200,13 +384,10 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
             dAr += ai*rhor**(i)*self.sigma**3
         F = np.exp(-self.gamma*rhor**2)    
         for t,bi in enumerate(self.b):
-            dAr += bi*self.sigma**3*rhor**(2*t+1)*F   
-#        dG = self._get_dG_functionals(rho)
-#        for bi,dGi in zip(self.b,dG):
-#            dAr += bi*dGi         
+            dAr += bi*self.sigma**3*rhor**(2*t+1)*F       
         return dAr*self.epsilon
     
-    def der_derivative_excess_free_energy_particle(self, rho):      
+    def derivative2_excess_free_energy_particle(self, rho):      
         ddAr = 0.0
         rhor = rho*self.sigma**3 #reduced density    
         for i, ai in enumerate(self.a[1:]):
@@ -216,7 +397,7 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
             ddAr += bi*self.sigma**6*((2*t+1)*rhor**(2*t)-2*self.gamma*rhor**(2*t+2))*F    
         return ddAr*self.epsilon   
     
-    def der_der_derivative_excess_free_energy_particle(self, rho):
+    def derivative3_excess_free_energy_particle(self, rho):
         dddAr = 0.0
         rhor = rho*self.sigma**3 #reduced density    
         for i, ai in enumerate(self.a[2:]):
@@ -228,7 +409,28 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
             else:
                 dddAr += bi*self.sigma**9*((2*t+1)*2*t*rhor**(2*t-1)-2*self.gamma*(4*t+3)*rhor**(2*t+1)+4*self.gamma**2*rhor**(2*t+3))*F     
         return dddAr*self.epsilon        
-        
+
+    def get_rough_density_grid(self, npoints):
+        "Define rough density grid (for use in solve_densities) based on reduced units and knowledge of the MBWR EOS"
+        return np.logspace(-6,0,npoints)*1.5/self.sigma**3
+
+    def find_critical_point(self):
+        """
+            Critical point is defined as the point where both dP/dV and d2P/dV2 are zero. In terms of the excess free energy per volume, this criterion becomes:
+
+                rho    \frac{\partial^2 f_V}{\partial \rho^2} &= -kT
+                \rho^2 \frac{\partial^3 f_V}{\partial \rho^3} &=  kT
+            
+            rho_scale and T_scale   determine how the reduced density and temperature are computed, i.e. rho_red = rho/rho_scale and similar for temperature
+            *_red_init              determine the initial value for the reduced properties in the iterative solving procedure
+            *_red_upper             determine the upper limit for the reduced critical properties, i.e. if temp or density is above its allowed value, no 
+                                    critical point will be returned
+        """
+        rho_scale, T_scale, p_scale = 1./self.sigma**3, self.epsilon/boltzmann, self.epsilon/self.sigma**3
+        rho_red_init, T_red_init = 0.3, 1.3
+        rho_red_upper, T_red_upper = 1.0, 2.0
+        return EquationOfState.find_critical_point(self, rho_scale=rho_scale, T_scale=T_scale, p_scale=p_scale, rho_red_init=rho_red_init, T_red_init=T_red_init, rho_red_upper=rho_red_upper, T_red_upper=T_red_upper)
+
 
 class CarnahanStarlingEOS(EquationOfState):
     
@@ -240,15 +442,30 @@ class CarnahanStarlingEOS(EquationOfState):
         Compressibility = eta*rho
     """
     
-    def __init__(self, sigma, epsilon):
-        self.sigma = sigma
-        self.epsilon = epsilon
+    def __init__(self, mass, Rhs):
+        EquationOfState.__init__(self, mass)
+        self.Rfun = None
+        self.R = None
+        self.eta = None
+        if callable(Rhs):
+            self.Rfun = Rhs
+        elif isinstance(Rhs, float):
+            self.R = Rhs
+            self.eta = 4*np.pi*Rhs**3/3
+        else:
+            raise TypeError('Rhs argument of CarnahanStarling constructor should be a float or a callable function computing the Rhs for a given temperature.')    
         
-    def set_temperature(self, temperature):
-        self.temperature = temperature
-        Tr = boltzmann*self.temperature/self.epsilon
-        self.Rhs = self.sigma*(1 + 0.2977*Tr)/(1 + 0.33163*Tr + 0.0010477*Tr**2)/2
-        self.eta = 4*np.pi*self.Rhs**3/3
+    def set_temperature(self, temperature, **kwargs):
+        EquationOfState.set_temperature(self, temperature)
+        if self.Rfun is not None:
+            self.R = self.Rfun(temperature, **kwargs)
+            self.eta = 4*np.pi*self.R**3/3
+    
+    def get_rough_density_grid(self, npoints):
+        "Get a rough logarithmic grid in density in a range that is practically accessible"
+        log_start = -6
+        log_end = np.log(angstrom**3/self.eta)/np.log(10)-0.01
+        return np.logspace(log_start, log_end, npoints)/angstrom**3
     
     def excess_free_energy_particle(self, rho):
         kT = boltzmann*self.temperature
@@ -258,11 +475,11 @@ class CarnahanStarlingEOS(EquationOfState):
         kT = boltzmann*self.temperature
         return 2*kT*self.eta*(2-self.eta*rho)/(1-self.eta*rho)**3
     
-    def der_derivative_excess_free_energy_particle(self, rho):
+    def derivative2_excess_free_energy_particle(self, rho):
         kT = boltzmann*self.temperature
         return 2*kT*self.eta**2*(5-2*self.eta*rho)/(1-self.eta*rho)**4
     
-    def der_der_derivative_excess_free_energy_particle(self, rho):
+    def derivative3_excess_free_energy_particle(self, rho):
         kT = boltzmann*self.temperature
         return 12*kT*self.eta**3*(3-self.eta*rho)/(1-self.eta*rho)**5
     
@@ -271,20 +488,25 @@ class MFAEOS(EquationOfState):
     
     name = 'MFA'
     
-    def __init__(self, sigma, epsilon):
-        self.sigma = sigma
-        self.epsilon = epsilon
+    def __init__(self, mass, sigma=None, epsilon=None, a=None):
+        EquationOfState.__init__(self, mass)
+        if a is not None:
+            self.a = a
+        elif (sigma is not None and epsilon is not None):
+            self.a = -16/9*np.pi*epsilon*sigma**3
+        else:
+            raise IOError('Either argument a should be defined or BOTH epsilon and sigma!')
         
     def excess_free_energy_particle(self, rho):
-        return -16/9*np.pi*self.epsilon*self.sigma**3*rho
+        return self.a*rho
     
     def derivative_excess_free_energy_particle(self, rho):
-        return -16/9*np.pi*self.epsilon*self.sigma**3
+        return self.a
     
-    def der_derivative_excess_free_energy_particle(self, rho):
+    def derivative2_excess_free_energy_particle(self, rho):
         return 0
     
-    def der_der_derivative_excess_free_energy_particle(self, rho):
+    def derivative3_excess_free_energy_particle(self, rho):
         return 0
     
     

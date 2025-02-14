@@ -13,6 +13,7 @@ from molmod.constants import boltzmann
 from molmod.units import angstrom, kjmol
 
 from .log import log
+from .functionals import FMTFunctional
 from .tools import selection_sort
 
 __all__ = ['Picard', 'Anderson']
@@ -24,7 +25,7 @@ class Picard(object):
         self.fener = fener
         self.iphase = 0
 
-    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.1, method='uno', silent=False, correction_factor=1, thresh=1*kjmol):
+    def solve(self, chempot, rho, nsteps=250, threshold=1e-6, alpha_mix=0.1, method='uno', silent=False, correction_factor=1, thresh=1*kjmol, break_nstep=100):
         """
             Implementing Picard iterative solver to find equilibrium density.
             
@@ -59,7 +60,7 @@ class Picard(object):
                 if method == 'uno':
                     rho_new = self.update_rho(rho, fugacity, alpha_mix=alpha_mix, correction_factor=correction_factor)
                 elif method == 'hybrid':
-                    rho_new = self.update_rho_hybrid(rho, chempot, fugacity, alpha_mix=alpha_mix, correction_factor=correction_factor, thresh=thresh)
+                    rho_new = self.update_rho_hybrid(rho, chempot, fugacity, alpha_mix=alpha_mix, correction_factor=correction_factor, thresh=thresh, break_nstep=break_nstep)
                 else:
                     raise ValueError('Must provide a valid solver, options are: uno, bis, res, hybrid, Anderson')
                 N_new = self.grid.integrate(rho_new).real
@@ -101,13 +102,13 @@ class Picard(object):
     def update_rho(self, rho, fugacity, alpha_mix=0.01, correction_factor=1):
         with log.section('PICARD', 3, timer='Update rho'):
             dF = 0
-            krho = np.fft.fftn(rho)*self.grid.dr
+            krho = self.grid.fft(rho)#*self.grid.dr
             for part in self.fener.parts:
                 dF += part.derive(krho)
             if self.fener.beta*np.amin(dF.real)<-100:
                 return np.nan*rho
             rho_new = self.fener.beta*np.exp(-self.fener.beta*dF.real)*fugacity
-            krho_new = np.fft.fftn(rho_new)*self.grid.dr
+            krho_new = self.grid.fft(rho_new)#*self.grid.dr
             alpha_mix_cor = alpha_mix*correction_factor
             rho_new = (1.0-alpha_mix_cor)*rho+alpha_mix_cor*rho_new
             rho_new[rho_new<1e-10/angstrom**3] = 0.0
@@ -116,7 +117,7 @@ class Picard(object):
     def update_rho_hybrid(self, rho, chempot, fugacity, alpha_mix, break_nstep=40, correction_factor=1, thresh=1*kjmol):
         with log.section('PICARD', self.log_level, timer='Update rho'):
             dF = 0
-            krho = np.fft.fftn(rho)*self.grid.dr
+            krho = self.grid.fft(rho)#*self.grid.dr
             if not hasattr(self, 'omega0'): self.omega0 = self.fener.track(chempot, rho, write=False)
             for part in self.fener.parts:
                 dF += part.derive(krho).real
@@ -127,15 +128,26 @@ class Picard(object):
                 log.dump('NEGATIVE DENSITIES ENCOUTERED In the initial density')
                 log.dump('#####################################################')            
 
-            krho_new = np.fft.fftn(rho_new)*self.grid.dr
+            krho_new = self.grid.fft(rho_new)#*self.grid.dr
 
-            #calculating the weighted densities from the FMT to calculate the alpha max and check certain conditions
-            for part in self.fener.parts:
-                if part.name in ['FMT', 'MFMT', 'WBII']:
-                    n3_max = np.max(part.get_n3(krho)).real
-                    n3_max_new = np.max(part.get_n3(krho_new)).real   
+            #calculating the weighted densities from the FMT to calculate the alpha max and check certain conditions.
+            #ADDED LOUIS: I don't understand the code below, doesn't n3_max just depend on the last part in parts and whether that is (M)FMT/WBII or not...
+            index = None
+            for partname in self.fener.parts:
+                if partname.name in ['FMT', 'MFMT', 'WBII']:
+                    index = partname
+                    break
+            if index is not None:
+                n3_max = np.max(index.get_n3(krho)).real
+                n3_max_new = np.max(index.get_n3(krho_new)).real
+            else:
+                if not hasattr(self, 'FMT'):
+                    if self.fener.system.guest.Rhs is None:
+                        self.fener.system.guest.compute_hardsphere_radius(self.fener.temperature)
+                    self.FMT = FMTFunctional(self.fener.system.guest.Rhs, self.grid)
+                n3_max = np.max(self.FMT.get_n3(krho)).real
+                n3_max_new = np.max(self.FMT.get_n3(krho_new)).real
 
-            #First quadratic approximation, sometimes convergence isn't reached using this quadratic approximation and the solving algorithm doesn't converge
             alpha_max = np.min([abs((1-n3_max)/(n3_max_new - n3_max)), 1])
             
             min_pot = 0
@@ -169,7 +181,6 @@ class Picard(object):
             min_pot = np.min(omegas)/kjmol
             max_pot = np.max(omegas)/kjmol    
 
-            # if alpha_opt <= 0 and max_pot-min_pot>thres:
             if alpha_opt <= 0 and max_pot-min_pot>thresh:
                 tstart = time.perf_counter()
                 log.dump('original alpha_opt: %5.5f'%alpha_opt)
@@ -177,7 +188,7 @@ class Picard(object):
                 def calc_G_rho(alpha):
                     dF = 0
                     rho_temp = (1-alpha)*rho + alpha*rho_new
-                    krho_temp = np.fft.fftn(rho_temp)*self.grid.dr
+                    krho_temp = self.grid.fft(rho_temp)#*self.grid.dr
                     for part in self.fener.parts:
                         dF += part.derive(krho_temp)
                     rho_temp_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity
@@ -214,6 +225,26 @@ class Picard(object):
 
             rho_new[rho_new<1e-10/angstrom**3] = 0.0
             return rho_new
+
+    def plot_solvers(self, rho, rho_new, chempot, alpha_max, alpha_opt, alpha_opt_new, alpha1, alpha2, omega1, omega2,a,b,c):
+        alphas = np.linspace(np.min([-0.4*alpha_max, alpha_opt]), 0.9*alpha_max, 200)
+        alphas_2 = np.linspace(-0.02*alpha_max,0.02*alpha_max, 200)
+        alphas = selection_sort(np.concatenate((alphas, alphas_2)))
+        omegas = np.array([self.fener.track(chempot, (1-alp)*rho + alp*rho_new, write=False)/kjmol for alp in alphas])
+        omega_min = np.min(omegas)
+        alpha_min = alphas[np.where(omegas==omega_min)[0][0]]
+        fig = plt.figure()
+        ax = fig.gca()
+        ax.plot(alphas, omegas, label='Real grand potential')
+        ax.plot(alphas, (a+b*alphas+c*alphas**2)/kjmol, label='Quadratic approximation')
+        ax.plot([0, alpha1, alpha2], [self.omega0/kjmol, omega1/kjmol, omega2/kjmol], marker='x', linestyle='', label='fitting points')
+        ax.plot(alpha_min, omega_min, marker='v', label='Real minimum')
+        ax.plot(alpha_opt_new, self.fener.track(chempot,(1-alpha_opt_new)*rho+alpha_opt_new*rho_new,write=False)/kjmol, marker='o', label='minimized alpha')
+        ax.plot(alpha_opt, self.fener.track(chempot,(1-alpha_opt)*rho+alpha_opt*rho_new,write=False)/kjmol, marker='o', label='fitted alpha')
+        ax.set_xlabel('Mixing parameter')
+        ax.set_ylabel('Grand potential [kJ/mol]')
+        ax.legend(loc='best')
+        plt.show()
 
 class Anderson(object):
     def __init__(self, grid, fener):
@@ -291,6 +322,7 @@ class Anderson(object):
                     log.dump("Converged after %d Picard steps"%(istep+1))
                     log.dump("")
                     break
+
                 rho = rho_new.copy()
             if istep==nsteps-1:
                 log.dump("Solution not converged after %d Picard steps \n"%(nsteps))
@@ -299,7 +331,7 @@ class Anderson(object):
     def update_rho_hybrid(self, rho, chempot, fugacity, alpha_mix, m=10):
         with log.section('PICARD', 3, timer='Update rho'):
             dF = 0
-            krho = np.fft.fftn(rho)*self.grid.dr
+            krho = self.grid.fft(rho)#*self.grid.dr
             if not hasattr(self, 'omega0'): self.omega0 = self.fener.track(chempot, rho, write=False)
             if not hasattr(self, 'Grho_new'):
                 for part in self.fener.parts:
@@ -307,7 +339,7 @@ class Anderson(object):
                 self.Grho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity     
 
    
-            krho_new = np.fft.fftn(self.Grho_new)*self.grid.dr
+            krho_new = self.grid.fft(self.Grho_new)#*self.grid.dr
 
 
             #saving m rhos and Grhos
@@ -353,7 +385,7 @@ class Anderson(object):
                 def calc_G_rho(alpha):
                     dF = 0
                     rho_temp = (1-alpha)*rho + alpha*self.Grho_new
-                    krho_temp = np.fft.fftn(rho_temp)*self.grid.dr
+                    krho_temp = self.grid.fft(rho_temp)#*self.grid.dr
                     for part in self.fener.parts:
                         dF += part.derive(krho_temp)
                     rho_temp_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity
@@ -384,7 +416,7 @@ class Anderson(object):
                 print('#####################################################')
 
             rho_new[rho_new<1e-10/angstrom**3] = 0.0
-            krho_new = np.fft.fftn(rho)*self.grid.dr
+            krho_new = self.grid.fft(rho)#*self.grid.dr
             for part in self.fener.parts:
                 dF += part.derive(krho_new).real
             self.Grho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity
@@ -395,7 +427,7 @@ class Anderson(object):
     def update_rho_Anderson_equi(self, rho, chempot, fugacity, alpha_mix, m=10):
         with log.section('ANDERSON', 3, timer='Update rho'):
             dF = 0
-            krho = np.fft.fftn(rho)*self.grid.dr
+            krho = self.grid.fft(rho)#*self.grid.dr
             if not hasattr(self, 'Grho_new'):
                 for part in self.fener.parts:
                     dF += part.derive(krho).real
@@ -433,7 +465,7 @@ class Anderson(object):
                 Grho_result = broad_alphas*(rho_diff+res_diff)
                 rho_new = rho + res_k[-1] + alpha_mix*np.sum(Grho_result,axis=0)
 
-            krho_new = np.fft.fftn(rho)*self.grid.dr
+            krho_new = self.grid.fft(rho)*self.grid.dr
             for part in self.fener.parts:
                 dF += part.derive(krho_new).real
             self.Grho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity
@@ -443,13 +475,13 @@ class Anderson(object):
     def update_rho_Anderson(self, rho, chempot, fugacity, alpha_mix, m=10):
         with log.section('ANDERSON', 3, timer='Update rho'):
             dF = 0
-            krho = np.fft.fftn(rho)*self.grid.dr
+            krho = self.grid.fft(rho)#*self.grid.dr
             if not hasattr(self, 'Grho_new'):
                 for part in self.fener.parts:
                     dF += part.derive(krho).real
                 self.Grho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity     
 
-            krho_new = np.fft.fftn(self.Grho_new)*self.grid.dr
+            krho_new = self.grid.fft(self.Grho_new)#*self.grid.dr
 
             mk = min(self.curr_step, m)
 
@@ -478,7 +510,7 @@ class Anderson(object):
             Grho_result = broad_alphas*self.prev_Grhos[:mk]
 
             rho_new = (1-alpha_mix)*np.sum(rho_result,axis=0) + alpha_mix*np.sum(Grho_result,axis=0)
-            krho_new = np.fft.fftn(rho)*self.grid.dr
+            krho_new = self.grid.fft(rho)#*self.grid.dr
             for part in self.fener.parts:
                 dF += part.derive(krho_new).real
             self.Grho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity

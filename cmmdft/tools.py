@@ -9,14 +9,13 @@ import numpy as np
 import itertools
 import numpy.random as rd
 from scipy.optimize import brentq
-from .rotations._stroud_1969 import stroud_1969
 from .rotations.AngGrid import AngularGrid
+from .rotations._stroud_1969 import *
 
-from molmod.units import kjmol, angstrom
+from molmod.units import kjmol, angstrom, kcalmol
 from molmod.constants import boltzmann
 
 from yaff import System, ForceField, Parameters
-
 
 __all__ = [
     'selection_sort', 'bisect_left',
@@ -29,18 +28,6 @@ __all__ = [
 
 
 def selection_sort(x):
-    '''The function implements selection sort algorithm to sort a given array of numbers in ascending order.
-    
-    Parameters
-    ----------
-    x
-        x is a list of numbers that needs to be sorted using the selection sort algorithm.
-    
-    Returns
-    -------
-        returns the sorted list `x` in ascending order.
-    
-    '''
     for i in range(len(x)):
         swap = i + np.argmin(x[i:])
         (x[i], x[swap]) = (x[swap], x[i])
@@ -76,6 +63,7 @@ def bisect_left(a, x, lo=0, hi=None, *, key=None):
             else:
                 hi = mid
     return lo
+
 def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmin=1e-5, rmax=None, npoints=50, degree=7, style='LJ'):
     '''This function calculates the hard-sphere radius according to the Barker-Henderson method, given a
     force field or Lennard-Jones parameters.
@@ -125,7 +113,6 @@ def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmi
         Rhs = sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
         
     elif ff is not None:
-        #if the molecule is not spherically symmetric an orientational integration has te be done in order to obtain an interaction potential
         if natom>1:
             def potential(r):
                 if r<rmin:
@@ -137,14 +124,13 @@ def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmi
                         return spherical_potential_boltz(ff, r, natom, beta=beta, degree=degree)
                     elif style == 'ave':
                         return spherical_potential_ave(ff, r, natom, degree=degree)
-
         else:
             def potential(r):
                 ff.system.pos[:] = 0.0
                 ff.system.pos[natom:,2] = r
                 ff.update_pos(ff.system.pos)
                 if r<rmin:
-                    return 1e+5*kjmol
+                    return 1e+3*kjmol
                 else:
                     return ff.compute()
         assert potential(rmin)>0.0, str(potential(rmin)/kjmol)
@@ -167,6 +153,64 @@ def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmi
         raise TypeError('Must provide either forcefield or Lennard-Jones parameters')
     return Rhs, sigma
 
+def hard_spheres_barker_henderson_spherical_ave(beta, ff, natom, rmin=1e-5, rmax=None, degree=5, npoints=100):
+
+    neutral_pos = np.copy(ff.system.pos)
+    COM1 = np.sum(ff.system.pos[:natom]*ff.system.masses[:natom].reshape((natom,1)), axis=0)/np.sum(ff.system.masses[:natom]) #center of mass of the first guest molecule
+    COM2 = np.sum(ff.system.pos[-natom:]*ff.system.masses[-natom:].reshape((natom,1)), axis=0)/np.sum(ff.system.masses[-natom:]) #center of mass of the second guest molecule
+  
+    rotations1, weights = generate_rotation_matrix(degree, 3) 
+    rotations2 = generate_rotation_matrix(degree, 3) 
+
+    i = 0
+    length = len(rotations1)
+    sigs = np.ones((length*degree)**2)
+    Rhss = np.ones((length*degree)**2)
+
+    for rot2 in rotations2:
+        full_rot = np.matmul(rotations1, rot2)
+        for ii, rot_f in enumerate(full_rot):
+            ff.system.pos[:natom] = (rot_f @ (neutral_pos[:natom]-COM1).transpose()).transpose() + COM1 #rotate all atoms of the first molecule
+            for rot22 in rotations2:
+                full_rot2 = np.matmul(rotations1, rot22)
+                for iii, rot_f2 in enumerate(full_rot2):
+                    ff.system.pos[-natom:] = (rot_f2 @ (neutral_pos[-natom:]-COM2).transpose()).transpose() + COM2 #first rotate all atoms of the second molecule, first the rotor is applied, then displace t
+                    ff.update_pos(ff.system.pos)
+
+                    def potential(r):
+                        if r<rmin:
+                            return 1e+20*kjmol
+                        else:
+                            ff.system.pos[-natom:] +=  np.array([r,0,0])
+                            ff.update_pos(ff.system.pos)
+                            poten = ff.compute()
+                            ff.system.pos[-natom:] -= np.array([r,0,0])
+                            ff.update_pos(ff.system.pos)
+                            return poten  
+
+                    #assert potential(rmin)>0.0, str(potential(rmin)/kjmol)
+                    if rmax is None:
+                        assert ff.nlist is not None
+                        rmax = 0.9*ff.nlist.rcut
+                    assert potential(rmax)<=0.0, str(potential(rmax)/kjmol)+' '+str(rmax/1.88)
+                    # Find the only zero of the potential
+                    sigma = brentq(potential, rmin, rmax)
+                    # Numerical integration
+                    grid = np.linspace(0.0, sigma, num=npoints)
+                    e = np.zeros(grid.shape)
+                    #rmin = sigma/ #the minimum radius for computation of the coarsened interaction potential is set with sigma
+                    for ir, r in enumerate(grid):
+                        if r<rmin: e[ir] = np.nan
+                        e[ir] = potential(r)
+                    #print(e/kjmol)
+                    integrand = 1.0-np.exp(-beta*e)
+                    Rhs = 0.5*np.trapz(integrand, x=grid)                                      
+                    sigs[i] = sigma*weights[iii]*weights[ii]
+                    Rhss[i] = Rhs*weights[iii]*weights[ii]
+                    i += 1  
+
+    ff.update_pos(neutral_pos)
+    return np.sum(Rhss)/degree**2/16/np.pi**2, np.sum(sigs)/degree**2/16/np.pi**2
 
 def merge_ffpar_files(fn_pars, *fns):
     '''
@@ -241,6 +285,27 @@ def get_ff(system1, system2, pars, rcut, nlow=None, nhigh=None, tailcorrections=
         nhigh = system1.natom
     ff = ForceField.generate(system, str(pars), rcut=rcut, smooth_ei=True, nlow=nlow, nhigh=nhigh, tailcorrections=tailcorrections)
     return ff
+
+def write_LJ_pars_chk(guest, dr):
+    syst = System([0], [[0,0,0]], ffatype_ids=[0], ffatypes=[guest.name], masses=[guest.mass])
+
+    with open(dr+'/LJ_pars.chk', 'w') as f:
+        f.write('# van der Waals\n')
+        f.write('#==============')
+        f.write('\n')
+        f.write('LJ:UNIT SIGMA angstrom\n')
+        f.write('LJ:UNIT EPSILON kcalmol\n')
+        f.write('LJ:SCALE 1 0.0\n')
+        f.write('LJ:SCALE 2 0.0\n')
+        f.write('LJ:SCALE 3 0.0\n')
+        f.write('\n')
+        f.write('# ------------------------------------\n')
+        f.write('# KEY      ffatype  SIGMA  EPSILON\n')
+        f.write('# ------------------------------------\n')
+        f.write('\n')
+        f.write(f'LJ:PARS      {guest.name}     {guest.sigma/angstrom:0.5f}  {guest.espilon/kcalmol:0.5f}\n')
+    return syst, dr+'/LJ_pars.chk'
+
 
 def merge_yaff_systems(system0, system1):
     "Routine based on the System.merge routine from yaff, but with small hack to allow for merging systems with no bonds"
@@ -347,12 +412,14 @@ def spherical_potential_semi_boltz(ff, distance, natom, beta, degree=5, limit_po
     int_pot = np.zeros(length)
     for i in range(length):
         pots = potentials[i*length:(i+1)*length]
+        # inter_opt = np.sum(pots*np.exp(-beta*pots)*weights_rot2[i*length:(i+1)*length])
         inter_pot = np.sum(pots*np.exp(-beta*pots)*weights_rot2[i*length:(i+1)*length])*weights_rot1[i*length]
         basis_pot = np.sum(np.exp(-beta*pots)*weights_rot2[i*length:(i+1)*length])
         if basis_pot==0:
             int_pot[i] = limit_potential*weights_rot1[i*length]
         else:
             int_pot[i] = inter_pot/basis_pot
+    # print(int_pot/kjmol)
     potential = np.sum(int_pot)/degree/4/np.pi
     return potential
 
@@ -380,33 +447,6 @@ def spherical_potential_ave(ff, distance, natom, degree=5, limit_potential=1e+4*
 
 
 def spherical_rotations(ff, distance, natom, degree, limit_potential):
-    '''This function performs spherical rotations on two guest molecules in a force field and computes the
-    potential energy for each rotation. It returns a list of the potentials and the appropriate integration weights.
-    
-    Parameters
-    ----------
-    ff
-        The force field object used to compute the potential energy.
-    distance
-        The distance between the two guest molecules in the system.
-    natom
-        The number of atoms in each guest molecule.
-    degree
-        The degree parameter is the degree of the rotational quadrature which generates the discrete 
-    angles at which the molecules will be rotated during the simulation. 
-    limit_potential
-        `limit_potential` is a value that is used to replace infinite potential energy values that may
-    arise during the computation of the potential energy. If the potential energy of a configuration is
-    infinite, it means that the configuration is not physically possible and cannot be used in the
-    simulation.
-    
-    Returns
-    -------
-        three arrays: `pot` which contains the potential energy values for each rotation combination,
-    `weights_rot1` which contains the integration weights for the first set of rotations, and 
-    `weights_rot2` which contains the weights for the second set of rotations.
-    
-    '''
     ff.system.pos = ff.system.pos*(~np.isclose(np.zeros(ff.system.pos.shape),ff.system.pos))
     neutral_pos = np.copy(ff.system.pos)
     COM1 = np.sum(ff.system.pos[:natom]*ff.system.masses[:natom].reshape((natom,1)), axis=0)/np.sum(ff.system.masses[:natom]) #center of mass of the first guest molecule
@@ -536,7 +576,7 @@ def effective_potential_Leb(ff, natom, beta, degree = 10, Taylor=None):
     else:
         return potential, np.std(pot/kjmol)
 
-def effective_potential_precalc(ff, natom, beta, cutoff_pot=100, degree=7, Taylor=None):
+def effective_potential_precalc(ff, natom, beta, cutoff_pot=500, degree=7, Taylor=None):
     """
     A method to compute the effective external potential as described by Dandan Hong (2021), where the degree of the scheme
     used to rotate the molecule is determined by an initial trial calculation of degree 3. Points with a high standard deviation are 
@@ -610,29 +650,42 @@ def effective_potential_precalc(ff, natom, beta, cutoff_pot=100, degree=7, Taylo
             new_pot, new_std = effective_potential_Leb(ff, natom, beta, degree = degree, Taylor=Taylor)
             return new_pot
 
+def effective_potential_dynamic(ff, natom, beta, a_tol=0.1*kjmol, r_tol=0.1, limit_potential=1e+4*kjmol):
+    degrees = [3, 5, 7, 9, 11, 15, 17, 19, 21, 27, 29, 31, 35, 41, 47]
+    rel_err = 50*kjmol
+    i = 0
+
+    def ln_except(input, limit):
+        try:
+            return np.log(input)
+        except FloatingPointError:
+            return -limit*beta
+    
+    prev_int, prev_std = effective_potential_Leb(ff, natom, beta, degree = degrees[i])
+    prev_pot = -ln_except(prev_int, limit_potential)/beta
+    
+    if prev_pot >= 1e+4*kjmol:
+        print('Hard limit', "\n")
+        return 0, prev_std
+    elif prev_pot > 20/beta:
+        print('Soft limit', prev_pot/kjmol, "\n")
+        return prev_int, prev_std
+    else:
+        while np.abs(rel_err) > a_tol + r_tol*np.abs(prev_pot) and i < len(degrees) - 1:
+            i+=1
+            new_int, new_std = effective_potential_Leb(ff, natom, beta, degree = degrees[i])
+            new_pot = -ln_except(new_int, limit_potential)/beta
+            print('Dynamic')
+            print('Degree', degrees[i])
+            print('Relative error', rel_err)
+            print('Potential', new_pot/kjmol)
+            rel_err = np.abs((new_pot-prev_pot)/prev_pot)
+            prev_pot, prev_std, prev_int = new_pot, new_std, new_int
+        print('Final potential', prev_pot/kjmol)
+        print(f'Converged final degree is {degrees[i]}', "\n")
+        return prev_int, prev_std
+
 def effective_potential_MC(ff, natom, beta, nsteps=int(1e+4)):
-    '''This function calculates the effective potential of a guest molecule in a given force field using
-    Monte Carlo simulation.
-    
-    Parameters
-    ----------
-    ff
-        ff is an instance of a force field class that contains information about the system's potential
-    energy function and other relevant parameters such as atomic masses and charges.
-    natom
-        natom is the number of atoms in the guest molecule that is being inserted into the system.
-    beta
-        Beta is the inverse temperature in units of energy^-1. It is used in the calculation of the
-    potential energy of the system.
-    nsteps
-        The number of Monte Carlo steps to perform.
-    
-    Returns
-    -------
-        a tuple containing the effective potential and the standard deviation of the energies in units of
-    kJ/mol.
-    
-    '''
     neutral_pos = np.copy(ff.system.pos) #initiele positie van gastmolecule opslagen, COM berekenen en daarmee werken
     COM = np.sum(ff.system.pos[-natom:]*ff.system.masses[-natom:].reshape((natom,1)), axis=0)/np.sum(ff.system.masses[-natom:])
 
@@ -856,7 +909,7 @@ def find_neighbours(index, data, direct=True):
         if not direct:
             new_index = ((index[0]+i)%xdim, (index[1]+i)%ydim, index[2])
             try:
-                neighbours.append(data[new_index])                                                                                
+                neighbours.append(data[new_index])
                 new_indices.append(new_index)
             except IndexError:
                 pass

@@ -7,7 +7,6 @@ import matplotlib.cm as cmap
 from molmod.units import kjmol, kelvin, bar, parse_unit, angstrom
 from molmod.constants import boltzmann
 from yaff import log as ylog
-from gemmi import cif
 ylog.set_level(ylog.silent)
 
 from .system import System, Grid
@@ -94,8 +93,8 @@ class Plotter(object):
         
         '''
         self.fig = pp.figure()
-        fn_name_file = os.path.join(self.calculator.workdir, 'name_file_%3.0fK.txt'%(temp/kelvin))
-        assert os.path.isfile(fn_name_file), 'No name file found for %3.0f K, searched at %s' %(temp/kelvin,fn_name_file)
+        fn_name_file = self.calculator.workdir/ 'name_file_%3.0fK.txt'%(temp/kelvin)
+        assert fn_name_file.is_file(), 'No name file found for %3.0f K, searched at %s' %(temp/kelvin,fn_name_file)
         fn_suffix=""
         with open(fn_name_file) as n:
             for x in n:
@@ -105,8 +104,8 @@ class Plotter(object):
                 # print(float('%7.5f'%(chempot/kjmol)))
                 if float(ln) == float('%7.5f'%(chempot/kjmol)):
                     fn_suffix = l[0]
-        fn = os.path.join(self.calculator.workdir, fn_suffix)
-        assert os.path.isfile(fn), 'No convergence file found for %3.0f K and %3.0f kJ/mol, searched at %s' %(temp,chempot/kjmol,fn)
+        fn = self.calculator.workdir / fn_suffix
+        assert fn.is_file(), 'No convergence file found for %3.0f K and %3.0f kJ/mol, searched at %s' %(temp,chempot/kjmol,fn)
         # get data from header of convergence file
         with open(fn) as f:
             header = f.readline()
@@ -220,11 +219,8 @@ class Plotter(object):
             mask = ~np.isnan(values)
             axs.plot(chempots[mask]/parse_unit(xunit), values[mask]/volume/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="%3.0fK" %temp)
             if mask_MBWR: axs.plot(chempots[mask]/parse_unit(xunit), valuesMBWR[mask]/volume/parse_unit(yunit), linestyle='-', marker='o', markersize=6, label="Density too high for MBWR at T=%3.0f" %temp)
-
-
-        axs.set_xlabel(xlabel %xunit, fontsize=14)
-        axs.set_ylabel(ylabel %yunit, fontsize=14)
-        axs.set_title(title, fontsize=14)      
+            axs.set_xlabel('Chemical potential [kj/mol]', fontsize=14)
+            axs.set_ylabel(ylabel %yunit, fontsize=14)
         axs.legend(loc='best', fontsize=14)
         self.fig.set_size_inches([6,6])
         self.fig.tight_layout()
@@ -397,6 +393,8 @@ class Plotter(object):
         for i in range(len(chempots)):
             swap = i + np.argmin(chempots[i:])
             (chempots[i], chempots[swap]) = (chempots[swap], chempots[i])
+            chempots = np.array(chempots)
+
         if MBWR is None:
             for p in self.calculator.fener.parts:
                 if p.name in ['LDA', 'WDA-V']:
@@ -482,17 +480,26 @@ class Plotter(object):
         #read data for given observable
         self.fig = pp.figure(0)
         if obs.lower() == 'log_rho':
-            fn = self.calculator.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temperature/kelvin:#7.5f}K.npy'
-            assert fn.is_file()
-            data = np.load(fn)
+            try:
+                assert os.path.isfile('%s/%s_%4.5fkJmol_%3.0fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))
+                data = np.load('%s/%s_%4.5fkJmol_%3.0fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))
+            except:
+                try:
+                    assert os.path.isfile('%s/%s_%4.1fkJmol_%3.0fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))
+                    data = np.load('%s/%s_%4.1fkJmol_%3.0fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))     
+                except:
+                    assert os.path.isfile('%s/%s_%7.5fkJmol_%7.5fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))
+                    data = np.load('%s/%s_%7.5fkJmol_%7.5fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))                             
             mask = data!=0
             data[data==0] = np.amin(data[mask])
             data = np.log(data)
+        
         elif obs.lower() == 'sites':
             mask_site, mask_mof, mask_empty = self.calculator.program.calc_regions(energy_cutoff, range_cutoff*angstrom)
             data = mask_site*0 + mask_empty*1 - mask_mof*1
+        
         elif obs.lower() == 'diffusion':
-            data = np.load(self.calculator.workdir / f'/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
+            data = np.load(self.calculator.workdir / f'/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')        
         elif obs.lower() == 's_ex':
             data = np.load(self.calculator.workdir / f'sex_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
 
@@ -512,20 +519,27 @@ class Plotter(object):
         
         elif obs.lower()!='rho':
             try:
-                data = np.load(self.calculator.workdir / obs).real
+                data = np.load('%s/%s.npy' %(self.calculator.workdir,obs)).real
             except:
                 epot_dir = Path(self.calculator.prefix) / self.calculator.hostname / self.calculator.guestname / self.calculator.ff_suffix / self.calculator.grid_suffix / self.calculator.suffix
                 epot_file = epot_dir / 'eff_epot_%3.2f.npy'%(temperature)
                 data = np.load(epot_file)
         else:
-            
-            fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temperature/kelvin:#7.5f}K.npy'
-            assert fn.is_file(), f'No file found at {fn}'
-            data = np.load(fn)
+            try:
+                assert os.path.isfile('%s/%s_%4.5fkJmol_%3.0fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))
+                data = np.load('%s/%s_%4.5fkJmol_%3.0fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))
+            except:
+                try:
+                    assert os.path.isfile('%s/%s_%4.1fkJmol_%3.0fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))
+                    data = np.load('%s/%s_%4.1fkJmol_%3.0fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))     
+                except:
+                    assert os.path.isfile('%s/%s_%7.5fkJmol_%7.5fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))
+                    data = np.load('%s/%s_%7.5fkJmol_%7.5fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))         
+
 
         #set some default values if not specified in keyword arguments
         if fn is None:
-            fn = self.calculator.workdir / f'{obs}_{chempot/kjmol:#3.0f}kJmol_{temperature:#3.0f}K.png'
+            fn = '%s/%s_%3.0fkJmol_%3.0fK_x.png' %(self.calculator.workdir,obs,chempot/kjmol,temperature/kelvin)        
         if unit is None:
             if obs.lower().startswith('rho'):
                 unit = '1/A**3'
@@ -610,7 +624,7 @@ class Plotter(object):
         if fn is not None:
             self.fig.savefig(fn)
         return self.fig
-    
+        
     def plot_free_energy_path(self, temperature, mu, title=None, fn=None, density=False, density_probability=False, Free_energy=False):
         '''This function plots the free energy path of a system as a function of the distance to the diffusion
         window, with the option to also plot the adsorption density or probability density.
@@ -658,7 +672,7 @@ class Plotter(object):
         ax1.set_xlabel('Distance to ring centre [angstrom]')
         ax1.set_ylabel('Grand potential [kJ/mol]', color=color1)
         ax1.tick_params(axis='y', labelcolor=color1)
-        ax1.plot(collectives/angstrom, grand_pot/kjmol, color=color1, label='Grand potential')
+        ax1.plot(collectives/angstrom, grand_pot/kjmol, color=color1)
 
         if Free_energy:
             ax1.plot(collectives/angstrom, free_energy/kjmol, color=color1, linestyle='-.', label='Free energy')
@@ -673,8 +687,7 @@ class Plotter(object):
             if title is None:
                 ax1.set_title('The grand potential and adsorption density as a function \n of the distance to the diffusion window')
             else:
-                ax1.set_title(title)           
-
+                ax1.set_title(title)             
         elif density_probability:
             ax2 = ax1.twinx()
             color2 = 'tab:blue'
@@ -682,7 +695,7 @@ class Plotter(object):
             ax2.tick_params(axis='y', labelcolor=color2)
             ax2.plot(collectives/angstrom, prob_densities, color=color2)
             if title is None:
-                ax1.set_title('The grand potential and probability density as a function \n of the distance to the diffusion window')
+                ax1.set_title('The free energy and probability density of methane in ZIF8 \n as a function of the distance to the diffusion window')
             else:
                 ax1.set_title(title)            
         else:
@@ -697,6 +710,7 @@ class Plotter(object):
         return self.fig
 
     def plot_loading_AIF(self, temperature, x_key='pressure',  y_keys='amount'):
+        from gemmi import cif
         fn = f'{self.workdir}/loading_{temperature}K.aif'
         aif = cif.read(fn)
         block = aif.sole_block()
@@ -719,7 +733,7 @@ class Plotter(object):
         
 class MultiPlotter(Plotter):
     '''
-        Compare and plot observables of various calculators, i.e. with differences in the used functionals, force-fields, 
+        Compare and plot observables of various calculators, i.e. with various values of the used functional, force field, 
         grid, ...
     '''
     def __init__(self, calculators, markerstyles=None, workdir=os.getcwd()):

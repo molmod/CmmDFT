@@ -35,9 +35,9 @@ class density_from_EOS(object):
         self.sigma = sigma
         self.mass = mass
         self.critical()
-#        self.xc = 0.1304438842
-#        self.c0 = 21.20245411
-#        self.Tc =  32/9*np.pi*self.epsilon*self.sigma**3/(boltzmann*self.v*self.c0)
+        # self.xc = 0.1304438842
+        # self.c0 = 21.20245411
+        # self.Tc =  32/9*np.pi*self.epsilon*self.sigma**3/(boltzmann*self.v*self.c0)
     
     def set_temperature(self, T):
         self.T = T
@@ -128,14 +128,23 @@ class density_from_EOS(object):
         """
         def fun(xT):
             return self.Aprime(xT[0],xT[1]), self.Aprimeprime(xT[0],xT[1])
-        self.xc, self.Tc = root(fun, x0, method='hybr')['x']
+        try:
+            self.xc, self.Tc = root(fun, x0, method='hybr')['x']
+            if self.Tc > 1e+5 or self.Tc < 0 or self.xc < 0 or self.xc > 1:
+                raise ValueError
+            else:
+                print('Critical point found at x=%.3e, T=%3i K' %(self.xc, self.Tc))
+        except:
+            print('no critical point found')
+            self.xc, self.Tc = 1e+5, 0
+            
         return self.xc, self.Tc
 
     def grand_potential(self, mu, T):
         self.set_temperature(T)
         pass
 
-    def bistability(self, T, xlower=1e-50,xupper=1-1e-12):
+    def bistability(self, T, xlower=1e-20,xupper=1-1e-12):
         """
         Returns
         -------
@@ -161,7 +170,7 @@ class density_from_EOS(object):
         mu_min = self.mu0+boltzmann*self.T*self.A(xmin, self.T)
         return [xmin/self.v,xmax/self.v],[mu_min,mu_max]
         
-    def _solve(self,mu,xlower=1e-80,xupper=1-1e-12):
+    def _solve(self,mu,xlower=1e-30,xupper=1-1e-12):
         #print('Finding equilibrium density for  mu=%.3f kJ/mol  T=%3i K' %(mu/kjmol,T))
         
         def f(x):
@@ -176,12 +185,17 @@ class density_from_EOS(object):
             #When below the critical temp, i.e. when phase splitting can occur, first compute the x-value (xmax) of the local maximum in A (this corresponds to the upper limit for the density 
             #in the gaseous state) and the x-value (xmin) of the local minimum in A (this corresponds to the lower limit in the liquid state).
             #These values can be found numerically as the roots of the derivative in the x-regions [0,xc] and [xc,1].
-            xmax = brentq(fprime,xlower,self.xc)
-            xmin = brentq(fprime,self.xc,xupper)
+            try:
+                xmax = brentq(fprime,xlower,self.xc)
+                xmin = brentq(fprime,self.xc,xupper)
+            except ValueError:
+                print(f'chempot: {mu/kjmol:.3f}')
+                print(fprime(xlower),fprime(self.xc),fprime(xupper))
+                raise ValueError('f(a) and f(b) must have different signs')
             #now compute the corresponding chemical potentials of the minimum and maximum
             mu_max = self.mu0+boltzmann*self.T*self.A(xmax, self.T)
             mu_min = self.mu0+boltzmann*self.T*self.A(xmin, self.T)
-#            print(mu_min/kjmol,mu/kjmol,mu_max/kjmol)            
+            # print(mu_min/kjmol,mu/kjmol,mu_max/kjmol)            
             #print('  Local maximum:  x=%.3e   mu=%.3e kJ/mol' %(xmax,mu_max/kjmol)) 
             #print('  Local minimum:  x=%.3e   mu=%.3e kJ/mol' %(xmin,mu_min/kjmol))
             #depending on the value of mu relative to mu_min and mu_max, only 1 solution (gaseous), two solutions (1 gaseous and 1 liquid) or only 1 solution (liquid) will be found. 
@@ -198,7 +212,7 @@ class density_from_EOS(object):
             return x1/self.v, x2/self.v
     
     #wrapper for numpy array input for mu
-    def solve(self, mus, T,xlower=1e-50,xupper=1-1e-12):
+    def solve(self, mus, T,xlower=1e-10,xupper=1-1e-40):
         if not (isinstance(mus, list) or isinstance(mus,np.ndarray)):
             mus = [mus]
         self.set_temperature(T)

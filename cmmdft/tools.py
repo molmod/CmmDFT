@@ -287,9 +287,11 @@ def get_ff(system1, system2, pars, rcut, nlow=None, nhigh=None, tailcorrections=
     return ff
 
 def write_LJ_pars_chk(guest, dr):
-    syst = System([0], [[0,0,0]], ffatype_ids=[0], ffatypes=[guest.name], masses=[guest.mass])
+    syst = System(np.zeros(1), np.zeros([1,3]), bonds=np.zeros(0), ffatype_ids=np.zeros(1, dtype=int), ffatypes=np.array([guest.name]), masses=np.array([guest.mass]))
 
-    with open(dr+'/LJ_pars.chk', 'w') as f:
+    dr = str(dr)
+
+    with open(dr+'/LJ_pars.txt', 'w') as f:
         f.write('# van der Waals\n')
         f.write('#==============')
         f.write('\n')
@@ -303,8 +305,8 @@ def write_LJ_pars_chk(guest, dr):
         f.write('# KEY      ffatype  SIGMA  EPSILON\n')
         f.write('# ------------------------------------\n')
         f.write('\n')
-        f.write(f'LJ:PARS      {guest.name}     {guest.sigma/angstrom:0.5f}  {guest.espilon/kcalmol:0.5f}\n')
-    return syst, dr+'/LJ_pars.chk'
+        f.write(f'LJ:PARS      {guest.name}     {guest.sigma/angstrom:0.5f}  {guest.epsilon/kcalmol:0.5f}\n')
+    return syst, dr+'/LJ_pars.txt'
 
 
 def merge_yaff_systems(system0, system1):

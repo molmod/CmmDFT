@@ -152,7 +152,7 @@ class FreeEnergy(object):
             self.tracking_step += 1
         return G
     
-    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e6*kjmol, positive=False, rewrite=False,
+    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e6*kjmol, positive=False, rewrite=False, fn=None,
                                 **kwargs):
         '''The `add_external_potential` function adds an external potential contribution for spherical particles in a system.
             
@@ -185,24 +185,32 @@ class FreeEnergy(object):
                 fn = Path(fn)
                 epot_dr = fn.parent
             else:
+                pos_str = 'pos_' if positive else ''
                 epot_dr = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] 
                 if not epot_dr.is_dir(): epot_dr.mkdir(parents=True)
-                if self.system.guest.mol.natom != 1: 
-                    assert temperature is not None, 'Temperature must be provided for non-spherical particles'
-                    fn = epot_dr / f'{positive*'pos_'}eff_epot_{temperature:#3.2f}K.npy'  
+                if not isinstance(self.system.guest, SphericalLJGuest):
+                    if self.system.guest.mol.natom != 1: 
+                        assert temperature is not None, 'Temperature must be provided for non-spherical particles'
+                        fn = epot_dr / f'{pos_str}eff_epot_{temperature:#3.2f}K.npy'  
+                    else:
+                        fn = epot_dr / f'{pos_str}epot.npy'
+                    
                 else:
-                    fn = epot_dr / f'{positive*'pos_'}epot.npy'
-                
-            (self.workdir / 'ExtPots').symlink_to(epot_dr)
+                    fn = epot_dr / f'{pos_str}epot.npy'
+            #create a symlink to the potential directory so everything is in one place
+            sym_fn = self.workdir / 'ExtPots'
+            if not sym_fn.is_symlink():
+                sym_fn.symlink_to(epot_dr.absolute())    
 
             if isinstance(self.system.guest, SphericalLJGuest):
+                log.dump('Creating parameter file for guest molecule from LJ parameters')
                 guest_mol, guest_par = write_LJ_pars_chk(self.system.guest, self.workdir)
             else:
                 guest_mol, guest_par = self.system.guest.mol, self.system.guest.par
 
             pars_fn = self.workdir / 'pars.txt'
             merge_ffpar_files(pars_fn, self.system.host.par, guest_par) 
-            log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.host.par, self.system.guest.par, pars_fn))
+            log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.host.par, guest_par, pars_fn))
 
             ff_ext = get_ff(self.system.host.mol, guest_mol, pars_fn, rcut)
             epot = ExternalPotential(self.grid, self.system.guest.natom, ff_ext, epot_dr, positive=positive, **kwargs)
@@ -298,10 +306,10 @@ class FreeEnergy(object):
             if not os.path.isfile(fn) or self.overwrite or kwargs.get('rewrite', False):
                 if isinstance(self.system.guest, SphericalLJGuest) or isinstance(self.system.guest, DualModelGuest):
                     log.dump('computing LJ interaction potential with LJ params from given guest %s' %(self.system.guest.name))
-                    mfa.generate_potential_LJ(self.system.guest.sigma, self.system.guest.epsilon)
+                    mfa.generate_potential_lj(self.system.guest.sigma, self.system.guest.epsilon)
                 else:
                     log.dump('computing interaction potential with forcefield from given guest %s' %(self.system.guest.name))
-                    mfa.generate_potential(self.system.guest.sigma, self.system.guest.epsilon)
+                    mfa.generate_potential(self.system.guest.mol, self.system.guest.par, self.system.guest.Rzero, self.temperature, **kwargs)
                 log.dump('writing interaction potential to %s' %fn)
                 mfa.dump_potential(fn)
             else:
@@ -714,7 +722,7 @@ class MFAFunctional(Functional):
     
     name = 'MFA'
     
-    def __init__(self, grid, degree=5):
+    def __init__(self, grid):
         """
         **Arguments:**
         
@@ -893,7 +901,7 @@ class ExternalPotential(Functional):
 
     name = 'ExtPot'
 
-    def __init__(self, grid, natom, ff, epot_dr, positive=False, limit_potential=1e+4*kjmol, inter_save=False, degree=5):
+    def __init__(self, grid, natom, ff, epot_dr, positive=False, limit_potential=1e+4*kjmol, degree=5):
         self.grid = grid
         self.potential = None
         self.kpotential = None
@@ -902,12 +910,11 @@ class ExternalPotential(Functional):
         self.epot_dr = epot_dr
         self.positive = positive
         self.limit_potential = limit_potential
-        self.inter_save = inter_save
         self.degree = degree
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        return ExternalPotential(grid, self.natom, self.ff, self.epot_dr, self.positive, self.limit_potential, self.inter_save, self.degree)
+        return ExternalPotential(grid, self.natom, self.ff, self.epot_dr, self.positive, self.limit_potential, self.degree)
 
     def load_potential(self, fn):
         self.potential = np.load(fn)
@@ -918,7 +925,8 @@ class ExternalPotential(Functional):
         if self.natom == 1:
             pass
         else:
-            epot_fn = self.epot_dr / f'{self.positive*'pos_'}eff_epot_{temperature:#3.2f}K.npy'
+            pos_str = 'pos_' if self.positive else ''
+            epot_fn = self.epot_dr / f'{pos_str}eff_epot_{temperature:#3.2f}K.npy'
             if not epot_fn.exists():
                 self.generate_potential(temperature)
                 self.dump_potential(epot_fn)
@@ -944,18 +952,8 @@ class ExternalPotential(Functional):
         COM = np.sum(self.ff.system.pos[-self.natom:]*self.ff.system.masses[-self.natom:].reshape((self.natom,1)), axis=0)/np.sum(self.ff.system.masses[-self.natom:])
         neutr_pos = np.copy(self.ff.system.pos[-self.natom:] - COM)
 
-        if self.inter_save and not rewrite:
-            dirs = [dr for dr in os.listdir(self.epot_fn) if dr.startswith('inter_effpot')]
-            if len(dirs):
-                numeric_const_pattern = '[-+]? (?: (?: \d* \. \d+ ) | (?: \d+ \.? ) )(?: [Ee] [+-]? \d+ ) ?'
-                rx = re.compile(numeric_const_pattern, re.VERBOSE)
-                indices = np.array([int(rx.findall(dir)[0]) for dir in dirs])
-                new_i = int(np.max(indices))
-                index = np.where(np.isclose(indices,new_i))[0][0]
-                self.potential = np.load(self.epot_fn / dirs[index])
-            else: new_i = 0
-        else:
-            new_i = 0
+        if self.natom > 1:
+            assert temperature is not None, 'Temperature must be set for the calculation of the effective external potential'
 
         for i in range(points.shape[0]):
             for j in range(points.shape[1]):
@@ -967,32 +965,17 @@ class ExternalPotential(Functional):
                     else:
                         integrand = effective_potential_precalc(self.ff, self.natom, 1/boltzmann/temperature, degree=self.degree)
                         try:
-                            self.potential[i,j,k] = -boltzmann*temperature*np.log(integrand) 
+                            poten = -boltzmann*temperature*np.log(integrand) 
                         except FloatingPointError:
-                            self.potential[i,j,k] = self.limit_potential
+                            poten = self.limit_potential
                     if self.positive:
                         if poten>0:
                             self.potential[i,j,k] = poten
                         else:
                             self.potential[i,j,k] = 0
                     else: self.potential[i,j,k] = poten
-            if self.inter_save:
-                inter_fn = self.epot_fn / f"inter_effpot_{i}_{temperature}K.npy"
-                self.dump_potential(inter_fn)
-                log.dump(f'Saving an intermediary effective potential at {inter_fn}')
-                try:
-                    if i != 0:
-                        previous_fn = self.epot_fn / f"inter_effpot_{i-1}_{temperature}K.npy"
-                        previous_fn.unlink()
-                except FileNotFoundError:
-                    log.dump(f'unable to remove {previous_fn}')
-                    pass
 
         self.kpotential = self.grid.fft(self.potential)
-        try:
-            (self.epot_fn / f"inter_effpot_{i}_{temperature}K.npy").unlink()
-        except FileNotFoundError:
-            pass
 
     def dump_potential(self, fn):
         assert self.potential is not None

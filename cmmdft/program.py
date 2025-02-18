@@ -358,6 +358,8 @@ class Program(object):
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
             rho_old = self.rho0.copy()
             N, rho = self.solver.solve(chempot, rho_old, log_level)
+            if rho is None:
+                raise ValueError('No solution found')
             np.save(self.rho_fn, rho)
 
 

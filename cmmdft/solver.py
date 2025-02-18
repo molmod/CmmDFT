@@ -24,12 +24,47 @@ class Solver(object):
 
     name = 'SOLVER'
 
-    def __init__(self, grid, fener, nsteps=250, threshold=1e-6, criterion='RIUE'):
+    def __init__(self, grid, fener, nsteps=250, threshold=1e-6, criterion='RIUE', a_tol=1e-6, r_tol=1e-4):
+        """
+        Initialize the solver with the given parameters.
+        Parameters:
+        grid : object
+            The grid object used for the solver.
+        fener : object
+            The free energy object containing functionals.
+        nsteps : int, optional
+            The maximum number of steps for the solver (default is 250).
+        threshold : float, optional
+            The convergence threshold for the solver (default is 1e-6).
+        criterion : str, optional
+            The criterion for convergence ('RIUE', 'RES', or 'RES_RATIO') (default is 'RIUE').
+        a_tol : float, optional
+            The absolute tolerance for convergence (default is 1e-6) only used for RES_RATIO.
+        r_tol : float, optional
+            The relative tolerance for convergence (default is 1e-4) only used for RES_RATIO.
+        Raises:
+        AssertionError
+            If the criterion is not one of 'RIUE', 'RES', or 'RES_RATIO'.
+        NotImplementedError
+            If the 'RES_RATIO' criterion is selected, as it is not implemented yet.
+        """
         self.grid = grid
         self.fener = fener
         self.nsteps = nsteps
-        self.threshold = threshold
+        assert criterion.lower() in ['riue', 'res', 'res_ratio'], 'Criterion must be either RIUE (relative integrated unsigned error), RES (Residual error) or RES_RATIO (Residual error ratio)'
         self.criterion = criterion
+
+        if self.criterion.lower() == 'res_ratio':
+            raise NotImplementedError('RES_RATIO criterion is not implemented yet')
+            threshold = 1
+
+        for part in fener.parts:
+            if 'ExtPot' in part.name:
+                self.mask = np.where(part.potential>50*boltzmann*fener.temperature)            
+
+        self.threshold = threshold
+        self.a_tol = a_tol
+        self.r_tol = r_tol
         self.min_iter = 1
         self.iphase = 0  
         self.log_level = 2
@@ -44,6 +79,24 @@ class Solver(object):
 
 
     def get_new_rho(self, rho, krho, fugacity):
+        """
+        Calculate the new density (rho) based on the current density, 
+        the density gradient, and the fugacity.
+
+        Parameters:
+        -----------
+        rho : array-like
+            Current density distribution.
+        krho : array-like
+            Gradient of the density distribution.
+        fugacity : array-like
+            Fugacity values.
+
+        Returns:
+        --------
+        array-like
+            Updated density distribution.
+        """
         with log.section('PICARD', self.log_level, timer='Update rho'):
             dF = 0
             for part in self.fener.parts:
@@ -53,7 +106,7 @@ class Solver(object):
     def update_rho(self, rho, krho, rho_new):
         pass 
          
-    def _check_convergence(self, rho_new, rho, N_new, f):
+    def _check_convergence(self, rho_new, Grho_new, rho, N_new):
         """
         Check the convergence of the solver.
         """
@@ -62,26 +115,37 @@ class Solver(object):
 
             self.IUE = self.grid.integrate(np.abs(rho_new-rho)).real
             self.RIUE = np.nan
-            self.it_eps = np.nan
+            self.RES = np.nan
+            self.RES_RATIO = np.nan
             if N_new>0: 
                 self.RIUE = self.IUE/N_new
-                self.it_eps = np.sqrt(f/N_new)
 
             if self.fener.fn_tracking is not None:
                 G = self.fener.track(self.chempot, rho_new, self.iphase, write=True, print_out=False).real
                 self.omega0 = G
             log.dump("step %3i/%3i *  Loading                           = %11.4e mol./uc" % (self.curr_step,self.nsteps,N_new))
-            if self.criterion == 'RIUE':
+            if self.criterion.lower() == 'riue':
                 crit = self.RIUE
                 log.dump("             *  Abs. Integr. Unsign. Err. density = %11.4e mol./uc" %self.IUE)
                 log.dump("             *  Rel. Integr. Unsign. Err. density = %11.4e " %(self.RIUE))
-            elif self.criterion == 'RES':
-                crit = self.it_eps
-                log.dump("             *  Norm of residual                  = %11.4e" %self.it_eps)
+
+            elif self.criterion.lower() == 'res':
+                f = np.linalg.norm(Grho_new - rho_new)**2        
+                self.RES = np.sqrt(f/N_new)
+                crit = self.RES
+                log.dump("             *  Norm of residual                  = %11.4e" %self.RES)
+
+            elif self.criterion.lower() == 'res_ratio':
+                beta = 1/self.fener.temperature/boltzmann
+                mask = ~np.isclose(Grho_new, 0)
+                RES_RATIO = np.linalg.norm(np.log(Grho_new[mask])*rho_new[mask]/(self.a_tol + self.r_tol*np.abs(rho_new[mask])))/np.sqrt(np.prod(self.grid.npoints))
+                crit = RES_RATIO
+                log.dump("             *  Norm of residual ratio            = %11.4e" %RES_RATIO)
+                
             if self.fener.fn_tracking is not None:
                 log.dump("             *  Grand potential                   = %11.4e kJ/mol " %(G/kjmol))
             
-            if crit<self.threshold and self.curr_step>=self.min_iter:
+            if crit<=self.threshold and self.curr_step>=self.min_iter:
                 log.dump("Converged after %d Picard steps"%(self.curr_step))
                 log.dump("")
                 CRIT = True
@@ -94,28 +158,25 @@ class Solver(object):
         
     def solve(self, chempot, rho, log_level):
         """
-            Implementing Picard iterative solver to find equilibrium density.
-            
-            **arguments**
-            
-            chempot
-                The chemical potential
-            
-            rho
-                The initial guess of the one particle density that we need to 
-                solve for.
-            
-            **keyword arguments**
-            
-            nsteps
-                maximum number of steps in Picard iterative scheme.
-            
-            threshold
-                Convergence is assumed when relative change of the integral of 
-                rho (i.e. total particle number) is less then threshold.
-            
-            alpha_mix
-                the mixing parameter in the Picard iterative scheme.
+        Solve the density functional theory (DFT) problem for a given chemical potential.
+        Parameters:
+        -----------
+        chempot : float
+            The chemical potential for which the density is to be calculated.
+        rho : numpy.ndarray
+            The initial guess for the density distribution.
+        log_level : int
+            The logging level to control the verbosity of the output.
+        Returns:
+        --------
+        N_new : float
+            The integrated density over the grid.
+        rho_new : numpy.ndarray
+            The updated density distribution after solving.
+        Raises:
+        -------
+        FloatingPointError
+            If the new density contains non-finite values, indicating a failure in the Picard iteration.
         """
         self.log_level = log_level
         with log.section('SOLVER', self.log_level, timer=self.name):
@@ -137,11 +198,10 @@ class Solver(object):
 
                 krho_new = np.fft.fftn(rho_new)*self.grid.dr
                 Grho_new = self.get_new_rho(rho, krho_new, self.fugacity)
-                f = np.linalg.norm(Grho_new - rho_new)**2                
 
                 N_new = self.grid.integrate(rho_new).real
                 
-                if self._check_convergence(rho_new, rho, N_new, f):
+                if self._check_convergence(rho_new, Grho_new, rho, N_new):
                     break
 
                 rho = rho_new.copy()
@@ -164,8 +224,8 @@ class Picard(Solver):
 
     name = 'PICARD'
 
-    def __init__(self, grid, fener, nsteps=250, threshold=1e-6, criterion='RIUE', 
-                 alpha_mix=0.1, method='hybrid', break_nstep = 80, correction_factor=1, thresh=1*kjmol):
+    def __init__(self, grid, fener, nsteps=250, 
+                 alpha_mix=0.1, method='hybrid', break_nstep = 80, correction_factor=1, thresh=1*kjmol, **kwargs):
         '''This function initializes the solver object for the program.
         
         Parameters
@@ -188,7 +248,7 @@ class Picard(Solver):
         thresh
             Threshold for choosing the SLSQP solver in the hybrid solver        
         '''
-        super().__init__(grid, fener, nsteps, threshold, criterion)
+        super().__init__(grid, fener, nsteps, **kwargs)
 
         self.alpha_mix = alpha_mix
         self.correction_factor = correction_factor
@@ -247,7 +307,7 @@ class Picard(Solver):
                     n3_max = np.max(part.get_n3(krho)).real
                     n3_max_new = np.max(part.get_n3(krho_new)).real   
 
-            #First quadratic approximation
+            #Quadratic approximation
             alpha_max = np.min([abs((1-n3_max)/(n3_max_new - n3_max)), 1])
 
             if np.isclose(alpha_max,0):
@@ -258,6 +318,7 @@ class Picard(Solver):
                 alpha1 = 0.45*alpha_max
                 rho1 = (1-alpha1)*rho + alpha1*Grho
                 omega1 = self.fener.track(self.chempot, rho1, write=False, print_out=False)
+                #choose the third point for the quadratic approximation
                 if omega1 <= self.omega0:
                     alpha2 = 0.9*alpha_max
                 else:
@@ -272,10 +333,9 @@ class Picard(Solver):
             min_pot = np.min(omegas)/kjmol
             max_pot = np.max(omegas)/kjmol    
 
-            # if alpha_opt <= 0 and max_pot-min_pot>thres:
+            # check if the quadratic approximation is valid and if the SLSQP solver should be used
             if alpha_opt <= 0 and max_pot-min_pot>self.thresh:
                 log.dump('original alpha_opt: %5.5f'%alpha_opt)
-                alpha_orig = alpha_opt
                 def calc_G_rho(alpha):
                     rho_temp = (1-alpha)*rho + alpha*Grho
                     krho_temp = np.fft.fftn(rho_temp)*self.grid.dr
@@ -297,11 +357,6 @@ class Picard(Solver):
                 log.dump(f'Manually set the value of alpha_mix to: {self.alpha_mix*self.correction_factor}')
                 
             rho_new = (1-alpha_opt*self.correction_factor)*rho + alpha_opt*self.correction_factor*Grho
-            if np.any(rho_new<0): 
-                log.dump('#####################################################')
-                log.dump('NEGATIVE DENSITIES ENCOUTERED')
-                log.dump('#####################################################')
-
             rho_new[rho_new<1e-10/angstrom**3] = 0.0
             return rho_new
 
@@ -313,11 +368,28 @@ class Anderson(Picard):
 
     name = 'ANDERSON'
 
-    def __init__(self, grid, fener, nsteps=100, threshold=1e-6, alpha_mix=0.1, method='HybridAnderson', m=5, delta=0.01):
+    def __init__(self, grid, fener, nsteps=100, method='hybridanderson', m=5, delta=0.01, **kwargs):
+        """
+        Initialize the solver with the given parameters.
+        Parameters:
+        grid : object
+            The grid object used for the solver.
+        fener : object
+            The fener object used for the solver.
+        nsteps : int, optional
+            The number of steps for the solver (default is 100).
+        method : str, optional
+            The method used for solving (default is 'hybridanderson').
+        m : int, optional
+            Number of previous rho and Grho saved for the Anderson method (default is 5).
+        delta : float, optional
+            Threshold for choosing the Picard solver in the hybrid method (default is 0.01).
+        **kwargs : dict
+            Additional keyword arguments passed to the superclass initializer.
+        """
         
-        super().__init__(grid, fener, nsteps, threshold, alpha_mix=alpha_mix, method='hybrid', correction_factor=1)
+        super().__init__(grid, fener, nsteps, **kwargs)
         self.solve = super(Picard, self).solve
-        self.alpha_mix = alpha_mix
         self.Anderson_method = method
         self.m = m
         self.delta = delta
@@ -356,42 +428,6 @@ class Anderson(Picard):
                 rho_new = self.update_rho_Anderson(rho)
 
         return rho_new
-
-    def update_rho_Anderson_equi(self, rho, krho, Grho):
-        with log.section(self.name, self.log_level, timer='Update rho'):
-            mk = min(self.curr_step, self.m)
-
-            if self.curr_step<=self.m:
-                self.prev_rhos[self.curr_step-1] = np.copy(rho)
-                self.prev_Grhos[self.curr_step-1] = np.copy(Grho)
-            else:
-                self.prev_rhos = np.roll(self.prev_rhos,-1, axis=0)
-                self.prev_rhos[-1] = np.copy(rho)
-                self.prev_Grhos = np.roll(self.prev_Grhos,-1, axis=0)
-                self.prev_Grhos[-1] = np.copy(Grho)
-            res_k = self.prev_Grhos[:mk]-self.prev_rhos[:mk]
-            res_diff = res_k[1:]-res_k[:-1]
-            rhos = self.prev_rhos[:mk]
-            rho_diff = rhos[1:] - rhos[:-1]
-
-            def sum_res(alps):
-                residual_k = Grho-rho
-                broad_alps = np.broadcast_to(alps, res_diff.T.shape).T
-                result = residual_k - broad_alps*res_diff
-                return np.linalg.norm(result)
-            
-            bds = opt.Bounds(0,1)
-            if mk == 1:
-                rho_new = (1-self.alpha_mix)*rho +  self.alpha_mix*(rho + res_k[-1])
-            else:
-
-                alphas = opt.minimize(sum_res, np.full(mk-1,1/(mk-1)), method='SLSQP', tol=1e-15, bounds=bds, constraints={'type': 'eq', 'fun': lambda x:np.sum(x)-1}).x
-
-                broad_alphas = np.broadcast_to(alphas, self.prev_rhos[:mk-1].T.shape).T
-                Grho_result = broad_alphas*(rho_diff+res_diff)
-                rho_new = rho + res_k[-1] + self.alpha_mix*np.sum(Grho_result,axis=0)
-
-            return rho_new
 
     def update_rho_Anderson(self, rho, krho, Grho):
         with log.section(self.name, self.log_level, timer='Update rho'):
@@ -434,14 +470,27 @@ class Fire(Solver):
 
     name = 'FIRE'
 
-    def __init__(self, grid, fener, nsteps=100, threshold=1e-6, criterion='RIUE', 
-                 method='abc-fire', alpha=0.15, dt=0.002):
-        
-        super().__init__(grid, fener, nsteps, threshold, criterion)
-
-        for part in fener.parts:
-            if 'ExtPot' in part.name:
-                self.mask = np.where(part.potential>50*boltzmann*fener.temperature)
+    def __init__(self, grid, fener, nsteps=100, method='abc-fire', alpha=0.15, dt=0.002, **kwargs):
+        """
+        Initialize the solver with the given parameters.
+        Parameters:
+        grid : object
+            The grid object to be used in the solver.
+        fener : object
+            The energy function or object to be used in the solver.
+        nsteps : int, optional
+            The number of steps for the solver to run (default is 100).
+        method : str, optional
+            The method to be used in the solver (default is 'abc-fire').
+        alpha : float, optional
+            The initial alpha value for the solver (default is 0.15).
+        dt : float, optional
+            The initial time step for the solver (default is 0.002).
+        **kwargs : dict
+            Additional keyword arguments to be passed to the parent class initializer.
+        """
+        raise NotImplementedError('The FIRE solver is not bugfixed yet')
+        super().__init__(grid, fener, nsteps, **kwargs)
 
         self.method = method
         self.alpha0 = self.alpha = alpha

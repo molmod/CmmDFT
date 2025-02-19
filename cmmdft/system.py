@@ -273,7 +273,12 @@ class Grid(object):
             
             #ADDED Louis: something needed in the fft functions defined below
             self.scalprod = self.kpoints[:,:,:,0]*self.spacings[0]*self.npoints[0] + self.kpoints[:,:,:,1]*self.spacings[1]*self.npoints[1] + self.kpoints[:,:,:,2]*self.spacings[2]*self.npoints[2]
-    
+
+    def supercell(self, supercell):
+        sup_cell = Cell(self.cell.rvecs*supercell)
+        npoints = self.npoints*supercell
+        return Grid(sup_cell, npoints=list(npoints))
+
     def copy(self):
         return Grid(self.cell, npoints=self.npoints)
     

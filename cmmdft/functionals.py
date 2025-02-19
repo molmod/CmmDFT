@@ -12,7 +12,7 @@ from molmod.units import kjmol, angstrom
 from molmod.constants import planck, boltzmann
 from yaff import ForceField
 
-from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_Leb, effective_potential_precalc, find_neighbours, find_local_maxima, write_LJ_pars_chk
+from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell
 from .log import log
 from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS
@@ -24,7 +24,7 @@ __all__ = [
 
 
 class FreeEnergy(object):
-    def __init__(self, grid, system, workdir='.', name_dict={}, overwrite=False):
+    def __init__(self, grid, system, temperature, workdir='.', name_dict={}, overwrite=False):
         self.grid = grid
         self.system = system
         self.temperature = None
@@ -36,12 +36,13 @@ class FreeEnergy(object):
         self.name_dict = name_dict
         self.overwrite = overwrite
         self.fn_tracking = None
+        self.set_temperature(temperature)
     
     def copy(self, grid=None):
         if grid is None:
-            fenercopy = FreeEnergy(self.grid.copy(), self.system.copy(), workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
+            fenercopy = FreeEnergy(self.grid.copy(), self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
         elif isinstance(grid, Grid):
-            fenercopy = FreeEnergy(grid, self.system.copy(), workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
+            fenercopy = FreeEnergy(grid, self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
         else:
             raise ValueError('The provided grid must be a Grid instance')
         for part in self.parts:
@@ -64,9 +65,10 @@ class FreeEnergy(object):
             self.temperature = temperature
             self.beta = 1.0/(boltzmann*temperature)
             self.wavelength = self.system.guest.wavelength(self.temperature)
+            self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #set temperature for each part in the free energy functional
             for part in self.parts:
-                part.set_temperature(temperature, **kwargs)          
+                part.set_temperature(temperature, Rhs=self.system.guest.Rhs, **kwargs)          
 
     def remove_part(self, part_name):
         """
@@ -258,10 +260,11 @@ class FreeEnergy(object):
         """
         with log.section('FREEENER', 2, timer='WDA-v init'):
             log.dump('Initializing WDA-v functional for attractive interaction contribution')
-            def fun_Rhs(temperature):
-                self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
-                return self.system.guest.Rhs
-            wda = WDAVFunctional(fun_Rhs, self.grid, eos)
+            # def fun_Rhs(temperature):
+            #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
+            #     return self.system.guest.Rhs
+            
+            wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos)
         self.parts.append(wda)
         self.part_names.append(wda.name)
     
@@ -280,14 +283,14 @@ class FreeEnergy(object):
             elif kwargs.get('version','MFMT')=='WBII': func = WhiteBearIIFunctional
             else: raise ValueError('Recieved version %s for hard sphere contribution, but only MFMT, FMT and WBII are supported. Aborting!')
             log.dump('Initializing %s functional for hard-sphere contribution' %kwargs.get('version','MFMT'))
-            def fun_Rhs(temperature):
-                self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
-                return self.system.guest.Rhs
-            part = func(fun_Rhs, self.grid)
+            # def fun_Rhs(temperature):
+            #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
+            #     return self.system.guest.Rhs
+            part = func(self.system.guest.Rhs, self.grid)
             self.parts.append(part)
             self.part_names.append(part.name)
     
-    def add_mean_field(self, **kwargs):
+    def add_mean_field(self, tailcorrections=False, **kwargs):
         """
             This function adds a mean field approximation (MFA) functional for guest molecules described by 
             spherical symmetrical lennard jones parameters as defined in self.system.guest
@@ -300,9 +303,9 @@ class FreeEnergy(object):
         """
         
         with log.section('FREEENER', 2, timer='MFA init'):
-            log.dump('Initializing MFA functional for attractive interaction contribution')
+            log.dump('Initializing MFA functional for attractive interaction contribution' + (' with tail corrections' if tailcorrections else ''))
             fn = self.workdir / 'mfa.npy'
-            mfa = MFAFunctional(self.grid)
+            mfa = MFAFunctional(self.grid, tailcorrections=tailcorrections)
             if not os.path.isfile(fn) or self.overwrite or kwargs.get('rewrite', False):
                 if isinstance(self.system.guest, SphericalLJGuest) or isinstance(self.system.guest, DualModelGuest):
                     log.dump('computing LJ interaction potential with LJ params from given guest %s' %(self.system.guest.name))
@@ -342,10 +345,11 @@ class FreeEnergy(object):
         '''
         with log.section('FREEENER', 2, timer='Correlation WDA init'):
             log.dump('Initializing correlation WDA functional for attractive interaction contribution')
-            def fun_Rhs(temperature):
-                self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
-                return self.system.guest.Rhs
-            corr = WDACorrFunctional(fun_Rhs, self.grid, self.system.guest.mass, self.system.guest.sigma, self.system.guest.epsilon, **kwargs)
+            # def fun_Rhs(temperature):
+            #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
+            #     return self.system.guest.Rhs
+
+            corr = WDACorrFunctional(self.system.guest.Rhs, self.grid, self.system.guest.mass, self.system.guest.sigma, self.system.guest.epsilon, **kwargs)
             self.parts.append(corr)
             self.part_names.append(corr.name)
 
@@ -411,7 +415,7 @@ class Functional(object):
     def copy(self, **kwargs):
         raise NotImplementedError
 
-    def set_temperature(self, temperature):
+    def set_temperature(self, temperature, **kwargs):
         pass
 
 
@@ -433,29 +437,30 @@ class FMTFunctional(Functional):
         self.temperature = None
         self.beta = None
         self.grid = grid  
-        self.R = None
-        self.Rfun = None
-        if callable(Rhs):
-            self.Rfun = Rhs
-        elif isinstance(Rhs, float):
-            self.R = Rhs
-            self._init_weight_functions()
-        else:
-            raise TypeError('Rhs argument of FMTFunctional constructor should be a float or a callable function computing the Rhs for a given temperature, instead got %s' %(type(Rhs)))
+        self.R = Rhs
+        # self.Rfun = None
+        # if callable(Rhs):
+        #     self.Rfun = Rhs
+        # elif isinstance(Rhs, float):
+        #     self.R = Rhs
+        #     self._init_weight_functions()
+        # else:
+        #     raise TypeError('Rhs argument of FMTFunctional constructor should be a float or a callable function computing the Rhs for a given temperature, instead got %s' %(type(Rhs)))
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        if self.Rfun is not None:
-            return type(self)(self.Rfun, grid)
-        else:
-            return type(self)(self.R, grid)
+        # if self.Rfun is not None:
+        #     return type(self)(self.Rfun, grid)
+        # else:
+        return type(self)(self.R, grid)
 
-    def set_temperature(self, temperature, **kwargs):
+    def set_temperature(self, temperature, Rhs, **kwargs):
         self.temperature = temperature
         self.beta = 1/(boltzmann*temperature)
-        if self.Rfun is not None:
-            self.R = self.Rfun(temperature, **kwargs)
-            self._init_weight_functions()
+        self.R = Rhs
+        # if self.Rfun is not None:
+        #     self.R = self.Rfun(temperature, **kwargs)
+        self._init_weight_functions()
 
     def _init_weight_functions(self):
         """
@@ -722,7 +727,7 @@ class MFAFunctional(Functional):
     
     name = 'MFA'
     
-    def __init__(self, grid):
+    def __init__(self, grid, tailcorrections=False):
         """
         **Arguments:**
         
@@ -730,13 +735,18 @@ class MFAFunctional(Functional):
             An instance of Grid, see system.py
         
         """
-        self.grid = grid
+        self.tailcorrections = tailcorrections
+        if tailcorrections:
+            self.small_grid = grid
+            self.grid = grid.supercell(np.array([3,3,3]))
+        else:
+            self.grid = grid
         self.potential = None
         self.kpotantial = None
 
     def copy(self, grid=None, copy_potential=True):
         if grid is None: grid = self.grid.copy()
-        cp = type(self)(grid)
+        cp = type(self)(grid, self.tailcorrections)
         if copy_potential and self.potential is not None:
             cp.potential = self.potential.copy()
             cp.kpotential = self.kpotential.copy()
@@ -809,7 +819,7 @@ class MFAFunctional(Functional):
             rmin
                 U(r) is assumed to be zero for distances smaller than rmin. If not given, it is assumed to be equal to the zero 
                 of the LJ potential, i.e. rmin=sigma
-        """
+        """        
         if rmin is None: rmin = sigma
         self.potential = np.zeros(self.grid.points.shape[:3])
         mask = self.grid.points[:,:,:,3]>rmin
@@ -818,7 +828,7 @@ class MFAFunctional(Functional):
         x[mask] = sigma/self.grid.points[:,:,:,3][mask]
         self.potential[mask] = 4*epsilon*(x[mask]**12-x[mask]**6)
 
-        self.kpotential = self.grid.fft(self.potential)#*self.grid.dr
+        self.kpotential = self.grid.fft(self.potential)
 
     def derive(self, krho):
         """
@@ -826,16 +836,26 @@ class MFAFunctional(Functional):
         the potential. It is evaluated using the convolution theorem
         """
         with log.section('MFA', 3, timer='MFA derive'):
-            dF = self.grid.ifft(krho*self.kpotential)#/self.grid.dr
-            return dF*self.grid.cell.volume #ADDED Louis the cell volume needs to be here (comes from difference between continuous fourier transform and the discrete FT implemented in FFT)
+            if self.tailcorrections:
+                rho_sup = make_supercell(self.small_grid.ifft(krho), self.small_grid.npoints, self.small_grid.spacings, periodic=True)
+                krho_sup = self.grid.fft(rho_sup)
+                dF = self.grid.ifft(krho_sup*self.kpotential)
+                return dF[:self.small_grid.npoints[0],:self.small_grid.npoints[1],:self.small_grid.npoints[2]]*self.small_grid.cell.volume
+            else:
+                return self.grid.ifft(krho*self.kpotential)*self.grid.cell.volume 
 
     def value(self, krho, local=False):
         with log.section('MFA', 3, timer='MFA value'):
-            rho = self.grid.ifft(krho)#/self.grid.dr
+            if self.tailcorrections:
+                grid = self.small_grid
+            else:
+                grid = self.grid
+
+            rho = grid.ifft(krho)
             if local:
                 return 0.5*rho*self.derive(krho)
             else:
-                return 0.5*self.grid.integrate(rho*self.derive(krho))
+                return 0.5*grid.integrate(rho*self.derive(krho))
 
 
 class CoarsenedFunctional(MFAFunctional):
@@ -921,7 +941,7 @@ class ExternalPotential(Functional):
         assert self.grid.points.shape[:3]==self.potential.shape
         self.kpotential = self.grid.fft(self.potential)
 
-    def set_temperature(self, temperature):
+    def set_temperature(self, temperature, **kwargs):
         if self.natom == 1:
             pass
         else:
@@ -930,7 +950,6 @@ class ExternalPotential(Functional):
             if not epot_fn.exists():
                 self.generate_potential(temperature)
                 self.dump_potential(epot_fn)
-        return super().set_temperature(temperature)
 
     def generate_potential(self, temperature=None, rewrite=False):
         '''This function generates a potential energy grid for a given force field and set of points, and
@@ -1037,31 +1056,35 @@ class WDAVFunctional(LDAFunctional):
     def __init__(self, Rhs, grid, eos):
         LDAFunctional.__init__(self, grid, eos)
         self.temperature = None
-        self.R = None
-        self.D = None
-        self.Rfun = None
-        if callable(Rhs):
-            self.Rfun = Rhs
-        elif isinstance(Rhs, float):
-            self.R = Rhs
-            self.D = 2*Rhs
-            self._init_weight_function()
-        else:
-            raise TypeError('Rhs argument of FMTFunctional constructor should be a float or a callable function computing the Rhs for a given temperature.')
+        self.R = Rhs
+        # self.D = 2*Rhs
+
+        # self._init_weight_function()
+
+        # self.Rfun = None
+        # if callable(Rhs):
+        #     self.Rfun = Rhs
+        # elif isinstance(Rhs, float):
+        #     self.R = Rhs
+        #     self.D = 2*Rhs
+        #     self._init_weight_function()
+        # else:
+        #     raise TypeError('Rhs argument of FMTFunctional constructor should be a float or a callable function computing the Rhs for a given temperature.')
     
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        if self.Rfun is not None:
-            return type(self)(self.Rfun, grid, self.eos)
-        else:
-            return type(self)(self.R, grid, self.eos)
+        # if self.Rfun is not None:
+        #     return type(self)(self.Rfun, grid, self.eos)
+        # else:
+        return type(self)(self.R, grid, self.eos)
 
-    def set_temperature(self, temperature, **kwargs):
+    def set_temperature(self, temperature, Rhs, **kwargs):
         LDAFunctional.set_temperature(self, temperature, **kwargs)
-        if self.Rfun is not None:
-            self.R = self.Rfun(temperature, **kwargs)
-            self.D = 2*self.R
-            self._init_weight_function()
+        # if self.Rfun is not None:
+        #     self.R = self.Rfun(temperature, **kwargs)
+        self.R = Rhs
+        self.D = 2*self.R
+        self._init_weight_function()
 
     def _init_weight_function(self):
         """
@@ -1132,16 +1155,16 @@ class WDACorrFunctional(Functional):
 
     def copy(self, grid=None):
         if grid is None: grid = self.Flj.grid.copy()
-        if self.Flj.Rfun is not None:
-            return type(self)(self.Flj.Rfun, grid, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon)
-        else:
-            return type(self)(self.Flj.R, grid, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon)
+        # if self.Flj.Rfun is not None:
+        #     return type(self)(self.Flj.Rfun, grid, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon)
+        # else:
+        return type(self)(self.Flj.R, grid, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon)
 
-    def set_temperature(self, temperature, **kwargs):
+    def set_temperature(self, temperature, Rhs, **kwargs):
         self.temperature = temperature
-        self.Flj.set_temperature(temperature, **kwargs)
-        self.Fhs.set_temperature(temperature, **kwargs)
-        self.Fmfa.set_temperature(temperature, **kwargs)
+        self.Flj.set_temperature(temperature, Rhs, **kwargs)
+        self.Fhs.set_temperature(temperature, Rhs, **kwargs)
+        self.Fmfa.set_temperature(temperature, Rhs, **kwargs)
 
     def derive(self, krho):
         deriv  = self.Flj.derive(krho)

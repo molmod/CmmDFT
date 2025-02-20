@@ -379,7 +379,7 @@ class Program(object):
 
             self.file_suffix = '_%7.5fkJmol_%7.5fK' %(chempot/kjmol,self.fener.temperature/kelvin)
             self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.file_suffix))
-            if os.path.isfile(self.rho_fn) and not self.overwrite:
+            if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite:
                 log.dump('  skipping because solution found in file %s' %(self.rho_fn))
                 return
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)

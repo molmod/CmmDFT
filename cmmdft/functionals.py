@@ -840,7 +840,7 @@ class MFAFunctional(Functional):
                 rho_sup = make_supercell(self.small_grid.ifft(krho), repetitions=[2,2,2], grid_spacings=self.small_grid.spacings, periodic=True)
                 krho_sup = self.grid.fft(rho_sup)
                 dF = self.grid.ifft(krho_sup*self.kpotential)
-                return dF[:self.small_grid.npoints[0],:self.small_grid.npoints[1],:self.small_grid.npoints[2]]*self.small_grid.cell.volume
+                return dF[:self.small_grid.npoints[0],:self.small_grid.npoints[1],:self.small_grid.npoints[2]]*self.grid.cell.volume
             else:
                 return self.grid.ifft(krho*self.kpotential)*self.grid.cell.volume 
 

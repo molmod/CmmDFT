@@ -953,24 +953,21 @@ def find_neighbours(index, data, direct=True):
     return np.array(neighbours), new_indices
 
 
-def make_supercell(data, grid_points, grid_spacings, periodic=True):
+def make_supercell(data, repetitions=[3,3,3], grid_spacings=None, periodic=True):
+    assert len(repetitions) == 3, 'The repetitions parameter must be a list of 3 integers'
     if periodic:
-        shape = (data.shape[0]*3, data.shape[1]*3, data.shape[2]*3)
+        shape = (data.shape[0]*repetitions[0], data.shape[1]*repetitions[1], data.shape[2]*repetitions[2])
     else:
-        shape = (data.shape[0]*3, data.shape[1]*3, data.shape[2]*3,3)
+        shape = (data.shape[0]*repetitions[0], data.shape[1]*repetitions[1], data.shape[2]*repetitions[2],3)
+        assert grid_spacings is not None, 'If periodic, grid_spacings must be provided'
     sup_cell = np.zeros(shape)
 
-    nop = grid_points
-    point_dict_x = {1:(2*nop[0],3*nop[0]), 0:(nop[0],2*nop[0]),-1:(0,nop[0])}
-    point_dict_y = {1:(2*nop[1],3*nop[1]), 0:(nop[1],2*nop[1]),-1:(0,nop[1])}
-    point_dict_z = {1:(2*nop[2],3*nop[2]), 0:(nop[2],2*nop[2]),-1:(0,nop[2])}
-    index_list = np.array(list(itertools.product((-1,0,1), repeat=3)))
+    nop = data.shape[:3]
+    point_dict = {dim:{rep:(rep*nop[dim],(rep+1)*nop[dim]) for rep in np.arange(repetitions[dim])} for dim in range(3)}
 
-    for index in index_list:
+    for index in itertools.product(np.arange(repetitions[0]),np.arange(repetitions[1]),np.arange(repetitions[2])):
         index = index
-        ind_x = point_dict_x[index[0]]
-        ind_y = point_dict_y[index[1]]
-        ind_z = point_dict_z[index[2]]
+        ind_x = point_dict[0][index[0]]; ind_y = point_dict[1][index[1]]; ind_z = point_dict[2][index[2]]
 
         if periodic:
             sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data

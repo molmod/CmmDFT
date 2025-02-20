@@ -738,7 +738,7 @@ class MFAFunctional(Functional):
         self.tailcorrections = tailcorrections
         if tailcorrections:
             self.small_grid = grid
-            self.grid = grid.supercell(np.array([3,3,3]))
+            self.grid = grid.supercell(np.array([2,2,2]))
         else:
             self.grid = grid
         self.potential = None
@@ -837,7 +837,7 @@ class MFAFunctional(Functional):
         """
         with log.section('MFA', 3, timer='MFA derive'):
             if self.tailcorrections:
-                rho_sup = make_supercell(self.small_grid.ifft(krho), self.small_grid.npoints, self.small_grid.spacings, periodic=True)
+                rho_sup = make_supercell(self.small_grid.ifft(krho), repetitions=[2,2,2], grid_spacings=self.small_grid.spacings, periodic=True)
                 krho_sup = self.grid.fft(rho_sup)
                 dF = self.grid.ifft(krho_sup*self.kpotential)
                 return dF[:self.small_grid.npoints[0],:self.small_grid.npoints[1],:self.small_grid.npoints[2]]*self.small_grid.cell.volume

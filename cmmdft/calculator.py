@@ -401,7 +401,7 @@ class Calculator(object):
         cvs_mat = shifted_points@unit_vector
         
         if supercell:
-            points = make_supercell(points, self.grid.npoints, self.grid.spacings,  periodic=False)
+            points = make_supercell(points, repetitions=[3,3,3], periodic=False)
             cvs_mat = (points - diffusion_path[0])@unit_vector
 
         # cvs = np.linspace(np.min(cvs_mat), np.max(cvs_mat), nbins+1) #sift out values which virtually identical and sort the cv in ascending order
@@ -482,7 +482,7 @@ class Calculator(object):
                         assert os.path.isfile(fn), f'No density found for {fn}'
                     rho = np.load(fn).real
                     if supercell:
-                        rho = make_supercell(rho, self.grid.npoints, self.grid.spacings, periodic=True)
+                        rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
                     if normalize:
                         n_list[e] =  self.grid.integrate(mask*rho)/step_dist
                     else:
@@ -564,12 +564,12 @@ class Calculator(object):
                     else:
                         data = self.free_energy_contrib(temp, chempot, contrib_name, local=True)
                     if supercell:
-                        data = make_supercell(data, self.grid.npoints, self.grid.spacings, periodic=True)
+                        data = make_supercell(data, repetitions=[3,3,3], periodic=True)
                     if 'pure_extpot' in contrib_name.lower():
                         rho_fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
                         rho = np.load(rho_fn)
                         if supercell:
-                            rho = make_supercell(rho, self.grid.npoints, self.grid.spacings, periodic=True)
+                            rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
                         rho_mask = np.isclose(rho, 0, atol=1e-7)
                         mask *= ~rho_mask
                         contrib_list[e] =  np.sum(mask*data)/np.sum(mask)
@@ -799,7 +799,7 @@ class Calculator(object):
                 print('q',(q_max+q_min)/2 ,'number', np.sum(mask_full))
 
                 #define the perturbation
-                rho_sup  = make_supercell(rho, self.grid.npoints, self.grid.spacings, periodic=True)
+                rho_sup  = make_supercell(rho, repetitions=[3,3,3], periodic=True)
                 rho_pert_sup = pert_size*rho_sup*mask_full
 
                 rho_splices = np.zeros((27,npoints[0],npoints[1],npoints[2]))

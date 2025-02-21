@@ -55,12 +55,14 @@ class Solver(object):
         self.criterion = criterion
 
         if self.criterion.lower() == 'res_ratio':
-            raise NotImplementedError('RES_RATIO criterion is not implemented yet')
+            # raise NotImplementedError('RES_RATIO criterion is not implemented yet')
             threshold = 1
 
+        self.mask = np.ones(self.grid.npoints, dtype=bool)
         for part in fener.parts:
             if 'ExtPot' in part.name:
-                self.mask = np.where(part.potential>50*boltzmann*fener.temperature)            
+                self.mask = np.where(part.potential>50*boltzmann*fener.temperature).reshape(self.grid.npoints)        
+            
 
         self.threshold = threshold
         self.a_tol = a_tol
@@ -137,8 +139,8 @@ class Solver(object):
 
             elif self.criterion.lower() == 'res_ratio':
                 beta = 1/self.fener.temperature/boltzmann
-                mask = ~np.isclose(Grho_new, 0)
-                RES_RATIO = np.linalg.norm(np.log(Grho_new[mask])*rho_new[mask]/(self.a_tol + self.r_tol*np.abs(rho_new[mask])))/np.sqrt(np.prod(self.grid.npoints))
+                mask = ~np.isclose(Grho_new,0, atol=1e-20) & ~np.isclose(rho_new,0, atol=1e-20)
+                RES_RATIO = np.linalg.norm((-np.log(rho_new[mask]) +np.log(Grho_new[mask]))*rho_new[mask]/(self.a_tol + self.r_tol*np.abs(rho_new[mask])))/np.sqrt(np.prod(self.grid.npoints))
                 crit = RES_RATIO
                 log.dump("             *  Norm of residual ratio            = %11.4e" %RES_RATIO)
                 
@@ -209,7 +211,7 @@ class Solver(object):
                 krho = krho_new.copy()
 
             if istep==self.nsteps-1:
-                log.warning("Solution not converged after %d Picard steps at temperature %5.3f and chemical potential %7.5f"%(self.nsteps, self.fener.temperature, chempot/kjmol), label_section='solve')
+                log.warning("Solution not converged after %d steps at temperature %5.3f and chemical potential %7.5f"%(self.nsteps, self.fener.temperature, chempot/kjmol), label_section='solve')
 
             tstop = time.perf_counter()
             log.dump('#################################################################################')
@@ -489,7 +491,7 @@ class Fire(Solver):
         **kwargs : dict
             Additional keyword arguments to be passed to the parent class initializer.
         """
-        raise NotImplementedError('The FIRE solver is not bugfixed yet')
+        # raise NotImplementedError('The FIRE solver is not bugfixed yet')
         super().__init__(grid, fener, nsteps, **kwargs)
 
         self.method = method
@@ -513,25 +515,28 @@ class Fire(Solver):
         """
         super()._initiate_solving(chempot)
         self.V = np.zeros(self.grid.npoints)
-    
-    def get_new_rho(self, rho, krho, fugacity):
-        Grho = super().get_new_rho(rho, krho, fugacity)
-        if self.curr_step == 0:
-            self.V = np.zeros(self.grid.npoints)
-        else:
-            self.V[self.mask] += Grho[self.mask]*0.5*self.dt
-        return Grho
 
     def update_rho(self, rho, krho, Grho):
         with log.section(self.name, self.log_level, timer='Update rho'):
             lnrho = np.log(rho, where=rho>0)   
-            P = np.sum(Grho[self.mask]*self.V[self.mask]) # dissipated power
+            F = np.zeros(self.grid.npoints)
+            mask = ~np.isclose(Grho,0, atol=1e-10) & ~np.isclose(rho,0, atol=1e-10)
+            F[mask] = np.log(Grho, where=Grho>0)[mask]-lnrho[mask] #+ np.log(1/self.fener.wavelength**3)
+            # print(-np.log(Grho, where=Grho>0))
+            # print(np.max(np.log(Grho, where=Grho>0)), np.min(np.log(Grho, where=Grho>0)))
+            # print(np.max(lnrho), np.min(lnrho))
+            # print(np.max(F[self.mask]), np.min(F[self.mask]))
+            if self.curr_step == 0:
+                self.V = np.zeros(self.grid.npoints)
+            else:
+                self.V[self.mask] += F[self.mask]*0.5*self.dt            
+            P = np.sum(F[self.mask]*self.V[self.mask]) # dissipated power
             rho_new = np.copy(rho)
             if (P>0):
                 self.Npos = self.Npos + 1
                 if self.Npos>self.Ndelay:
-                    self.dt = np.min(self.dt*self.finc,self.dtmax)
-                    self.alpha = np.max(1.0e-10,self.alpha*self.fa)
+                    self.dt = np.min((self.dt*self.finc,self.dtmax))
+                    self.alpha = np.max((1.0e-10,self.alpha*self.fa))
             else:
                 self.Npos = 1
                 self.Nneg = self.Nneg + 1
@@ -539,15 +544,14 @@ class Fire(Solver):
                     log.warning('The system cannot relax further! Equilibrium not reached!')
                     raise Exception('The system cannot relax further!')
                 if self.curr_step - 1 > self.Ndelay:
-                    self.dt = np.max(self.dt*self.fdec,self.dtmin)
+                    self.dt = np.max((self.dt*self.fdec,self.dtmin))
                     self.alpha = self.alpha0
                 lnrho[self.mask] -= self.V[self.mask]*0.5*self.dt
                 self.V[self.mask] = 0.0
                 rho_new[self.mask] = np.exp(lnrho[self.mask])
 
-            self.V[self.mask] += Grho[self.mask]*0.5*self.dt
-            print(np.linalg.norm(self.V[self.mask]), np.linalg.norm(Grho[self.mask]))
-            self.V[self.mask] = (1-self.alpha)*self.V[self.mask] + self.alpha*Grho[self.mask]*np.linalg.norm(self.V[self.mask])/np.linalg.norm(Grho[self.mask])
+            self.V[self.mask] += F[self.mask]*0.5*self.dt
+            self.V[self.mask] = (1-self.alpha)*self.V[self.mask] + self.alpha*F[self.mask]*np.linalg.norm(self.V[self.mask])/np.linalg.norm(F[self.mask])
             if self.method == 'abc-fire': self.V[self.mask] *= (1/(1-(1-self.alpha)**self.Npos))
 
             lnrho[self.mask] += self.dt*self.V[self.mask]

@@ -231,7 +231,7 @@ class FreeEnergy(object):
         
         '''
         with log.section('FREEENER', 2, timer='ExtPot init'):
-            assert isinstance(self.system.host, NanoporousHost), 'No external potential can be added for a %s system' %(self.system.host.__class__.__name__)
+            # assert isinstance(self.system.host, NanoporousHost), 'No external potential can be added for a %s system' %(self.system.host.__class__.__name__)
             assert self.system.guest.mol.natom == 1, 'The guest atom must be a spherical molecule, otherwise use add_effective_external_potential'
             log.dump('Initializing external potential')
             epot = ExternalPotential(self.grid)

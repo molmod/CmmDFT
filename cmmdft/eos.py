@@ -73,9 +73,9 @@ class EquationOfState(object):
      
     def get_rough_density_grid(self, npoints):
         "Get a rough logarithmic grid in density in a range that is practically accessible"
-        return np.logspace(-6,0,npoints)/angstrom**3
+        return np.logspace(-10,0,npoints)/angstrom**3
     
-    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=10000):
+    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000):
         """
             Solve EOS for density as function of chemical potential at fixed (given) temperature in a given density interval. For this we need to solve the following equation for rho
 
@@ -412,7 +412,7 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
 
     def get_rough_density_grid(self, npoints):
         "Define rough density grid (for use in solve_densities) based on reduced units and knowledge of the MBWR EOS"
-        return np.logspace(-6,0,npoints)*1.5/self.sigma**3
+        return np.logspace(-10,0,npoints)*1.5/self.sigma**3
 
     def find_critical_point(self):
         """
@@ -463,7 +463,7 @@ class CarnahanStarlingEOS(EquationOfState):
     
     def get_rough_density_grid(self, npoints):
         "Get a rough logarithmic grid in density in a range that is practically accessible"
-        log_start = -6
+        log_start = -10
         log_end = np.log(angstrom**3/self.eta)/np.log(10)-0.01
         return np.logspace(log_start, log_end, npoints)/angstrom**3
     
@@ -512,12 +512,15 @@ class MFAEOS(EquationOfState):
     
 class MFMT_MFA_EOS(EquationOfState):
     
-    def __init__(self, sigma, epsilon, a_fact = 1.0):
-        self.MFA = MFAEOS(sigma,epsilon)
-        self.MFMT = CarnahanStarlingEOS(sigma,epsilon)
+    def __init__(self, mass, sigma, epsilon, a_fact = 1.0):
+        EquationOfState.__init__(self,mass)
+        self.MFA = MFAEOS(mass, sigma=sigma, epsilon=epsilon)
+        Rhs = lambda T : sigma*(1+0.2977*T*boltzmann/epsilon)/(1+0.33163*T*boltzmann/epsilon+0.0010477*(T*boltzmann/epsilon)**2)/2
+        self.MFMT = CarnahanStarlingEOS(mass, Rhs)
         self.a_fact = a_fact
         
     def set_temperature(self, temperature):
+        EquationOfState.set_temperature(self, temperature)
         self.temperature = temperature
         self.MFA.set_temperature(temperature)
         self.MFMT.set_temperature(temperature)

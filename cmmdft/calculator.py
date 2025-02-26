@@ -8,17 +8,17 @@ import json
 import itertools
 from gemmi import cif
 
-from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom
+from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom, amu
 from molmod.constants import boltzmann
 from yaff import log as ylog
 ylog.set_level(ylog.silent)
 
-from .system import System, Grid
+from .system import System, Grid, NanoporousHost, SphericalLJGuest
 from .program import Program
-from .functionals import FreeEnergy, WDAVFunctional
-from .eos import VanderWaalsEOS
+from .functionals import FreeEnergy, WDAVFunctional, ExternalPotential
+from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
-from .tools import selection_sort, bisect_left, make_supercell
+from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff
 #log.set_level('silent')
 
 
@@ -124,7 +124,7 @@ class Calculator(object):
 
         return self.grid.integrate(rho_MBWR).real     
 
-    def return_loading(self, temp, chempots):
+    def return_loading(self, temp, chempots, excess=False, eos=None, He_frac=None):
         """
         Returns an array of loadings for a list of chemical potentials.
         """
@@ -134,6 +134,27 @@ class Calculator(object):
                 loading_list[i] = self.loading(temp, mu)
             except AssertionError:
                 loading_list[i] = np.nan
+
+        if excess:
+            assert eos is not None, 'Must provide an equation of state object (with the function calculate_mu), when calculating excess uptake'
+            if He_frac is None:
+                He_frac = self.get_helium_fraction(temp)
+            #the density of helium in bulk at specified conditions
+            if isinstance(eos, EquationOfState):
+                eos.set_temperature(temp)
+                dens_bulk = eos.solve_densities_from_chempots(chempots)
+                final_dens_bulk = np.zeros(len(chempots))
+                for e,dens in enumerate(dens_bulk):
+                    if not np.isnan(dens[0]):
+                        final_dens_bulk[e] = dens[0]
+                    elif not np.isnan(dens[1]):
+                        final_dens_bulk[e] = dens[1]
+                    else:
+                        raise ValueError(f'No density found for the bulk at {temp}K and {chempots[e]/kjmol:#0.4f}kJ/mol')
+            else:
+                final_dens_bulk = np.array([eos.calculate_rho(temp, mu) for mu in chempots])
+            loading_list -= final_dens_bulk*He_frac*self.host.cell.volume
+
         return loading_list
 
     def get_chemical_potential(self, temperature):
@@ -148,6 +169,28 @@ class Calculator(object):
                 chempots.append(float(l[1])*kjmol)
         
         return chempots
+
+    def get_helium_fraction(self, temperature):
+        """
+        Returns an approximation for the helium void fraction for a given temperature
+        """
+        He_pot_fn = self.workdir/'ExtPots/He_potential.npy'
+        if He_pot_fn.is_file():
+            He_pot = np.load(He_pot_fn)
+        else:
+            #Helium parameters from "The molecular theory of gases and liquids" by Joseph O. Hirschfelder, Charles F. Curtiss, and R. Byron Bird
+            guest = SphericalLJGuest('He', 4.0026*amu, sigma=2.58*angstrom, epsilon=10.22/boltzmann)
+            HE_syst, guest_par = write_LJ_pars_chk(guest, dr=self.workdir)
+            pars_fn = self.workdir / 'pars.txt'
+            merge_ffpar_files(pars_fn, self.host.par, guest_par) 
+            ff_ext = get_ff(self.host.mol, HE_syst, pars_fn, rcut=np.min(np.linalg.norm(self.host.cell.rvecs, axis=1)))
+            ext_pot = ExternalPotential(self.grid, natom=1, ff=ff_ext, epot_dr=self.workdir/'ExtPots')
+            ext_pot.generate_potential()
+            ext_pot.dump_potential(fn=self.workdir/'ExtPots/He_potential.npy')
+            He_pot = ext_pot.potential
+
+        He_vol = self.grid.integrate(np.exp(-He_pot/kelvin/temperature)).real
+        return He_vol/self.host.cell.volume
 
     def save_loadings(self, temperature, chempots=None, pressure=False, eos=None):
         '''This function saves the loadings of all the calculated densities at the specified temperatures in a csv
@@ -193,7 +236,96 @@ class Calculator(object):
         else:    
             np.savetxt(self.workdir / f'loads_{temperature:#3.0f}K.csv', load_chem, delimiter=',', header='chempot, loadings', comments='')
         
-        
+    def save_loadings_AIF(self, temp, chempots, eos, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
+        """
+        Save the adsorption loadings to an AIF (Adsorption Information File) format.
+        Parameters:
+        -----------
+        temp : float
+            Temperature at which the adsorption is measured, in Kelvin.
+        chempots : array-like
+            Array of chemical potentials.
+        eos : object
+            Equation of state object used to calculate pressures.
+        excess : bool, optional
+            If True, save excess adsorption loadings. Default is False.
+        loading_unit : str, optional
+            Unit for the adsorption loading. Default is 'au/uc' (molecules per unit cell).
+        fn : str or Path, optional
+            Filename to save the AIF file. If None, a default filename is generated.
+        He_frac : float, optional
+            Helium fraction used in the calculation of excess adsorption, if not provided the Helium void fraction is calculated with the function get_Helium_fraction.
+        """
+
+        d = cif.Document()
+        d.add_new_block('CmmDFT2aif')
+
+        block = d.sole_block()
+        block.set_pair('_audit_aif_version', '6acf6ef')
+
+        #label metadata
+
+        block.set_pair('_exptl_operator',  getpass.getuser())
+        block.set_pair('_simltn_date', datetime.datetime.now().isoformat())
+        block.set_pair('_simltn_code', 'CmmDFT')
+
+        block.set_pair('_exptl_method', 'cDFT')
+        adsorption_type = 'excess' if excess else 'absolute'
+        block.set_pair('_exptl_isotherm_type', adsorption_type)
+
+        block.set_pair('_exptl_adsorptive', self.guest.name)
+        block.set_pair('_exptl_temperature', f'{temp:0.3f}K')
+
+        block.set_pair('_adsnt_material_id', self.host.name)
+        #record mass to infer simulation size
+        if isinstance(self.host, NanoporousHost):
+            block.set_pair('_adsnt_sample_mass', '%.5E' % np.sum(self.host.mol.masses/amu))
+
+            ffs = self.program.name_dict['ff_suffix'].split('_')
+            block.set_pair('_simltn_forcefield_adsorptive', ffs[0])
+            block.set_pair('_simltn_forcefield_adsorbent', ffs[1])
+        else:
+            block.set_pair('_simltn_forcefield_adsorbent', self.program.name_dict['ff_suffix'])
+
+        block.set_pair('_simltn_excess_functionals', self.program.name_dict['funct_suffix'])
+
+        block.set_pair('_units_temperature', 'K')
+        block.set_pair('_units_energy', 'kJ/mol')
+        block.set_pair('_units_loading', loading_unit)
+        block.set_pair('_units_pressure','bar')
+        block.set_pair('_units_mass','amu')
+
+        #prepare data
+
+        #get the pressures from the chemical potentials and the provided eos
+        pressures = np.array([eos.calculate_pressure(temp, chem) for chem in chempots])
+        fugacities = np.exp(self.fener.beta*chempots)/self.fener.beta/self.fener.wavelength**3
+        uptake = self.return_loading(temp, chempots, excess=excess, eos=eos, He_frac=He_frac)
+
+        #get the uptake and convert to the desired units
+        cv_units = convert_units(self.guest.mass, np.sum(self.host.mol.masses), self.host.cell.volume)
+        factor = cv_units.conversion_factor('au/uc', loading_unit)
+        uptake *= factor
+
+        #format adsorption
+        pressures_bar = pressures/bar
+        fugacities_bar = fugacities/bar
+        mus_kjmol = chempots/kjmol
+        loop_ads = block.init_loop('_adsorp_', ['pressure', 'fugacity', 'chemicalpotential', 'amount'])
+        loop_ads.set_all_values([
+            ['%.5E' % item for item in pressures_bar],
+            ['%.5E' % item for item in fugacities_bar],
+            ['%.5E' % item for item in mus_kjmol],
+            ['%.5E' % item for item in uptake]
+        ])
+
+        if fn is None:
+            fn = self.workdir / f'adsorption_{temp:0.2f}K.aif'
+        else: 
+            fn = Path(fn)
+        d.write_file(str(fn))
+
+
     def free_energy_contrib(self, temp, chempot, partname, over_loading=False, local=False, fn=None, rho=None):
         '''This function calculates the free energy contribution of a given functional at a specified
         temperature and chemical potential.

@@ -12,14 +12,14 @@ from scipy.optimize import brentq
 from .rotations.AngGrid import AngularGrid
 from .rotations._stroud_1969 import *
 
-from molmod.units import kjmol, angstrom, kcalmol
+from molmod.units import kjmol, angstrom, kcalmol, amu, gram, centimeter
 from molmod.constants import boltzmann
 
 from yaff import System, ForceField, Parameters
 
 __all__ = [
     'selection_sort', 'bisect_left',
-    'merge_ffpar_files', 'merge_ffpar_files', 'get_ff', 'hard_spheres_barker_henderson', 'merge_yaff_systems', 
+    'merge_ffpar_files', 'merge_ffpar_files', 'get_ff', 'hard_spheres_barker_henderson', 'merge_yaff_systems', 'write_LJ_pars_chk',
     'effective_potential_QU', 'effective_potential_Leb', 'effective_potential_MC', 'effective_potential_precalc',
     'spherical_potential_boltz', 'spherical_potential_semi_boltz', 'spherical_potential_ave', 'spherical_potential_eff',
     'generate_rotation_matrix', 'find_local_maxima', 'find_neighbours'
@@ -291,7 +291,9 @@ def write_LJ_pars_chk(guest, dr):
 
     dr = str(dr)
 
-    with open(dr+'/LJ_pars.txt', 'w') as f:
+    fn = dr+f'/LJ_pars_{guest.name}.txt'
+    
+    with open(fn, 'w') as f:
         f.write('# van der Waals\n')
         f.write('#==============')
         f.write('\n')
@@ -306,7 +308,7 @@ def write_LJ_pars_chk(guest, dr):
         f.write('# ------------------------------------\n')
         f.write('\n')
         f.write(f'LJ:PARS      {guest.name}     {guest.sigma/angstrom:0.5f}  {guest.epsilon/kcalmol:0.5f}\n')
-    return syst, dr+'/LJ_pars.txt'
+    return syst, fn
 
 
 def merge_yaff_systems(system0, system1):
@@ -975,3 +977,34 @@ def make_supercell(data, repetitions=[3,3,3], grid_spacings=None, periodic=True)
             sup_cell[ind_x[0]:ind_x[1], ind_y[0]:ind_y[1], ind_z[0]:ind_z[1]] = data + index*np.array(grid_spacings)*nop   
 
     return sup_cell
+
+class convert_units(object):
+    def __init__(self, mass_guest, mass_host, volume_host):
+        """
+        ff_guest: a yaff System of the guest gas molecule
+
+        ff_host: a yaff System of the host unit cell
+        """
+        rho_stp = (mass_guest/amu)*1e-3/22.414 #g/cm**3
+        rho_host = (mass_host/gram)/(volume_host/centimeter**3) #g/cm**3
+        self.output_dict = {'wt%' : mass_host/mass_guest/100, 
+            'mg/g' : mass_host/mass_guest/1000,
+            'cm3/cm3' : mass_guest*rho_host/mass_host/rho_stp, 
+            'mol/mol': 1,
+            'mol/g' : mass_host/amu,
+            'mol/kg' : mass_host/amu/1000,
+            'au/uc' : 1,
+            }
+        self.input_dict = {key:item for key,item in self.output_dict.items()}
+
+    def conversion_factor(self, input='mol/mol', output='mol/mol'):
+        """
+        input: a string of the unit of the input
+
+        output: a string of the desired unit output
+
+        supported adorption units: wt%, cm3/cm3, mol/mol, mol/g, mol/kg
+        """
+        unit_list = ['wt%', 'cm3/cm3', 'mol/mol', 'mol/g', 'mol/kg', 'au/uc', 'mg/g']
+        assert input in unit_list and output in unit_list, "input must be a tuple where the first element is the value of the unit and the second is a string containing the unit type"
+        return self.input_dict[input]/self.output_dict[output]

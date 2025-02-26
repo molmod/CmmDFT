@@ -191,7 +191,22 @@ class EquationOfState(object):
                 self.wavelength = None
             return rho_crit, T_crit, p_crit 
         
-
+    def calculate_pressure(self, temp, chempot):
+        """
+            Calculate the pressure from the chemical potential and temperature
+        """
+        self.set_temperature(temp)
+        rho = self.solve_densities_from_chempots([chempot])[0][0]
+        return self.compute_pressure(rho)
+    
+    def calculate_mu(self, temp, pressure):
+        """
+            Calculate the chemical potential from the pressure and temperature
+        """
+        self.set_temperature(temp)
+        rho = self.solve_densities_from_pressures([pressure])[0][0]
+        return self.compute_chempot(rho)
+        
 
 class SumOfEOS(EquationOfState):
     def __init__(self, mass, list_eos):

@@ -305,7 +305,10 @@ class FreeEnergy(object):
         with log.section('FREEENER', 2, timer='MFA init'):
             log.dump('Initializing MFA functional for attractive interaction contribution' + (' with tail corrections' if tailcorrections else ''))
             fn = self.workdir / 'mfa.npy'
-            mfa = MFAFunctional(self.grid, tailcorrections=tailcorrections)
+            if 'repetitions' in kwargs:
+                mfa = MFAFunctional(self.grid, tailcorrections=tailcorrections, repetitions=kwargs['repetitions'])
+            else:
+                mfa = MFAFunctional(self.grid, tailcorrections=tailcorrections)
             if not os.path.isfile(fn) or self.overwrite or kwargs.get('rewrite', False):
                 if isinstance(self.system.guest, SphericalLJGuest) or isinstance(self.system.guest, DualModelGuest):
                     log.dump('computing LJ interaction potential with LJ params from given guest %s' %(self.system.guest.name))
@@ -727,7 +730,7 @@ class MFAFunctional(Functional):
     
     name = 'MFA'
     
-    def __init__(self, grid, tailcorrections=False):
+    def __init__(self, grid, tailcorrections=False, repetitions=[2,2,2]):
         """
         **Arguments:**
         
@@ -736,9 +739,10 @@ class MFAFunctional(Functional):
         
         """
         self.tailcorrections = tailcorrections
+        self.repetitions = repetitions #only used if tailcorrections are on
         if tailcorrections:
             self.small_grid = grid
-            self.grid = grid.supercell(np.array([2,2,2]))
+            self.grid = grid.supercell(repetitions)
         else:
             self.grid = grid
         self.potential = None
@@ -746,7 +750,7 @@ class MFAFunctional(Functional):
 
     def copy(self, grid=None, copy_potential=True):
         if grid is None: grid = self.grid.copy()
-        cp = type(self)(grid, self.tailcorrections)
+        cp = type(self)(grid, self.tailcorrections, self.repetitions)
         if copy_potential and self.potential is not None:
             cp.potential = self.potential.copy()
             cp.kpotential = self.kpotential.copy()
@@ -837,7 +841,7 @@ class MFAFunctional(Functional):
         """
         with log.section('MFA', 3, timer='MFA derive'):
             if self.tailcorrections:
-                rho_sup = make_supercell(self.small_grid.ifft(krho), repetitions=[2,2,2], grid_spacings=self.small_grid.spacings, periodic=True)
+                rho_sup = make_supercell(self.small_grid.ifft(krho), repetitions=self.repetitions, grid_spacings=self.small_grid.spacings, periodic=True)
                 krho_sup = self.grid.fft(rho_sup)
                 dF = self.grid.ifft(krho_sup*self.kpotential)
                 return dF[:self.small_grid.npoints[0],:self.small_grid.npoints[1],:self.small_grid.npoints[2]]*self.grid.cell.volume

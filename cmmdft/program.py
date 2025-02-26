@@ -31,9 +31,9 @@ class Program(object):
                 The hostname parameter is a string that represents the name of the host framework
             guestname
                 The name of the guest molecule in a host-guest system.
-            forcefield
+            ff_suffix
                 The forcefield parameter is a string that specifies the type of force field to be used in the
-            simulation.
+            simulation. First the host ff then the guest ff.
             functionals
                 This parameter is used to specify the type of excess functional to be used in the
             calculation. 

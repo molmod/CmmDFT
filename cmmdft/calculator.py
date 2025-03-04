@@ -192,7 +192,7 @@ class Calculator(object):
         He_vol = self.grid.integrate(np.exp(-He_pot/kelvin/temperature)).real
         return He_vol/self.host.cell.volume
 
-    def save_loadings(self, temperature, chempots=None, pressure=False, eos=None):
+    def save_loadings(self, temperature, chempots=None, pressure=False, excess=False, eos=None, fn=None):
         '''This function saves the loadings of all the calculated densities at the specified temperatures in a csv
         file vs the chemical potential or pressure.
         
@@ -208,6 +208,9 @@ class Calculator(object):
         pressure, optional
             A boolean indicating whether to save the loadings vs pressure instead of chemical potential. If
         True, an equation of state object must be provided as well.
+        excess, optional
+            A boolean indicating whether to save the excess loadings. If True, the function will calculate the
+        excess loadings in the framework
         eos
             `eos` stands for equation of state object. It is an object that contains information about the
         thermodynamic properties of a substance, such as its pressure, volume, and temperature. The
@@ -218,23 +221,27 @@ class Calculator(object):
          
         if chempots is None:
             chempots = self.get_chemical_potential(temperature)
-
         def hack(P, eos, mu, temperature):
             return eos.calculate_mu(temperature, P) - mu
-        load_chem = np.zeros((2, len(chempots)))
+        
+        data = np.zeros((2, len(chempots)))
         if pressure:
+            header = 'pressures [Eh/a0**3], loadings [molecules/uc]'
             if eos is not None:
-                load_chem[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, temperature)) for chem in chempots])
+                data[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, temperature)) for chem in chempots])
             else:
                 raise ValueError('Must provide an equation of state object, with the function calculate_mu')
         else:
-            load_chem[0] = chempots
-        load_chem[1] = self.return_loading(temperature, chempots)
-        load_chem = load_chem.T
-        if pressure:
-            np.savetxt(self.workdir / f'loads_{temperature:#3.0f}K_vs_P.csv', load_chem, delimiter=',', header='pressures, loadings', comments='')
-        else:    
-            np.savetxt(self.workdir / f'loads_{temperature:#3.0f}K.csv', load_chem, delimiter=',', header='chempot, loadings', comments='')
+            header = 'chempot [Eh], loadings [molecules/uc]'
+            data[0] = chempots
+        data[1] = self.return_loading(temperature, chempots, excess=excess, eos=eos)
+        if fn is None:
+            suffix = '_vs_P' if pressure else ''
+            prefix = 'excess_' if excess else ''
+            fn = self.workdir / f'{prefix}loads_{temperature:#3.0f}K{suffix}.csv'
+        else:
+            fn = Path(fn)
+        np.savetxt(fn, data.T, delimiter=',', header=header, comments='')
         
     def save_loadings_AIF(self, temp, chempots, eos, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
         """

@@ -19,7 +19,7 @@ __all__ = ['Program']
 
 
 class Program(object):
-    def __init__(self, prefix='', hostname='', guestname='', ff_suffix='', funct_suffix='', grid_suffix='', suffix='', overwrite=False, logfile=None, second_log=False):
+    def __init__(self, prefix='', hostname='', guestname='', ff_suffix='', funct_suffix='', grid_suffix='', suffix='', overwrite=False, logfile=None, second_log=False, silent=False):
         '''This is the initialization function for a class that sets various attributes and creates a work
             directory if it doesn't exist.
             
@@ -59,6 +59,9 @@ class Program(object):
         if not workdir.is_dir():
             workdir.mkdir(parents=True)
             print('Created work directory %s' %workdir)  
+
+        if silent:
+            log.set_level('silent')
 
         if logfile is not None:
             log.write_to_file('', logfile, second_log=second_log)

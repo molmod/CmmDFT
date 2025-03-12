@@ -844,10 +844,29 @@ class MFAFunctional(Functional):
                 rho_sup = make_supercell(self.small_grid.ifft(krho), repetitions=self.repetitions, grid_spacings=self.small_grid.spacings, periodic=True)
                 krho_sup = self.grid.fft(rho_sup)
                 dF = self.grid.ifft(krho_sup*self.kpotential)
-                return dF[:self.small_grid.npoints[0],:self.small_grid.npoints[1],:self.small_grid.npoints[2]]*self.grid.cell.volume
+                der =  dF[:self.small_grid.npoints[0],:self.small_grid.npoints[1],:self.small_grid.npoints[2]]*self.grid.cell.volume
+                der2 = self.small_grid.ifft(krho*self.kpotential[::2,::2,::2])*self.grid.cell.volume
+                assert(np.allclose(der, der2))
+                return der
+            
             else:
                 return self.grid.ifft(krho*self.kpotential)*self.grid.cell.volume 
 
+    def derive2(self, krho):
+        """
+        Functional derivative, which is the convolution of the density and
+        the potential. It is evaluated using the convolution theorem
+        """
+        with log.section('MFA', 3, timer='MFA derive'):
+            if self.tailcorrections:
+                rho_sup = make_supercell(self.small_grid.ifft(krho), repetitions=self.repetitions, grid_spacings=self.small_grid.spacings, periodic=True)
+                krho_sup = self.grid.fft(rho_sup)
+                dF = self.grid.ifft(krho_sup*self.kpotential)
+                return dF[:self.small_grid.npoints[0],:self.small_grid.npoints[1],:self.small_grid.npoints[2]]*self.grid.cell.volume
+            
+            else:
+                return self.grid.ifft(krho*self.kpotential)*self.grid.cell.volume 
+            
     def value(self, krho, local=False):
         with log.section('MFA', 3, timer='MFA value'):
             if self.tailcorrections:

@@ -61,7 +61,7 @@ class Solver(object):
         self.mask = np.ones(self.grid.npoints, dtype=bool)
         for part in fener.parts:
             if 'ExtPot' in part.name:
-                self.mask = np.array(np.where(part.potential>50*boltzmann*fener.temperature))
+                self.mask = np.where(part.potential>50*boltzmann*fener.temperature, False, True)
             
 
         self.threshold = threshold
@@ -100,13 +100,19 @@ class Solver(object):
             Updated density distribution.
         """
         with log.section('PICARD', self.log_level, timer='Update rho'):
-            dF = 0
+            dF =  np.zeros(self.grid.npoints)
             for part in self.fener.parts:
                 ddf = part.derive(krho).real
-                print(part.name)
-                print(np.max(ddf), np.min(ddf))
                 dF += ddf
             return self.fener.beta*np.exp(-self.fener.beta*dF.real)*fugacity
+
+
+    def _get_F(self, krho):
+        F = np.zeros(self.grid.npoints)
+        for part in self.fener.parts:
+            dF = part.derive(krho).real
+            F += dF
+        return -self.fener.beta*F
 
     def update_rho(self, rho, krho, rho_new):
         pass 
@@ -519,12 +525,10 @@ class Fire(Solver):
         super()._initiate_solving(chempot)
         self.V = np.zeros(self.grid.npoints)
     
-    def _get_F(self, krho):
+    def _get_c1(self, krho):
         F = np.zeros(self.grid.npoints)
         for part in self.fener.parts:
-            print(part.name)
             dF = part.derive(krho).real
-            print(np.max(dF), np.min(dF))
             F += dF
         return -self.fener.beta*F
 
@@ -533,15 +537,9 @@ class Fire(Solver):
             lnrho = np.log(rho, where=rho>0)   
             F = np.zeros(self.grid.npoints)
             mask = ~np.isclose(Grho,0, atol=1e-10) & ~np.isclose(rho,0, atol=1e-10)
-            print(np.sum(mask))
-            F[mask] = np.log(Grho*self.fener.wavelength**3, where=Grho>0)[mask]-lnrho[mask] #+ np.log(1/self.fener.wavelength**3)
-            of = self._get_F(krho)
-            print(np.max(of), np.min(of))
-            print(of)
-            print(F)
-            print(np.max(np.log(Grho, where=Grho>0)), np.min(np.log(Grho, where=Grho>0)))
-            print(np.max(lnrho), np.min(lnrho))
-            print(np.max(F[self.mask]), np.min(F[self.mask]))
+            # F[mask] = np.log(Grho, where = ~np.isclose(Grho, 0))[mask]-lnrho[mask] #+ np.log(1/self.fener.wavelength**3)
+            F[mask] = -(lnrho[mask] - np.log(Grho[mask]) - np.log(self.fener.wavelength**3))
+
             if self.curr_step == 0:
                 self.V = np.zeros(self.grid.npoints)
             else:

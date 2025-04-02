@@ -14,12 +14,12 @@ from yaff import ForceField
 
 from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell
 from .log import log
-from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest
+from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS
-
+from .yukawa import lj3dFT
 __all__ = [
     'FreeEnergy', 'Functional','FMTFunctional','MFMTFunctional', 'WhiteBearIIFunctional',
-    'MFAFunctional', 'CoarsenedFunctional','LJMFAFunctional',  'ExternalPotential', 'EffectiveExternalPotential', 'WDAVFunctional', 'WDACorrFunctional', 
+    'MFAFunctional', 'CoarsenedFunctional','LJMFAFunctional',  'ExternalPotential', 'EffectiveExternalPotential', 'WDAVFunctional', 'WDACorFMTunctional', 
 ]
 
 
@@ -32,6 +32,7 @@ class FreeEnergy(object):
         self.wavelength = None
         self.parts = []
         self.part_names = []
+        self.part_dict = {}
         self.workdir = Path(workdir)
         self.name_dict = name_dict
         self.overwrite = overwrite
@@ -41,10 +42,11 @@ class FreeEnergy(object):
     def copy(self, grid=None):
         if grid is None:
             fenercopy = FreeEnergy(self.grid.copy(), self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
-        elif isinstance(grid, Grid):
-            fenercopy = FreeEnergy(grid, self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
+        # elif isinstance(grid, Grid):
         else:
-            raise ValueError('The provided grid must be a Grid instance')
+            fenercopy = FreeEnergy(grid, self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
+        # else:
+            # raise ValueError('The provided grid must be a Grid instance')
         for part in self.parts:
             fenercopy.parts.append(part.copy(grid=grid))
         for part_name in self.part_names:
@@ -68,7 +70,21 @@ class FreeEnergy(object):
             self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #set temperature for each part in the free energy functional
             for part in self.parts:
-                part.set_temperature(temperature, Rhs=self.system.guest.Rhs, **kwargs)          
+                part.set_temperature(temperature, Rhs=self.system.guest.Rhs, **kwargs)  
+
+    def add_part(self, part):
+        """
+        Adds a functional to the list of parts
+
+        Parameters
+        ----------
+        part : Functional
+            The functional to be added
+
+        """
+        self.parts.append(part)
+        self.part_names.append(part.name)
+        self.part_dict[part.name] = part        
 
     def remove_part(self, part_name):
         """
@@ -136,12 +152,12 @@ class FreeEnergy(object):
         #ideal gas contribution
         N = self.grid.integrate(rho).real
         rho_reg = rho.copy()
-        rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-50
+        rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
         #print('Minimum density in rho_reg {:e}'.format(np.min(self.system.guest.wavelength(self.temperature)**3*rho_reg)))
         Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0)).real/self.beta
         G = Fid - chempot*N
         line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, -chempot*N, Fid)
-        krho = self.grid.fft(rho, norm="backward")#*self.grid.dr
+        krho = self.grid.fft(rho)#*self.grid.dr
         for part in self.parts:
             Fpart = part.value(krho).real
             if print_out: print(part.name, round(Fpart/kjmol,2))
@@ -180,42 +196,50 @@ class FreeEnergy(object):
         
         '''
         with log.section('FREEENER', 2, timer='ExtPot init'):
-            assert isinstance(self.system.host, NanoporousHost), 'No external potential can be added for a %s system' %(self.system.host.__class__.__name__)
             log.dump('Initializing external potential')
-            if fn is not None:
+
+            if isinstance(self.system.host, EmptyHost):
+                assert fn is not None, 'fn must be a filename of an external potential'
                 assert str(fn).endswith('.npy'), 'fn must be a filename of an external potential'
+                assert os.path.isfile(fn), f'fn must be a filename of an external potential, {fn} does not exist'
                 fn = Path(fn)
                 epot_dr = fn.parent
+                epot = ExternalPotential(self.grid, 0, None, epot_dr, positive=positive, **kwargs)
             else:
-                pos_str = 'pos_' if positive else ''
-                epot_dr = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] 
-                if not epot_dr.is_dir(): epot_dr.mkdir(parents=True)
-                if not isinstance(self.system.guest, SphericalLJGuest):
-                    if self.system.guest.mol.natom != 1: 
-                        assert temperature is not None, 'Temperature must be provided for non-spherical particles'
-                        fn = epot_dr / f'{pos_str}eff_epot_{temperature:#3.2f}K.npy'  
+                if fn is not None:
+                    assert str(fn).endswith('.npy'), 'fn must be a filename of an external potential'
+                    fn = Path(fn)
+                    epot_dr = fn.parent
+                else:
+                    pos_str = 'pos_' if positive else ''
+                    epot_dr = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] 
+                    if not epot_dr.is_dir(): epot_dr.mkdir(parents=True)
+                    if not isinstance(self.system.guest, SphericalLJGuest):
+                        if self.system.guest.mol.natom != 1: 
+                            assert temperature is not None, 'Temperature must be provided for non-spherical particles'
+                            fn = epot_dr / f'{pos_str}eff_epot_{temperature:#3.2f}K.npy'  
+                        else:
+                            fn = epot_dr / f'{pos_str}epot.npy'
+                        
                     else:
                         fn = epot_dr / f'{pos_str}epot.npy'
-                    
+                #create a symlink to the potential directory so everything is in one place
+                sym_fn = self.workdir / 'ExtPots'
+                if not sym_fn.is_symlink():
+                    sym_fn.symlink_to(epot_dr.absolute())    
+
+                if isinstance(self.system.guest, SphericalLJGuest):
+                    log.dump('Creating parameter file for guest molecule from LJ parameters')
+                    guest_mol, guest_par = write_LJ_pars_chk(self.system.guest, self.workdir)
                 else:
-                    fn = epot_dr / f'{pos_str}epot.npy'
-            #create a symlink to the potential directory so everything is in one place
-            sym_fn = self.workdir / 'ExtPots'
-            if not sym_fn.is_symlink():
-                sym_fn.symlink_to(epot_dr.absolute())    
+                    guest_mol, guest_par = self.system.guest.mol, self.system.guest.par
 
-            if isinstance(self.system.guest, SphericalLJGuest):
-                log.dump('Creating parameter file for guest molecule from LJ parameters')
-                guest_mol, guest_par = write_LJ_pars_chk(self.system.guest, self.workdir)
-            else:
-                guest_mol, guest_par = self.system.guest.mol, self.system.guest.par
+                pars_fn = self.workdir / 'pars.txt'
+                merge_ffpar_files(pars_fn, self.system.host.par, guest_par) 
+                log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.host.par, guest_par, pars_fn))
 
-            pars_fn = self.workdir / 'pars.txt'
-            merge_ffpar_files(pars_fn, self.system.host.par, guest_par) 
-            log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.host.par, guest_par, pars_fn))
-
-            ff_ext = get_ff(self.system.host.mol, guest_mol, pars_fn, rcut)
-            epot = ExternalPotential(self.grid, self.system.guest.natom, ff_ext, epot_dr, positive=positive, **kwargs)
+                ff_ext = get_ff(self.system.host.mol, guest_mol, pars_fn, rcut)
+                epot = ExternalPotential(self.grid, self.system.guest.natom, ff_ext, epot_dr, positive=positive, **kwargs)
             
             if not os.path.isfile(fn) or self.overwrite or rewrite:
                 log.dump('computing external potential on grid')
@@ -232,8 +256,7 @@ class FreeEnergy(object):
             epot.potential[mask] = upper_limit
             log.dump('  Eext(min) = %8.5f kJ/mol' % (np.real_if_close(np.amin(epot.potential)/kjmol)))
             log.dump('  Eext(max) = %8.5f kJ/mol' % (np.real_if_close(np.amax(epot.potential)/kjmol)))
-        self.parts.append(epot)
-        self.part_names.append(epot.name)
+        self.add_part(epot)
         
     def add_lda(self, eos):
         """
@@ -247,10 +270,9 @@ class FreeEnergy(object):
             log.dump('Initializing LDA functional for attractive interaction contribution')
             eos.set_temperature(self.temperature)
             lda = LDAFunctional(self.temperature, self.grid, eos)
-        self.parts.append(lda)
-        self.part_names.append(lda.name)
+        self.add_part(lda)
     
-    def add_wdav(self, eos, **kwargs):
+    def add_wdav(self, eos, new=False, **kwargs):
         """
             Adds a weighted density approximation functional
 
@@ -264,11 +286,10 @@ class FreeEnergy(object):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
             
-            wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos)
-        self.parts.append(wda)
-        self.part_names.append(wda.name)
-    
-    def add_hard_sphere(self, **kwargs):
+            wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos, new=new)
+        self.add_part(wda)
+
+    def add_new_hard_sphere(self, change='None',version='MFMT'):
         """
             Adds a hard sphere repulsion functional of various types
 
@@ -278,17 +299,35 @@ class FreeEnergy(object):
                 Specifies the type of functional. The default is 'MFMT'.
         """
         with log.section("FREEENER", 2, timer='(M)FMT init'):
-            if   kwargs.get('version','MFMT')=='MFMT': func = MFMTFunctional
-            elif kwargs.get('version','MFMT')== 'FMT': func = FMTFunctional
-            elif kwargs.get('version','MFMT')=='WBII': func = WhiteBearIIFunctional
-            else: raise ValueError('Recieved version %s for hard sphere contribution, but only MFMT, FMT and WBII are supported. Aborting!')
-            log.dump('Initializing %s functional for hard-sphere contribution' %kwargs.get('version','MFMT'))
+            log.dump('Initializing %s functional for hard-sphere contribution' %version)
+            # def fun_Rhs(temperature):
+            #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
+            #     return self.system.guest.Rhs
+            HardSphere = HardSphereFunctional(self.system.guest.Rhs, self.grid, change=change,version=version)
+            print(HardSphere.version)
+            print(HardSphere.change)
+            self.add_part(HardSphere)
+
+    def add_hard_sphere(self, version='MFMT'):
+        """
+            Adds a hard sphere repulsion functional of various types
+
+            Parameters
+            ----------
+            version : 'FMT': fundamental measure theory, 'MFMT': modified fundamental measure theory of 'WBII': second whitebear variant, optional
+                Specifies the type of functional. The default is 'MFMT'.
+        """
+        with log.section("FREEENER", 2, timer='(M)FMT init'):
+            if   version=='MFMT': func = MFMTFunctional
+            elif version== 'FMT': func = FMTFunctional
+            elif version=='WBII': func = WhiteBearIIFunctional
+            else: raise ValueError('Recieved version %s for hard sphere contribution, but only MFMT, FMT and WBII are supported. Aborting!'%version)
+            log.dump('Initializing %s functional for hard-sphere contribution' %version)
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
             part = func(self.system.guest.Rhs, self.grid)
-            self.parts.append(part)
-            self.part_names.append(part.name)
+            self.add_part(part)
     
     def add_mean_field(self, tailcorrections=False, **kwargs):
         """
@@ -312,7 +351,7 @@ class FreeEnergy(object):
             if not os.path.isfile(fn) or self.overwrite or kwargs.get('rewrite', False):
                 if isinstance(self.system.guest, SphericalLJGuest) or isinstance(self.system.guest, DualModelGuest):
                     log.dump('computing LJ interaction potential with LJ params from given guest %s' %(self.system.guest.name))
-                    mfa.generate_potential_lj(self.system.guest.sigma, self.system.guest.epsilon)
+                    mfa.generate_potential_lj(self.system.guest.sigma, self.system.guest.epsilon, **kwargs)
                 else:
                     log.dump('computing interaction potential with forcefield from given guest %s' %(self.system.guest.name))
                     mfa.generate_potential(self.system.guest.mol, self.system.guest.par, self.system.guest.Rzero, self.temperature, **kwargs)
@@ -321,9 +360,14 @@ class FreeEnergy(object):
             else:
                 log.dump('loading interaction potential from %s' %fn)
                 mfa.load_potential(fn)
-        self.parts.append(mfa)
-        self.part_names.append(mfa.name)
+        self.add_part(mfa)
     
+    def add_yukawa_mean_field(self, **kwargs):
+        mfa = YukawaMFAFunctional(self.grid)
+
+        mfa.generate_kpotential(self.system.guest.sigma, self.system.guest.epsilon, **kwargs)
+        self.add_part(mfa)
+
     def add_correlation_wda_lj(self, **kwargs):
         '''The function adds a WDA contribution to correct for correlation effect in a molecular simulation
             system. The various contributions in this WDA require LJ epsilon and sigma parameters are taken
@@ -352,9 +396,8 @@ class FreeEnergy(object):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
 
-            corr = WDACorrFunctional(self.system.guest.Rhs, self.grid, self.system.guest.mass, self.system.guest.sigma, self.system.guest.epsilon, **kwargs)
-            self.parts.append(corr)
-            self.part_names.append(corr.name)
+            corr = WDACorFMTunctional(self.system.guest.Rhs, self.grid, self.system.guest.mass, self.system.guest.sigma, self.system.guest.epsilon, **kwargs)
+            self.add_part(corr)
 
     def _OLD_add_coarse_MFA(self, temperature, rcut=12*angstrom, limit_potential=0, style='su', rewrite=False, degree=7):
         '''This function adds a coarse-grained MFA contribution to the interaction potential of non-spherical
@@ -407,8 +450,7 @@ class FreeEnergy(object):
             else:
                 log.dump('loading interaction potential from %s' % coarse_file)
                 coarse.load_potential(coarse_file)
-        self.parts.append(coarse)   
-        self.part_names.append(coarse.name)               
+        self.add_part(coarse)             
 
 
 class Functional(object):
@@ -420,6 +462,334 @@ class Functional(object):
 
     def set_temperature(self, temperature, **kwargs):
         pass
+
+
+class HardSphereFunctional(Functional):
+    """The framework for hard sphere functionals."""
+    
+    name = 'HardSphere'
+    
+    def __init__(self, Rhs, grid, version='MFMT', change='None'):
+        """
+        **Arguments:**
+
+        Rhs
+            The radius of the hard sphere particles
+
+        grid
+            An instance of Grid (see system.py)
+        """
+        self.temperature = None
+        self.beta = None
+        self.grid = grid  
+        self.R = Rhs
+        self.version = version
+        self.change = change
+        self.savedr = f'FMTcmmdftRho/{self.version}'
+        if not os.path.isdir(self.savedr): os.makedirs(self.savedr)
+        # self.FMTun = None
+        # if callable(Rhs):
+        #     self.FMTun = Rhs
+        # elif isinstance(Rhs, float):
+        #     self.R = Rhs
+        #     self._init_weight_functions()
+        # else:
+        #     raise TypeError('Rhs argument of FMTFunctional constructor should be a float or a callable function computing the Rhs for a given temperature, instead got %s' %(type(Rhs)))
+
+    def copy(self, grid=None):
+        if grid is None: grid = self.grid.copy()
+        # if self.FMTun is not None:
+        #     return type(self)(self.FMTun, grid)
+        # else:
+        return type(self)(self.R, grid)
+
+    def set_temperature(self, temperature, Rhs, **kwargs):
+        self.temperature = temperature
+        self.beta = 1/(boltzmann*temperature)
+        self.R = Rhs
+        # if self.FMTun is not None:
+        #     self.R = self.FMTun(temperature, **kwargs)
+        self._init_weight_functions()
+
+    def _init_weight_functions(self):
+        """
+        The FMT functional is constructed based on so called weight functions.
+        For instance w3(r) counts the number of particles within a sphere of
+        radius R around r. Because these weight functions consist of Heaviside
+        and Delta distributions, it is not a good idea to work with them on a
+        real space grid. Because only convolutions of these weight functions
+        are required, they are calculated in reciprocal space, where
+        the convolutions become simple products. The Fourier transformed weight
+        functions are given in appendix B of
+        https://dx.doi.org/10.1063%2F1.3357981
+        """
+        # if '2pi_k' in self.change:
+        omega = self.grid.kpoints[:,:,:,3]*self.R
+        # else:
+        #     omega = 2*np.pi*self.grid.kpoints[:,:,:,3]*self.R
+
+        mask = ~np.isclose(omega,0)
+        self.kw0 = np.zeros_like(omega, dtype=np.complex_)
+
+        self.kw0[mask] = np.sinc(omega[mask]/np.pi)
+        self.kw0[~mask] = 1.0
+        if 'lanczos' in self.change:
+            self.kw0 *= self.grid.sigma_lanczos
+
+        self.kw1 = self.R*self.kw0
+        self.kw2 = 4.0*np.pi*self.R**2*self.kw0
+        self.kw3 = np.zeros_like(omega, dtype=np.complex_)
+        self.kw3[mask] = 4.0*np.pi*self.R**3*(np.sin(omega[mask])-omega[mask]*np.cos(omega[mask]))/omega[mask]**3
+        self.kw3[~mask] = 4.0*np.pi*self.R**3/3.0
+        if 'lanczos' in self.change:
+            self.kw3 *= self.grid.sigma_lanczos
+        self.kwv2 = -1.j*(self.kw3)[:,:,:,np.newaxis]*self.grid.kpoints[:,:,:,:3] #*2*np.pi
+        # self.kwv2 = -1.j*omega/self.R*self.kw3
+        self.kwv2[~mask] = 0.0
+        self.kwv1 = self.kwv2/(4*np.pi*self.R)
+
+        np.save(self.savedr + '/kw0.npy', self.kw0)
+        np.save(self.savedr + '/kw1.npy', self.kw1)
+        np.save(self.savedr + '/kw2.npy', self.kw2)
+        np.save(self.savedr + '/kw3.npy', self.kw3)
+        np.save(self.savedr + '/kwv1.npy', self.kwv1)
+        np.save(self.savedr + '/kwv2.npy', self.kwv2)
+        
+    def _get_density_functions(self, krho):
+        """
+        Compute the density functions, which are convolutions of the weight
+        functions and the density. These are computed by making use of the
+        convolution theorem
+
+        **Arguments:**
+
+        krho
+            The density in reciprocal space
+        """
+        # The scalar density functions
+        kn0 = krho*self.kw0
+        n0 = self.grid.ifft(kn0).real#*self.grid.dk
+        kn1 = krho*self.kw1
+        n1 = self.grid.ifft(kn1).real#*self.grid.dk
+        kn2 = krho*self.kw2
+        n2 = self.grid.ifft(kn2).real#*self.grid.dk
+        kn3 = krho*self.kw3
+        n3 = self.grid.ifft(kn3).real#*self.grid.dk
+        #When n3 approaches 1, things can go wrong because the functional
+        # contains terms with log(1-n3) and 1/(1-n3)
+        n3[n3>0.95] = 0.95
+        #When n3 approaches 0 things can also go wrong:
+        n3[n3==0] = 1e-30
+        # The vector density functions
+
+        knv1, nv1 = [], []
+        for alpha in range(3):
+            nv1kalpha = krho*self.kwv1[:,:,:,alpha]
+            nv1alpha = self.grid.ifft(nv1kalpha).real#*self.grid.dk
+            knv1.append(nv1kalpha)
+            nv1.append(nv1alpha)
+        knv2, nv2 = [], []
+        for alpha in range(3):
+            nv2kalpha = krho*self.kwv2[:,:,:,alpha]
+            nv2alpha = self.grid.ifft(nv2kalpha).real#*self.grid.dk
+            knv2.append(nv2kalpha)
+            nv2.append(nv2alpha)
+
+        xi = (nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2])/((n2+1e-16)**2)
+        xi[xi>=1] = 1-1e-12
+
+        np.save(self.savedr + '/n0.npy', n0)
+        np.save(self.savedr + '/n1.npy', n1)
+        np.save(self.savedr + '/n2.npy', n2)
+        np.save(self.savedr + '/n3.npy', n3)
+        np.save(self.savedr + '/nv1.npy', nv1)
+        np.save(self.savedr + '/nv2.npy', nv2)
+        np.save(self.savedr + '/xi.npy', xi)
+        return n0,n1,n2,n3,np.array(nv1),np.array(nv2),xi
+
+    def get_n3(self, krho):
+        kn3 = krho*self.kw3
+        return self.grid.ifft(kn3)#*self.grid.dk        
+
+    def get_n2_nv2(self, krho):
+        kn2 = krho*self.kw2
+        n2 = self.grid.ifft(kn2)#*self.grid.dk
+        knv2, nv2 = [], []
+        for alpha in range(3):
+            tmp = self.grid.kpoints[:,:,:,alpha]
+            nv2kalpha = krho*self.kwv2*tmp
+            nv2alpha = self.grid.ifft(nv2kalpha)#*self.grid.dk
+            knv2.append(nv2kalpha)
+            nv2.append(nv2alpha)   
+        return abs(n2)/nv2
+
+    def get_phi(self, n0, n1, n2, n3, nv1, nv2, xi):
+        """
+        Compute the functional value
+
+        **Arguments:**
+
+        n0, n1, n2, n3, nv1, nv2
+            The density functions, should be computed using _get_density_functions
+        """
+        phi = n0*self._phi1(n3)
+        phi += (n1*n2 - (nv1[0]*nv2[0]+nv1[1]*nv2[1]+nv1[2]*nv2[2]))*self._phi2(n3)
+        if 'asym' in self.change:
+            phi += n2**3*(1-xi)**3*self._phi3(n3)
+        else:
+            phi += (n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._phi3(n3)
+
+        np.save(self.savedr + '/phi1.npy', self._phi1(n3))
+        np.save(self.savedr + '/phi2.npy', self._phi2(n3))
+        np.save(self.savedr + '/phi3.npy', self._phi3(n3))
+        np.save(self.savedr + '/dphi1dn3.npy', self._dphi1dn(n3))
+        np.save(self.savedr + '/dphi2dn3.npy', self._dphi2dn(n3))
+        np.save(self.savedr + '/dphi3dn3.npy', self._dphi3dn(n3))
+        return phi
+
+    def derive(self, krho):
+        """
+        Functional derivative with respect to the density
+
+        **Arguments:**
+
+        krho:
+            The density in reciprocal space
+        """
+        with log.section('(M)FMT', 3, timer='(M)FMT derive'):
+            # Compute the density functions
+            n0,n1,n2,n3,nv1,nv2,xi = self._get_density_functions(krho)
+            dFk_total = 0.0
+            # Fhe functional is (up to a factor k_B T) the integral of Phi.
+            # Phi is a function of the density functions, which are in turn
+            # convolutions of the density and the weight functions. By
+            # applying the chain rule, we find that the functional derivative can
+            # be obtained by convoluting the derivatives of phi wrt the density
+            # functions with the corresponding weight function
+            i=0
+            for get_dphi, kweight in [
+                    (self._get_dphi_n0, self.kw0), (self._get_dphi_n1, self.kw1),
+                    (self._get_dphi_n2, self.kw2), (self._get_dphi_n3, self.kw3)]:
+                dphi = get_dphi(n0,n1,n2,n3,nv1,nv2,xi)
+                dFk = self.grid.fft(dphi)*kweight
+                np.save(self.savedr + '/dF_%i.npy' %i, self.grid.ifft(dFk))
+                i+=1
+                dFk_total += dFk
+            # The vector contribution
+            np.save(self.savedr + '/dF_total_no_vec.npy', self.grid.ifft(dFk_total))
+            i = 0
+            for get_dphi, kweight in [(self._get_dphi_nv1, self.kwv1), (self._get_dphi_nv2, self.kwv2)]: #USED TO BE: [(self._get_dphi_nv1, self.kw1), (self._get_dphi_nv2, self.kw2),]:
+                dFtemp = np.zeros_like(dFk_total, dtype=np.complex_)
+                for alpha in range(3):
+                    dphi = get_dphi(n0,n1,n2,n3,nv1,nv2,xi,alpha)
+                    # dFk += self.grid.fft(dphi)*kweight*self.grid.kpoints[:,:,:,alpha] #USED TO BE: np.fft.fftn(-dphi[alph])*...
+                    dFk = self.grid.fft(dphi)*kweight[:,:,:,alpha]
+                    dFtemp += dFk
+                    dFk_total += dFk
+                np.save(self.savedr + '/dphi_%s.npy' %(i), np.array([get_dphi(n0,n1,n2,n3,nv1,nv2,xi,alpha) for alpha in range(3)]))
+                np.save(self.savedr + '/dF_nv%i.npy' %(i), self.grid.ifft(dFtemp)) 
+                i+=1
+            dF_total = self.grid.ifft(dFk_total)
+            np.save(self.savedr + '/dF_total.npy', dF_total)
+            return dF_total/self.beta
+    
+    def value(self, krho, local=False):
+        with log.section('(M)FMT', 3, timer='(M)FMT value'):
+            n0, n1, n2, n3, nv1, nv2, xi = self._get_density_functions(krho)        
+            phi = self.get_phi(n0, n1, n2, n3, nv1, nv2, xi)
+            if local:
+                return phi/self.beta
+            else:
+                return self.grid.integrate(phi)/self.beta
+        
+    def _get_dphi_n0(self, n0, n1, n2, n3, nv1, nv2, xi):
+        return self._phi1(n3)
+
+    def _get_dphi_n1(self, n0, n1, n2, n3, nv1, nv2, xi):
+        return n2*self._phi2(n3)    
+
+    def _get_dphi_n2(self, n0, n1, n2, n3, nv1, nv2, xi):
+        tmp0 = n1*self._phi2(n3)
+        if 'asym' in self.change:
+            tmp1 = (3*n2**2*(1+xi)*(1-xi)**2)*self._phi3(n3)
+        else:
+            tmp1 = 3*(n2**2-(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._phi3(n3)
+        dphi = tmp0+tmp1
+        return dphi
+
+    def _get_dphi_n3(self, n0, n1, n2, n3, nv1, nv2, xi):
+        tmp0 = n0*self._dphi1dn(n3)
+        tmp1 = (n1*n2-(nv1[0]*nv2[0]+nv1[1]*nv2[1]+nv1[2]*nv2[2]))*self._dphi2dn(n3)
+        if 'asym' in self.change:
+            tmp2 = n2**3*(1-xi)**3*self._dphi3dn(n3)
+        else:
+            tmp2 = (n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._dphi3dn(n3)
+        dphi = tmp0+tmp1+tmp2
+        return dphi
+
+    def _get_dphi_nv1(self, n0, n1, n2, n3, nv1, nv2, xi, index):
+        dphi = -nv2[index]*self._phi2(n3)
+        return dphi
+
+    def _get_dphi_nv2(self, n0, n1, n2, n3, nv1, nv2, xi, index):
+        dphi = -nv1[index]*self._phi2(n3)
+        if 'asym' in self.change:
+            dphi += -6*n2*nv2[index]*(1-xi)**2*self._phi3(n3)
+        else:
+            dphi += -6*n2*nv2[index]*self._phi3(n3)
+        return dphi
+
+    def _phi1(self, n3):
+        return -np.log(1.0-n3)
+    
+    def _dphi1dn(self, n3):
+        return 1.0/(1.0-n3)
+    
+    def _phi2(self, n3):
+        if self.version == 'FMT' or self.version == 'MFMT':
+            return 1/(1.0-n3)
+        elif self.version == 'WBII':
+            if 'retlimit' in self.change:
+                return np.where(n3<=1e-6,(1+ n3**2/9)/(1-n3), ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3)))
+            else:
+                return ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3))
+                
+    def _dphi2dn(self, n3):
+        if self.version == 'FMT' or self.version == 'MFMT':
+            return 1/(1-n3)**2
+        elif self.version == 'WBII':
+            if 'retlimit' in self.change:
+                return np.where(n3<=1e-6,(1+ 2*n3/9 + n3**2/18)/(1-n3)**2,-2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2))
+            else:
+                return -2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2)
+
+    def _phi3(self, n3):
+        if self.version == 'FMT':
+            return 1/(24*np.pi*(1-n3)**2)
+        elif self.version == 'MFMT':
+            if 'retlimit' in self.change:
+                return np.where(n3<=1e-6,(1.0-2*n3/9-n3**2/18)/(24*np.pi*(1-n3)**2),(n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2))
+            else:
+                return (n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2)
+        elif self.version == 'WBII':
+            if 'retlimit' in self.change:
+                return np.where(n3<=1e-6,(1-4*n3/9+n3**2/18)/(24*np.pi*(1-n3)**2),-2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2))
+            else:
+                return -2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2)
+
+    def _dphi3dn(self, n3):
+        if self.version == 'FMT':
+            return 1/(12*np.pi*(1-n3)**3)
+        elif self.version == 'MFMT':
+            if 'retlimit' in self.change:
+                return np.where(n3<=1e-6,(8/3-0.5*n3-0.1*n3**2)/(36*np.pi*(1-n3)**3),-(n3*(2-5*n3+n3**2)+2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3))
+            else:
+                return -(n3*(2-5*n3+n3**2)+2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
+        elif self.version == 'WBII':
+            if 'retlimit' in self.change:
+                return np.where(n3<=1e-6,(7/3-n3/2+n3**2/10)/(36*np.pi*(1-n3)**3),(2*n3-5*n3**2+6*n3**3-n3**4 + 2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3))
+            else:
+                return (2*n3-5*n3**2+6*n3**3-n3**4 + 2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
 
 
 class FMTFunctional(Functional):
@@ -477,20 +847,22 @@ class FMTFunctional(Functional):
         functions are given in appendix B of
         https://dx.doi.org/10.1063%2F1.3357981
         """
-        omega = 2.0*np.pi*self.grid.kpoints[:,:,:,3]*self.R
+        omega = self.grid.kpoints[:,:,:,3]*self.R
         mask = ~np.isclose(omega,0)
         self.kw0 = np.zeros_like(omega, dtype=np.complex_)
         self.kw0[mask] = np.sin(omega[mask])/(omega[mask])
         self.kw0[~mask] = 1.0
+        # self.kw0 *= self.grid.sigma_lanczos
         self.kw1 = self.R*self.kw0
         self.kw2 = 4.0*np.pi*self.R**2*self.kw0
         self.kw3 = np.zeros_like(omega, dtype=np.complex_)
         self.kw3[mask] = 4.0*np.pi*self.R**3*(np.sin(omega[mask])-omega[mask]*np.cos(omega[mask]))/omega[mask]**3
         self.kw3[~mask] = 4.0*np.pi*self.R**3/3.0
+        # self.kw3 *= self.grid.sigma_lanczos
         self.kwv1 = -1.j*self.kw3/(4*np.pi*self.R)
         self.kwv1[~mask] = 0.0
         self.kwv2 = 4*np.pi*self.R*self.kwv1
-        
+
     def _get_density_functions(self, krho):
         """
         Compute the density functions, which are convolutions of the weight
@@ -531,7 +903,10 @@ class FMTFunctional(Functional):
             knv2.append(nv2kalpha)
             nv2.append(nv2alpha)
         # self.n3, self.n2, self.nv2 = n3, n2, nv2    
-        return n0,n1,n2,n3,nv1,nv2
+
+        xi = (nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2])/((n2+1e-16)**2)
+        xi[xi>=1] = 1-1e-12        
+        return n0,n1,n2,n3,np.array(nv1),np.array(nv2),xi
 
     def get_n3(self, krho):
         kn3 = krho*self.kw3
@@ -542,8 +917,7 @@ class FMTFunctional(Functional):
         n2 = self.grid.ifft(kn2)#*self.grid.dk
         knv2, nv2 = [], []
         for alpha in range(3):
-            tmp = self.grid.kpoints[:,:,:,alpha]
-            nv2kalpha = krho*self.kwv2*tmp
+            nv2kalpha = krho*self.kwv2[:,:,:,alpha]
             nv2alpha = self.grid.ifft(nv2kalpha)#*self.grid.dk
             knv2.append(nv2kalpha)
             nv2.append(nv2alpha)   
@@ -603,7 +977,7 @@ class FMTFunctional(Functional):
         """
         with log.section('(M)FMT', 3, timer='(M)FMT derive'):
             # Compute the density functions
-            n0,n1,n2,n3,nv1,nv2 = self._get_density_functions(krho)
+            n0,n1,n2,n3,nv1,nv2, xi = self._get_density_functions(krho)
             dF_total = 0.0
             # Fhe functional is (up to a factor k_B T) the integral of Phi.
             # Phi is a function of the density functions, which are in turn
@@ -624,13 +998,13 @@ class FMTFunctional(Functional):
                 for alpha in range(3):
                     dphi = get_dphi(n0,n1,n2,n3,nv1,nv2,alpha)
                     dFk = self.grid.fft(dphi)*kweight*self.grid.kpoints[:,:,:,alpha] #USED TO BE: np.fft.fftn(-dphi[alph])*...
-                    dF = self.grid.ifft(dFk)
+                    dF = -self.grid.ifft(dFk)
                 dF_total += dF
             return dF_total/self.beta
     
     def value(self, krho, local=False):
         with log.section('(M)FMT', 3, timer='(M)FMT value'):
-            n0, n1, n2, n3, nv1, nv2 = self._get_density_functions(krho)        
+            n0, n1, n2, n3, nv1, nv2, xi = self._get_density_functions(krho)        
             phi = self.get_phi(n0, n1, n2, n3, nv1, nv2)
             if local:
                 return phi/self.beta
@@ -663,7 +1037,7 @@ class MFMTFunctional(FMTFunctional):
         #dphi = tmp0+tmp1+tmp2+tmp3
         tmp2 = (n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))
         tmp3 = -(2.0+n3*(n3-5.0))/(36.0*np.pi*n3**2*(1.0-n3)**3)-np.log(1.0-n3)/(18.0*np.pi*n3**3)
-        tmp3[n3<1e-3] = 2/(27*np.pi)
+        # tmp3[n3<1e-3] = 2/(27*np.pi)
         #avoid numerical instability in tmp3 at low n3 by imposing analytic limit
         dphi = tmp0+tmp1+tmp2*tmp3       
         return dphi
@@ -746,7 +1120,7 @@ class MFAFunctional(Functional):
         else:
             self.grid = grid
         self.potential = None
-        self.kpotantial = None
+        self.kpotential = None
 
     def copy(self, grid=None, copy_potential=True):
         if grid is None: grid = self.grid.copy()
@@ -784,7 +1158,7 @@ class MFAFunctional(Functional):
             os.makedirs(dn)
         np.save(fn, self.potential)
 
-    def generate_potential(self, ff, rmin, natom=1, limit_potential=0):
+    def generate_potential(self, ff, rmin, natom=1, limit_potential=0, **kwargs):
         """
             Calculate U(r) on the real-space grid
 
@@ -814,7 +1188,7 @@ class MFAFunctional(Functional):
                 self.potential[mask] = e
             self.kpotential = self.grid.fft(self.potential)#*self.grid.dr
     
-    def generate_potential_lj(self, sigma, epsilon, rmin=None):
+    def generate_potential_lj(self, sigma, epsilon, rmin=None, limit_potential=0, **kwargs):
         """
             Calculate U(r) on the real-space grid using the lennard jones potential with given epsilon and sigma parameters
 
@@ -825,14 +1199,14 @@ class MFAFunctional(Functional):
                 of the LJ potential, i.e. rmin=sigma
         """        
         if rmin is None: rmin = sigma
-        self.potential = np.zeros(self.grid.points.shape[:3])
+        self.potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
         mask = self.grid.points[:,:,:,3]>rmin
 
-        x = np.empty(self.grid.points.shape[:3])
+        x = np.zeros(self.grid.points.shape[:3])
         x[mask] = sigma/self.grid.points[:,:,:,3][mask]
         self.potential[mask] = 4*epsilon*(x[mask]**12-x[mask]**6)
 
-        self.kpotential = self.grid.fft(self.potential)
+        self.kpotential = self.grid.fft(self.potential)*self.grid.sigma_lanczos
 
     def derive(self, krho):
         """
@@ -858,6 +1232,32 @@ class MFAFunctional(Functional):
                 return 0.5*rho*self.derive(krho)
             else:
                 return 0.5*grid.integrate(rho*self.derive(krho))
+
+class YukawaMFAFunctional(MFAFunctional):
+
+    name = 'YUKAWA'
+
+    def __init__(self, grid):
+        self.grid = grid
+        self.potential = None
+        self.kpotential = None
+        self.tailcorrections = False
+    
+    def copy(self, grid=None):
+        if grid is None: grid = self.grid.copy()
+        YUK = YukawaMFAFunctional(grid)
+        if self.kpotential is not None:
+            YUK.kpotential = self.kpotential.copy()
+        return YUK
+    
+    def generate_kpotential(self, sigma, epsilon, rcut=12*angstrom, model='WCA'):
+        # print(self.grid.kpoints[:,:,:,3])
+        # print(sigma, epsilon)
+        self.kpotential = lj3dFT(self.grid.kpoints[:,:,:,3], sigma, epsilon, cutoff=rcut, model=model)*self.grid.sigma_lanczos
+
+    def derive(self, krho):
+        return self.grid.ifft(krho*self.kpotential)
+    
 
 
 class CoarsenedFunctional(MFAFunctional):
@@ -944,7 +1344,7 @@ class ExternalPotential(Functional):
         self.kpotential = self.grid.fft(self.potential)
 
     def set_temperature(self, temperature, **kwargs):
-        if self.natom == 1:
+        if self.natom == 1 or self.natom == 0:
             pass
         else:
             pos_str = 'pos_' if self.positive else ''
@@ -1055,17 +1455,18 @@ class WDAVFunctional(LDAFunctional):
 
     name = 'WDA-V'
     
-    def __init__(self, Rhs, grid, eos):
+    def __init__(self, Rhs, grid, eos, new=True):
         LDAFunctional.__init__(self, grid, eos)
         self.temperature = None
         self.R = Rhs
+        self.new = new
         # self.D = 2*Rhs
 
         # self._init_weight_function()
 
-        # self.Rfun = None
+        # self.FMTun = None
         # if callable(Rhs):
-        #     self.Rfun = Rhs
+        #     self.FMTun = Rhs
         # elif isinstance(Rhs, float):
         #     self.R = Rhs
         #     self.D = 2*Rhs
@@ -1075,15 +1476,15 @@ class WDAVFunctional(LDAFunctional):
     
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        # if self.Rfun is not None:
-        #     return type(self)(self.Rfun, grid, self.eos)
+        # if self.FMTun is not None:
+        #     return type(self)(self.FMTun, grid, self.eos)
         # else:
         return type(self)(self.R, grid, self.eos)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         LDAFunctional.set_temperature(self, temperature, **kwargs)
-        # if self.Rfun is not None:
-        #     self.R = self.Rfun(temperature, **kwargs)
+        # if self.FMTun is not None:
+        #     self.R = self.FMTun(temperature, **kwargs)
         self.R = Rhs
         self.D = 2*self.R
         self._init_weight_function()
@@ -1099,11 +1500,17 @@ class WDAVFunctional(LDAFunctional):
         the convolutions become simple products.
         """
         with log.section('WDA', 3, timer='WDA initialize'):
-            omega = 2.0*np.pi*self.grid.kpoints[:,:,:,3]*self.D
+            #NIEUW: omega gecorrigeerd
+            if self.new:
+                omega = self.grid.kpoints[:,:,:,3]*self.D
+            else:
+                omega = 2*np.pi*self.grid.kpoints[:,:,:,3]*self.D
             mask = ~np.isclose(omega,0)
             self.kw = np.zeros_like(omega, dtype=np.complex_)
             self.kw[mask] = 3*(np.sin(omega[mask])-omega[mask]*np.cos(omega[mask]))/omega[mask]**3
             self.kw[~mask] = 1.0
+            if self.new:
+                self.kw *= self.grid.sigma_lanczos
             #print('kw',self.kw)
 
     def _get_weighted_density(self, krho):
@@ -1134,7 +1541,7 @@ class WDAVFunctional(LDAFunctional):
                 return self.grid.integrate(phi)
 
 
-class WDACorrFunctional(Functional):
+class WDACorFMTunctional(Functional):
     """
         linear combination of 3 WDA functionals, each with their own EOS:
         
@@ -1149,18 +1556,19 @@ class WDACorrFunctional(Functional):
 
     name = 'CORR'
     
-    def __init__(self, Rhs, grid, mass, sigma, epsilon):
+    def __init__(self, Rhs, grid, mass, sigma, epsilon, new):
+        self.new = new
         self.temperature = None
-        self.Flj  = WDAVFunctional(Rhs, grid, ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon))
-        self.Fhs  = WDAVFunctional(Rhs, grid, CarnahanStarlingEOS(mass, Rhs))
-        self.Fmfa = WDAVFunctional(Rhs, grid, MFAEOS(mass, sigma, epsilon))
+        self.Flj  = WDAVFunctional(Rhs, grid, ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon), new=new)
+        self.Fhs  = WDAVFunctional(Rhs, grid, CarnahanStarlingEOS(mass, Rhs), new=new)
+        self.Fmfa = WDAVFunctional(Rhs, grid, MFAEOS(mass, sigma, epsilon),new=new)
 
     def copy(self, grid=None):
         if grid is None: grid = self.Flj.grid.copy()
-        # if self.Flj.Rfun is not None:
-        #     return type(self)(self.Flj.Rfun, grid, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon)
+        # if self.Flj.FMTun is not None:
+        #     return type(self)(self.Flj.FMTun, grid, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon)
         # else:
-        return type(self)(self.Flj.R, grid, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon)
+        return type(self)(self.Flj.R, grid, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon, self.new)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         self.temperature = temperature

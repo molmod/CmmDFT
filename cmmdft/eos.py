@@ -32,7 +32,10 @@ class EquationOfState(object):
     def compute_chempot(self, rho):
         kT = boltzmann*self.temperature
         return kT*np.log(self.wvl**3*rho) + self.derivative_excess_free_energy_volume(rho)
-
+    
+    def compute_excess_chempot(self, rho):
+        return self.derivative_excess_free_energy_volume(rho)
+    
     def compute_pressure(self, rho):
         kT = boltzmann*self.temperature
         return kT*rho + rho**2*self.derivative_excess_free_energy_particle(rho)
@@ -206,6 +209,14 @@ class EquationOfState(object):
         self.set_temperature(temp)
         rho = self.solve_densities_from_pressures([pressure])[0][0]
         return self.compute_chempot(rho)
+    
+    def calculate_excess_mu(self, temp, pressure):
+        """
+            Calculate the excess chemical potential from the pressure and temperature
+        """
+        self.set_temperature(temp)
+        rho = self.solve_densities_from_pressures([pressure])[0][0]
+        return self.compute_excess_chempot(rho)
         
 
 class SumOfEOS(EquationOfState):
@@ -527,12 +538,15 @@ class MFAEOS(EquationOfState):
     
 class MFMT_MFA_EOS(EquationOfState):
     
-    def __init__(self, mass, sigma, epsilon, a_fact = 1.0):
+    def __init__(self, mass, sigma, epsilon, a_fact = None):
         EquationOfState.__init__(self,mass)
         self.MFA = MFAEOS(mass, sigma=sigma, epsilon=epsilon)
         Rhs = lambda T : sigma*(1+0.2977*T*boltzmann/epsilon)/(1+0.33163*T*boltzmann/epsilon+0.0010477*(T*boltzmann/epsilon)**2)/2
         self.MFMT = CarnahanStarlingEOS(mass, Rhs)
-        self.a_fact = a_fact
+        if a_fact is None:
+            self.a_fact = 32*np.pi*epsilon*sigma**3/9
+        else:
+            self.a_fact = a_fact
         
     def set_temperature(self, temperature):
         EquationOfState.set_temperature(self, temperature)
@@ -546,8 +560,8 @@ class MFMT_MFA_EOS(EquationOfState):
     def derivative_excess_free_energy_particle(self, rho):
         return self.a_fact*self.MFA.derivative_excess_free_energy_particle(rho) + self.MFMT.derivative_excess_free_energy_particle(rho) 
 
-    def der_derivative_excess_free_energy_particle(self, rho):
-        return self.a_fact*self.MFA.der_derivative_excess_free_energy_particle(rho) + self.MFMT.der_derivative_excess_free_energy_particle(rho) 
+    def derivative2_excess_free_energy_particle(self, rho):
+        return self.a_fact*self.MFA.derivative2_excess_free_energy_particle(rho) + self.MFMT.derivative2_excess_free_energy_particle(rho) 
 
-    def der_der_derivative_excess_free_energy_particle(self, rho):
-        return self.a_fact*self.MFA.der_der_derivative_excess_free_energy_particle(rho) + self.MFMT.der_der_derivative_excess_free_energy_particle(rho) 
+    def derivative3_excess_free_energy_particle(self, rho):
+        return self.a_fact*self.MFA.derivative3_excess_free_energy_particle(rho) + self.MFMT.derivative3_excess_free_energy_particle(rho) 

@@ -79,7 +79,7 @@ class Program(object):
     def set_system(self, host, guest):
         self.system = System(host, guest)
     
-    def set_grid(self, npoints=None, spacing=0.25*angstrom):
+    def set_grid(self, npoints=None, spacing=0.25*angstrom, lanczos=False):
         '''This function sets up a grid for a given program with a specified number of points or spacing. npoints or spacing must be provided
             
             Parameters
@@ -93,7 +93,7 @@ class Program(object):
         '''
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
-        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing)
+        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, lanczos=lanczos)
     
     def init_free_energy(self, temperature):
         '''This function initializes the FreeEnergy object of a program at a given temperature.
@@ -290,7 +290,7 @@ class Program(object):
             self.split = True
     
     def solve(self, chempot, threshold=1e-6, method='hybrid', alpha_mix=0.1, nsteps=1000, maxphases=5, threshold_energy=10*kjmol, break_nstep=100,
-              Ninit=None, rewrite=False, energy_tracking=True, Initialization = None, m=10, delta=0.01, silent=False):
+              Ninit=None, rewrite=False, continue_solving=False, energy_tracking=True, Initialization = None, m=10, delta=0.01, silent=False):
         '''This function solves for the density profile at given a chemical potential and temperature
             
             Parameters
@@ -382,7 +382,7 @@ class Program(object):
 
             self.file_suffix = '_%7.5fkJmol_%7.5fK' %(chempot/kjmol,self.fener.temperature/kelvin)
             self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.file_suffix))
-            if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite:
+            if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite and not continue_solving:
                 log.dump('  skipping because solution found in file %s' %(self.rho_fn))
                 return
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
@@ -443,7 +443,8 @@ class Program(object):
                             np.save(self.rho_fn, rho)
                             rho_old = rho.copy()
                         except FloatingPointError:
-                            log.warning('THE CALCULATION OF THE DENSITY at chemical potential %7.5f kJ/mol and temperature %5.3f K and a correction factor of %0.3f HAS FAILED DUE TO A ---FloatingPointError---'%(chempot/kjmol, self.fener.temperature, correction_factor), label_section='Solve')
+                            log.warning('THE CALCULATION OF THE DENSITY at chemical potential %7.5f kJ/mol and temperature %5.3f K and a correction factor of %0.3f HAS FAILED DUE TO A ---FloatingPointError---\n encountered in %s'%(chempot/kjmol, self.fener.temperature, correction_factor,self.workdir), label_section='Solve')
+                            raise FloatingPointError('The calculation of the density has failed due to a FloatingPointError')
  
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):
         '''This function calculates the reference chemical potential by solving an adsorption isotherm and

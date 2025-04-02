@@ -13,7 +13,7 @@ from molmod.constants import boltzmann
 from molmod.units import angstrom, kjmol
 
 from .log import log
-from .functionals import FMTFunctional
+from .functionals import HardSphereFunctional
 from .tools import selection_sort
 
 __all__ = ['Picard', 'Anderson']
@@ -121,6 +121,8 @@ class Picard(object):
             if not hasattr(self, 'omega0'): self.omega0 = self.fener.track(chempot, rho, write=False)
             for part in self.fener.parts:
                 dF += part.derive(krho).real
+                # log.dump(f'{part.name}, {np.amin(ddF):0.4e}, {np.amax(ddF):0.4e}')
+
 
             rho_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity
             if np.any(rho_new<0): 
@@ -132,23 +134,18 @@ class Picard(object):
 
             #calculating the weighted densities from the FMT to calculate the alpha max and check certain conditions.
             #ADDED LOUIS: I don't understand the code below, doesn't n3_max just depend on the last part in parts and whether that is (M)FMT/WBII or not...
-            index = None
-            for partname in self.fener.parts:
-                if partname.name in ['FMT', 'MFMT', 'WBII']:
-                    index = partname
-                    break
-            if index is not None:
-                n3_max = np.max(index.get_n3(krho)).real
-                n3_max_new = np.max(index.get_n3(krho_new)).real
-            else:
-                if not hasattr(self, 'FMT'):
-                    if self.fener.system.guest.Rhs is None:
-                        self.fener.system.guest.compute_hardsphere_radius(self.fener.temperature)
-                    self.FMT = FMTFunctional(self.fener.system.guest.Rhs, self.grid)
-                n3_max = np.max(self.FMT.get_n3(krho)).real
-                n3_max_new = np.max(self.FMT.get_n3(krho_new)).real
+            if not hasattr(self, '_get_n3'):
+                if 'HardSphere' in self.fener.part_names:
+                    self._get_n3 = self.fener.part_dict['HardSphere'].get_n3
+                else:
+                    HS = HardSphereFunctional(self.fener.system.guest.Rhs, self.grid)
+                    HS.set_temperature(self.fener.temperature, self.fener.system.guest.Rhs)
+                    self._get_n3 = HS.get_n3
+            
+            n3_max = np.max(self._get_n3(krho)).real
+            n3_max_new = np.max(self._get_n3(krho_new)).real
 
-            alpha_max = np.min([abs((1-n3_max)/(n3_max_new - n3_max)), 1])
+            alpha_max = 0.9*np.min([abs((1-n3_max)/(n3_max_new - n3_max)), 1])
             
             min_pot = 0
             max_pot = 0
@@ -194,7 +191,7 @@ class Picard(object):
                     rho_temp_new = self.fener.beta*np.exp(-self.fener.beta*dF)*fugacity
                     return np.linalg.norm((rho_temp - rho_temp_new).reshape(-1,1), 2)
 
-                bounds = opt.Bounds(-0.9*alpha_max, 0.9*alpha_max)
+                bounds = opt.Bounds(0*alpha_max, 0.9*alpha_max)
                 alpha_opt_new = opt.minimize(calc_G_rho, [alpha_mix*alpha_max], bounds=bounds, method='SLSQP', options= {'ftol':1e-8}).x
 
                 tstop = time.perf_counter()

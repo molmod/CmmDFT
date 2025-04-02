@@ -208,7 +208,7 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
 
 
 class Grid(object):
-    def __init__(self, cell, npoints=None, spacing=0.25*angstrom):
+    def __init__(self, cell, npoints=None, spacing=0.25*angstrom, lanczos=False):
         """
             cell
                     an instance of a Yaff cell used for extracting the system dimensions.
@@ -226,6 +226,7 @@ class Grid(object):
         with log.section('GRID', 2, timer='Initializing'):
             log.dump('Initializing grid')
             self.cell = cell
+            self.lanczos = lanczos
             assert self.cell.nvec==3
             if npoints is None:
                 lengths, angles = self.cell.parameters
@@ -262,8 +263,9 @@ class Grid(object):
             self.kpoints = np.zeros(self.npoints+[4])
             kgrid = [np.fft.fftfreq(self.npoints[alpha],d=self.spacings[alpha]) for alpha in range(3)]
             gridpoints = np.meshgrid(kgrid[0],kgrid[1],kgrid[2], indexing='ij')
+            #NIEUWE VERANDERING: 2*pi toegevoegd bij de kpoints
             for alpha in range(3):
-                self.kpoints[:,:,:,alpha] = gridpoints[alpha] #TODO: (louis) could be condensed using np.einsum('aijk->ijka', gridpoints)
+                self.kpoints[:,:,:,alpha] = 2*np.pi*gridpoints[alpha] #TODO: (louis) could be condensed using np.einsum('aijk->ijka', gridpoints)
             self.kpoints[:,:,:,3] = np.sqrt(self.kpoints[:,:,:,0]**2+self.kpoints[:,:,:,1]**2+self.kpoints[:,:,:,2]**2)
             # Indication of even and odd grid points, even means sum of indexes is even
             #ADDED Louis: commented out lines below for testing
@@ -274,11 +276,18 @@ class Grid(object):
             #ADDED Louis: something needed in the fft functions defined below
             self.scalprod = self.kpoints[:,:,:,0]*self.spacings[0]*self.npoints[0] + self.kpoints[:,:,:,1]*self.spacings[1]*self.npoints[1] + self.kpoints[:,:,:,2]*self.spacings[2]*self.npoints[2]
 
+            # Lanczos kernel for the Fourier transform, if needed to mitigate gibbs phenomenon in yukawa potential and weightfunctions
+            if lanczos:
+                kcut = 1/np.array(self.spacings)
+                self.sigma_lanczos = np.sinc(self.kpoints[:,:,:,0]/kcut[0])*np.sinc(self.kpoints[:,:,:,1]/kcut[1])*np.sinc(self.kpoints[:,:,:,2]/kcut[2])
+            else:
+                self.sigma_lanczos = np.ones(self.npoints)
+
     def supercell(self, supercell):
         supercell = np.asarray(supercell)
         sup_cell = Cell(self.cell.rvecs*supercell)
         npoints = self.npoints*supercell
-        return Grid(sup_cell, npoints=list(npoints))
+        return Grid(sup_cell, npoints=list(npoints), lanczos=self.lanczos)
 
     def copy(self):
         return Grid(self.cell, npoints=self.npoints)
@@ -286,16 +295,8 @@ class Grid(object):
     def integrate(self, data):
         return np.sum(data)*self.dr
     
-    def fft(self, rdata, norm=True):
-        if norm:
-            f = np.fft.fftn(rdata, norm='forward')*np.exp(1j*np.pi*self.scalprod)
-        else:
-            f = np.fft.fftn(rdata)
-        return f
+    def fft(self, rdata):
+        return np.fft.fftn(rdata, norm='forward')*np.exp(1j*np.pi*self.scalprod)
     
-    def ifft(self, fdata, norm=True):
-        if norm:
-            r = np.fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm='forward')
-        else:
-            r = np.fft.ifftn(fdata)
-        return r
+    def ifft(self, fdata):
+        return np.fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm='forward')

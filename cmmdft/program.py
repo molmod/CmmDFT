@@ -79,7 +79,7 @@ class Program(object):
     def set_system(self, host, guest):
         self.system = System(host, guest)
     
-    def set_grid(self, npoints=None, spacing=0.25*angstrom, lanczos=False):
+    def set_grid(self, npoints=None, spacing=0.25*angstrom, lanczos=False, new=False):
         '''This function sets up a grid for a given program with a specified number of points or spacing. npoints or spacing must be provided
             
             Parameters
@@ -93,7 +93,7 @@ class Program(object):
         '''
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
-        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, lanczos=lanczos)
+        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, lanczos=lanczos, new=new)
     
     def init_free_energy(self, temperature):
         '''This function initializes the FreeEnergy object of a program at a given temperature.

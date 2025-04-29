@@ -208,7 +208,7 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
 
 
 class Grid(object):
-    def __init__(self, cell, npoints=None, spacing=0.25*angstrom, lanczos=False):
+    def __init__(self, cell, npoints=None, spacing=0.25*angstrom, lanczos=False, new=False):
         """
             cell
                     an instance of a Yaff cell used for extracting the system dimensions.
@@ -278,7 +278,7 @@ class Grid(object):
 
             # Lanczos kernel for the Fourier transform, if needed to mitigate gibbs phenomenon in yukawa potential and weightfunctions
             if lanczos:
-                kcut = 1/np.array(self.spacings)
+                kcut = 2*np.pi/np.array(self.spacings)
                 self.sigma_lanczos = np.sinc(self.kpoints[:,:,:,0]/kcut[0])*np.sinc(self.kpoints[:,:,:,1]/kcut[1])*np.sinc(self.kpoints[:,:,:,2]/kcut[2])
             else:
                 self.sigma_lanczos = np.ones(self.npoints)
@@ -296,7 +296,12 @@ class Grid(object):
         return np.sum(data)*self.dr
     
     def fft(self, rdata):
-        return np.fft.fftn(rdata, norm='forward')*np.exp(1j*np.pi*self.scalprod)
+        # return np.fft.fftn(rdata, norm='forward')*np.exp(1j*np.pi*self.scalprod)
+        return np.fft.fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
+        # return np.fft.fftn(rdata, norm='backward')
     
     def ifft(self, fdata):
-        return np.fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm='forward')
+        # return np.fft.ifftn(fdata, norm='backward').real
+        # return np.fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm='forward')
+        return np.fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None)*np.prod(self.npoints)
+

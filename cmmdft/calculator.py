@@ -162,13 +162,12 @@ class Calculator(object):
         Returns a dictionary containing all the chemical potentials for which the density is calculated for a given temperature
         """
 
-        chempots = []
-        with open(self.workdir / f"name_file_{temperature:#7.5f}K.txt") as n:
-            for x in n:
-                l = x.split(",")
-                chempots.append(float(l[1])*kjmol)
-        
-        return chempots
+        numeric_const_pattern = '[-+]? (?: (?: \d* \. \d+ ) | (?: \d+ \.? ) )(?: [Ee] [+-]? \d+ ) ?'
+        rx = re.compile(numeric_const_pattern, re.VERBOSE)
+
+        dens_list = [f.name for f in self.workdir.iterdir() if f.name.startswith('rho') and f.name.endswith(f'{temperature:#7.5f}K.npy')]
+        chempots = np.array([float(rx.findall(f)[0]) for f in dens_list])*kjmol
+        return selection_sort(chempots)
 
     def get_helium_fraction(self, temperature):
         """
@@ -198,13 +197,10 @@ class Calculator(object):
         
         Parameters
         ----------
-        Temps
-            A list of temperatures at which the loadings of all the calculated densities are to be saved in a
-        csv file. If Temps is not provided, the function will look for files in the working directory that
-        start with 'name_file' and extract the temperatures from their names.
-        chempot_dict
-            A dictionary containing the chemical potentials for each temperature at which the densities are
-        calculated. This is optional, but it can be used to specify which loadings need to be saved.
+        temperature
+            The temperature in kelvin
+        chempots
+            An array of the chemical potentials which will be outputted in the csv file
         pressure, optional
             A boolean indicating whether to save the loadings vs pressure instead of chemical potential. If
         True, an equation of state object must be provided as well.
@@ -783,14 +779,8 @@ class Calculator(object):
             beta = 1/temp/boltzmann            
 
             # A list is created of chemical potentials lower than the input, over this list the later integration of n is carried out     
-            if chempots is None:           #if no list of chemical potentials is provided it is found through the name_file
-                nf_fn = self.workdir / f'name_file_{temp:#7.5f}K.txt'
-                list_chems = []
-                with open(nf_fn) as f:
-                    lines = f.readlines()
-                    for line in lines:
-                        list_chems.append(float(line.translate({ord('\n'): None}).split(',')[-1]))
-                list_chems = selection_sort(list_chems)
+            if chempots is None:
+                list_chems = self.get_chemical_potential(temp)
                 ind = list_chems.index(float("%4.5f"%(chempot/kjmol))) + 1
                 chems = np.array(list_chems[:ind])*kjmol
             else:

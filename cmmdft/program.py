@@ -103,7 +103,7 @@ class Program(object):
     def set_system(self, host, guest):
         self.system = System(host, guest)
     
-    def set_grid(self, npoints=None, spacing=0.25*angstrom, lanczos=False, new=False):
+    def set_grid(self, npoints=None, spacing=0.25*angstrom):
         '''This function sets up a grid for a given program with a specified number of points or spacing. npoints or spacing must be provided
             
             Parameters
@@ -117,7 +117,7 @@ class Program(object):
         '''
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
-        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, lanczos=lanczos, new=new)
+        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing)
     
     def init_free_energy(self, temperature):
         '''This function initializes the FreeEnergy object of a program at a given temperature.
@@ -381,12 +381,8 @@ class Program(object):
         '''
         # calculate the reference chemical potential
         with log.section('PROGRAM', 1, timer='Initializing mu_ref'):
-            temp = self.fener.temperature
-            #First solve an isotherm at low pressure and find the mu_ref
             assert 'HybExtPot' in self.fener.part_names
-
             log.dump('Calculating the reference chemical potential through calculating the adsorption isotherm')
-            temp = self.fener.temperature
             fn=1e-6
             numbers = np.empty_like(chempots)
             for e, chempot in enumerate(chempots):

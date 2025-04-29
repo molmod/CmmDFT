@@ -276,7 +276,7 @@ class FreeEnergy(object):
             lda = LDAFunctional(self.temperature, self.grid, eos)
         self.add_part(lda)
     
-    def add_wdav(self, eos, new=False, **kwargs):
+    def add_wdav(self, eos, **kwargs):
         """
             Adds a weighted density approximation functional
 
@@ -290,7 +290,7 @@ class FreeEnergy(object):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
             
-            wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos, new=new)
+            wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos)
         self.add_part(wda)
 
     def add_hard_sphere(self, change='None',version='MFMT'):

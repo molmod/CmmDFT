@@ -6,7 +6,7 @@ import scipy.optimize as opt
 import getpass, datetime
 import json
 import itertools
-from gemmi import cif
+# from gemmi import cif
 
 from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom, amu
 from molmod.constants import boltzmann

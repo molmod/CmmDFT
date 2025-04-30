@@ -213,15 +213,11 @@ class Program(object):
         """
         self.calc_distance()
         range_mask = self.dis<range_cutoff
-        if "ExtPot" in self.fener.part_names:
-            index = self.fener.part_names.index("ExtPot")
-        elif "EffExtPot" in self.fener.part_names:
-            index = self.fener.part_names.index("EffExtPot")
-        elif "EffExtPotTay" in self.fener.part_names:
-            index = self.fener.part_names.index("EffExtPotTay")
-        elif "HybExtPot" in self.fener.part_names:
-            index = self.fener.part_names.index("HybExtPot")
-        else:
+        index = None
+        for partname in self.fener.part_names:
+            if 'ExtPot' in partname:
+                index = self.fener.part_names.index(partname)
+        if index is None:
             log.warning('The regions of a nanoporous material can only be calculated if an external potential is defined', label_section='calc_regions')
         epot_data = self.fener.parts[index].potential
         crit = np.amin(epot_data) - energy_cutoff*np.amin(epot_data)

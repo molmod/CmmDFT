@@ -293,7 +293,7 @@ class FreeEnergy(object):
             wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos)
         self.add_part(wda)
 
-    def add_hard_sphere(self, change='None',version='MFMT'):
+    def add_hard_sphere(self,version='MFMT'):
         """
             Adds a hard sphere repulsion functional of various types
 
@@ -307,7 +307,7 @@ class FreeEnergy(object):
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
-            HardSphere = HardSphereFunctional(self.system.guest.Rhs, self.grid, change=change,version=version)
+            HardSphere = HardSphereFunctional(self.system.guest.Rhs, self.grid, version=version)
             self.add_part(HardSphere)
     
     def add_mean_field(self, tailcorrections=False, **kwargs):

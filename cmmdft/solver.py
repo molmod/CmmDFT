@@ -25,7 +25,7 @@ class Solver(object):
 
     name = 'SOLVER'
 
-    def __init__(self, grid, fener, nsteps=250, threshold=1e-6, criterion='RIUE', a_tol=1e-6, r_tol=1e-4):
+    def __init__(self, program, nsteps=250, threshold=1e-6, criterion='RIUE', a_tol=1e-6, r_tol=1e-4):
         """
         Initialize the solver with the given parameters.
         Parameters:
@@ -49,8 +49,8 @@ class Solver(object):
         NotImplementedError
             If the 'RES_RATIO' criterion is selected, as it is not implemented yet.
         """
-        self.grid = grid
-        self.fener = fener
+        self.grid = program.grid
+        self.fener = program.fener
         self.nsteps = nsteps
         assert criterion.lower() in ['riue', 'res', 'res_ratio'], 'Criterion must be either RIUE (relative integrated unsigned error), RES (Residual error) or RES_RATIO (Residual error ratio)'
         self.criterion = criterion
@@ -60,9 +60,9 @@ class Solver(object):
             threshold = 1
 
         self.mask = np.ones(self.grid.npoints, dtype=bool)
-        for part in fener.parts:
+        for part in self.fener.parts:
             if 'ExtPot' in part.name:
-                self.mask = np.where(part.potential>50*boltzmann*fener.temperature, False, True)
+                self.mask = np.where(part.potential>50*boltzmann*self.fener.temperature, False, True)
             
 
         self.threshold = threshold
@@ -195,7 +195,7 @@ class Solver(object):
             self._initiate_solving(chempot)
             tstart = time.perf_counter()
 
-            krho = np.fft.fftn(rho)*self.grid.dr
+            krho = self.grid.fft(rho)
             Grho = self.get_new_rho(rho, krho, self.fugacity)
 
             for istep in range(self.nsteps):
@@ -208,7 +208,7 @@ class Solver(object):
                     log.dump("new loading is infinite! PICARD failed, aborting")
                     raise FloatingPointError
 
-                krho_new = np.fft.fftn(rho_new)*self.grid.dr
+                krho_new = self.grid.fft(rho_new)
                 Grho_new = self.get_new_rho(rho, krho_new, self.fugacity)
 
                 N_new = self.grid.integrate(rho_new).real
@@ -236,7 +236,7 @@ class Picard(Solver):
 
     name = 'PICARD'
 
-    def __init__(self, grid, fener, nsteps=250, 
+    def __init__(self, program, nsteps=250, 
                  alpha_mix=0.1, method='hybrid', break_nstep = 80, correction_factor=1, thresh=1*kjmol, **kwargs):
         '''This function initializes the solver object for the program.
         
@@ -260,7 +260,7 @@ class Picard(Solver):
         thresh
             Threshold for choosing the SLSQP solver in the hybrid solver        
         '''
-        super().__init__(grid, fener, nsteps, **kwargs)
+        super().__init__(program, nsteps, **kwargs)
 
         self.alpha_mix = alpha_mix
         self.correction_factor = correction_factor
@@ -311,7 +311,7 @@ class Picard(Solver):
 
     def update_rho_hybrid(self, rho, krho, Grho):
         with log.section(self.name, self.log_level, timer='Update rho'): 
-            krho_new = np.fft.fftn(Grho)*self.grid.dr
+            krho_new = self.grid.fft(Grho)
 
             #calculating the weighted densities from the FMT to calculate the alpha max and check certain conditions
             if not hasattr(self, '_get_n3'):
@@ -386,7 +386,7 @@ class Anderson(Picard):
 
     name = 'ANDERSON'
 
-    def __init__(self, grid, fener, nsteps=100, method='hybridanderson', m=5, delta=0.01, **kwargs):
+    def __init__(self, program, nsteps=100, method='hybridanderson', m=5, delta=0.01, **kwargs):
         """
         Initialize the solver with the given parameters.
         Parameters:
@@ -406,7 +406,7 @@ class Anderson(Picard):
             Additional keyword arguments passed to the superclass initializer.
         """
         
-        super().__init__(grid, fener, nsteps, **kwargs)
+        super().__init__(program, nsteps, **kwargs)
         self.solve = super(Picard, self).solve
         self.Anderson_method = method
         self.m = m
@@ -431,7 +431,7 @@ class Anderson(Picard):
             if self.curr_step == 1 or self.curr_step == 2:
                 rho_new = self.update_rho_hybrid(rho, krho, Grho) 
 
-                krho_new = np.fft.fftn(rho)*self.grid.dr
+                krho_new = self.grid.fft(rho)
                 Grho_new = self.get_new_rho(rho, krho_new, self.fugacity)
                 f = np.linalg.norm(Grho_new - rho_new)**2     
 
@@ -488,7 +488,7 @@ class Fire(Solver):
 
     name = 'FIRE'
 
-    def __init__(self, grid, fener, nsteps=100, method='abc-fire', alpha=0.15, dt=0.002, **kwargs):
+    def __init__(self, program, nsteps=100, method='abc-fire', alpha=0.15, dt=0.002, **kwargs):
         """
         Initialize the solver with the given parameters.
         Parameters:
@@ -508,7 +508,7 @@ class Fire(Solver):
             Additional keyword arguments to be passed to the parent class initializer.
         """
         raise NotImplementedError('The FIRE solver is not bugfixed yet')
-        super().__init__(grid, fener, nsteps, **kwargs)
+        super().__init__(program, nsteps, **kwargs)
 
         self.method = method
         self.alpha0 = self.alpha = alpha

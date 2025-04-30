@@ -288,7 +288,7 @@ class Picard(Solver):
             
         """
         self.log_level = log_level
-        with log.section(self.name, self.log_level, timer=self.name):
+        with log.section(self.name, self.log_level, timer=None):
             while self.correction_factor >= 1/4:
                 try:
                     return super().solve(chempot, rho, self.log_level)

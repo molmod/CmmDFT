@@ -151,29 +151,30 @@ class FreeEnergy(object):
             
         '''
         #ideal gas contribution
-        N = self.grid.integrate(rho).real
-        rho_reg = rho.copy()
-        rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
-        #print('Minimum density in rho_reg {:e}'.format(np.min(self.system.guest.wavelength(self.temperature)**3*rho_reg)))
-        Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0)).real/self.beta
-        G = Fid - chempot*N
-        line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, (-chempot*N/unit), Fid/unit)
-        krho = self.grid.fft(rho)#*self.grid.dr
-        for part in self.parts:
-            Fpart = part.value(krho).real
-            if print_out: print(part.name, round(Fpart/kjmol,2))
-            G += Fpart
-            line += "\t% .6e" %(Fpart/unit)
-        line += "\t% .6e" %(G/unit)
-        if fn is None:
-            file = self.fn_tracking
-        else:
-            file = fn
-        if write:
-            with open(file, 'a') as f:
-                print(line, file=f)
-            self.tracking_step += 1
-        return G
+        with log.section('FREEENER', 2, timer='Tracking'):        
+            N = self.grid.integrate(rho).real
+            rho_reg = rho.copy()
+            rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
+            #print('Minimum density in rho_reg {:e}'.format(np.min(self.system.guest.wavelength(self.temperature)**3*rho_reg)))
+            Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0)).real/self.beta
+            G = Fid - chempot*N
+            line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, (-chempot*N/unit), Fid/unit)
+            krho = self.grid.fft(rho)#*self.grid.dr
+            for part in self.parts:
+                Fpart = part.value(krho).real
+                if print_out: print(part.name, round(Fpart/kjmol,2))
+                G += Fpart
+                line += "\t% .6e" %(Fpart/unit)
+            line += "\t% .6e" %(G/unit)
+            if fn is None:
+                file = self.fn_tracking
+            else:
+                file = fn
+            if write:
+                with open(file, 'a') as f:
+                    print(line, file=f)
+                self.tracking_step += 1
+            return G
     
     def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e6*kjmol, positive=False, rewrite=False, load_fn=None, save_fn=None,
                                 **kwargs):
@@ -452,7 +453,7 @@ class HardSphereFunctional(Functional):
     
     name = 'HardSphere'
     
-    def __init__(self, Rhs, grid, version='MFMT', change='None'):
+    def __init__(self, Rhs, grid, version='MFMT'):
         """
         **Arguments:**
 
@@ -467,11 +468,10 @@ class HardSphereFunctional(Functional):
         self.grid = grid  
         self.R = Rhs
         self.version = version
-        self.change = change
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        return type(self)(self.R, grid)
+        return type(self)(self.R, grid, self.version)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         self.temperature = temperature
@@ -676,30 +676,37 @@ class HardSphereFunctional(Functional):
         if self.version in ['FMT', 'MFMT', 'aFMT', 'aMFMT']:
             return 1/(1.0-n3)
         elif self.version in ['WBII', 'aWBII']:
-            return ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3))
+            # return ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3))
+            return np.where(n3<=1e-8,(1+ n3**2/9)/(1-n3), ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3)))
                 
     def _dphi2dn(self, n3):
         if self.version in ['FMT', 'MFMT', 'aFMT', 'aMFMT']:
             return 1/(1-n3)**2
         elif self.version in ['WBII', 'aWBII']:
-            return -2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2)
+            # return -2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2)
+            return np.where(n3<=1e-8,(1+ 2*n3/9 + n3**2/18)/(1-n3)**2,-2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2))
 
     def _phi3(self, n3):
         if self.version in ['FMT', 'aFMT']:
             return 1/(24*np.pi*(1-n3)**2)
         elif self.version in ['MFMT', 'aMFMT']:
-            return (n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2)
+            # return (n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2)
+            return np.where(n3<=1e-8,(1.0-2*n3/9-n3**2/18)/(24*np.pi*(1-n3)**2),(n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2))
         elif self.version in ['WBII', 'aWBII']:
-            return -2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2)
+            # return -2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2)
+            return np.where(n3<=1e-8,(1-4*n3/9+n3**2/18)/(24*np.pi*(1-n3)**2),-2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2))
 
     def _dphi3dn(self, n3):
         if self.version in ['FMT', 'aFMT']:
             return 1/(12*np.pi*(1-n3)**3)
         elif self.version in ['MFMT', 'aMFMT']:
-            return -(n3*(2-5*n3+n3**2)+2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
+            # return -(n3*(2-5*n3+n3**2)+2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
+            return np.where(n3<=1e-8,(8/3-0.5*n3-0.1*n3**2)/(36*np.pi*(1-n3)**3),-(n3*(2-5*n3+n3**2)+2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3))
         elif self.version in ['WBII', 'aWBII']:
-            return (2*n3-5*n3**2+6*n3**3-n3**4 + 2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
+            # return (2*n3-5*n3**2+6*n3**3-n3**4 + 2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
+            return np.where(n3<=1e-8,(7/3-n3/2+n3**2/10)/(36*np.pi*(1-n3)**3),(2*n3-5*n3**2+6*n3**3-n3**4 + 2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3))
     
+  
 
 class MFAFunctional(Functional):
     """
@@ -727,13 +734,12 @@ class MFAFunctional(Functional):
         self.potential = None
         self.kpotential = None
 
-    def copy(self, grid=None, copy_potential=True):
+    def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        cp = type(self)(grid, self.tailcorrections, self.repetitions)
-        if copy_potential and self.potential is not None:
-            cp.potential = self.potential.copy()
-            cp.kpotential = self.kpotential.copy()
-        return cp
+        mfa = type(self)(grid, self.tailcorrections, self.repetitions)
+        mfa.potential = self.potential.copy()
+        mfa.kpotential = self.kpotential.copy()
+        return mfa
 
     def load_potential(self, fn):
         self.potential = np.load(fn)
@@ -941,8 +947,12 @@ class ExternalPotential(Functional):
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        return ExternalPotential(grid, self.natom, self.ff, self.epot_dr, self.positive, self.limit_potential, self.degree)
-
+        extpot = type(self)(grid, self.natom, self.ff, self.epot_dr, self.positive, self.limit_potential, self.degree)
+        if self.potential is not None:
+            extpot.potential = self.potential.copy()
+            extpot.kpotential = self.kpotential.copy()
+        return extpot
+    
     def load_potential(self, fn):
         self.potential = np.load(fn)
         assert self.grid.points.shape[:3]==self.potential.shape, f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {self.potential.shape}'

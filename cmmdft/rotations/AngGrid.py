@@ -29,6 +29,8 @@ from .basegrid import Grid
 
 import os.path
 
+import os
+
 import numpy as np
 
 # Lebedev dictionary for converting number of grid points (keys) to grid's degrees (values)

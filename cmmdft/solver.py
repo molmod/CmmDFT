@@ -25,7 +25,7 @@ class Solver(object):
 
     name = 'SOLVER'
 
-    def __init__(self, program, nsteps=250, threshold=1e-6, criterion='RIUE', a_tol=1e-6, r_tol=1e-4):
+    def __init__(self, program, nsteps=250, threshold=1e-6, criterion='RIUE', a_tol=1e-6, r_tol=1e-4, min_iter=1):
         """
         Initialize the solver with the given parameters.
         Parameters:
@@ -68,7 +68,7 @@ class Solver(object):
         self.threshold = threshold
         self.a_tol = a_tol
         self.r_tol = r_tol
-        self.min_iter = 1
+        self.min_iter = min_iter
         self.iphase = 0  
         self.log_level = 2
         self.curr_step = 0
@@ -100,7 +100,7 @@ class Solver(object):
         array-like
             Updated density distribution.
         """
-        with log.section('PICARD', self.log_level, timer='Update rho'):
+        with log.section('PICARD', self.log_level, timer='new rho'):
             dF =  np.zeros(self.grid.npoints)
             for part in self.fener.parts:
                 ddf = part.derive(krho).real
@@ -122,7 +122,7 @@ class Solver(object):
         """
         Check the convergence of the solver.
         """
-        with log.section(self.name, self.log_level, timer=None):
+        with log.section(self.name, self.log_level, timer='Convergence check'):
             CRIT = False
 
             self.IUE = self.grid.integrate(np.abs(rho_new-rho)).real
@@ -288,8 +288,8 @@ class Picard(Solver):
             
         """
         self.log_level = log_level
-        with log.section(self.name, self.log_level, timer=self.name):
-            self.correction_factor = 1
+        self.correction_factor = 1
+        with log.section(self.name, self.log_level, timer=None):
             while self.correction_factor >= 1/4:
                 try:
                     return super().solve(chempot, rho, self.log_level)
@@ -311,7 +311,7 @@ class Picard(Solver):
             return rho_new
 
     def update_rho_hybrid(self, rho, krho, Grho):
-        with log.section(self.name, self.log_level, timer='Update rho'): 
+        with log.section(self.name, self.log_level, timer='Update rho_hyb'): 
             krho_new = self.grid.fft(Grho)
 
             #calculating the weighted densities from the FMT to calculate the alpha max and check certain conditions
@@ -489,7 +489,7 @@ class Fire(Solver):
 
     name = 'FIRE'
 
-    def __init__(self, grid, fener, nsteps=100, method='abc-fire', alpha=0.15, dt=0.002, **kwargs):
+    def __init__(self, program, nsteps=100, method='abc-fire', alpha=0.15, dt=0.002, **kwargs):
         """
         Initialize the solver with the given parameters.
         Parameters:
@@ -509,7 +509,7 @@ class Fire(Solver):
             Additional keyword arguments to be passed to the parent class initializer.
         """
         raise NotImplementedError('The FIRE solver is not bugfixed yet')
-        super().__init__(grid, fener, nsteps, **kwargs)
+        super().__init__(program, nsteps, **kwargs)
 
         self.method = method
         self.alpha0 = self.alpha = alpha

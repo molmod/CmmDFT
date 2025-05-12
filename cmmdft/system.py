@@ -208,7 +208,7 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
 
 
 class Grid(object):
-    def __init__(self, cell, npoints=None, spacing=0.25*angstrom, lanczos=False, new=False):
+    def __init__(self, cell, npoints=None, spacing=0.25*angstrom):
         """
             cell
                     an instance of a Yaff cell used for extracting the system dimensions.
@@ -226,7 +226,6 @@ class Grid(object):
         with log.section('GRID', 2, timer='Initializing'):
             log.dump('Initializing grid')
             self.cell = cell
-            self.lanczos = lanczos
             assert self.cell.nvec==3
             if npoints is None:
                 lengths, angles = self.cell.parameters
@@ -277,17 +276,15 @@ class Grid(object):
             self.scalprod = self.kpoints[:,:,:,0]*self.spacings[0]*self.npoints[0] + self.kpoints[:,:,:,1]*self.spacings[1]*self.npoints[1] + self.kpoints[:,:,:,2]*self.spacings[2]*self.npoints[2]
 
             # Lanczos kernel for the Fourier transform, if needed to mitigate gibbs phenomenon in yukawa potential and weightfunctions
-            if lanczos:
-                kcut = 2*np.pi/np.array(self.spacings)
-                self.sigma_lanczos = np.sinc(self.kpoints[:,:,:,0]/kcut[0])*np.sinc(self.kpoints[:,:,:,1]/kcut[1])*np.sinc(self.kpoints[:,:,:,2]/kcut[2])
-            else:
-                self.sigma_lanczos = np.ones(self.npoints)
+            kcut = 2*np.pi/np.array(self.spacings)
+            self.sigma_lanczos = np.sinc(self.kpoints[:,:,:,0]/kcut[0])*np.sinc(self.kpoints[:,:,:,1]/kcut[1])*np.sinc(self.kpoints[:,:,:,2]/kcut[2])
+
 
     def supercell(self, supercell):
         supercell = np.asarray(supercell)
         sup_cell = Cell(self.cell.rvecs*supercell)
         npoints = self.npoints*supercell
-        return Grid(sup_cell, npoints=list(npoints), lanczos=self.lanczos)
+        return Grid(sup_cell, npoints=list(npoints))
 
     def copy(self):
         return Grid(self.cell, npoints=self.npoints)
@@ -296,12 +293,8 @@ class Grid(object):
         return np.sum(data)*self.dr
     
     def fft(self, rdata):
-        # return np.fft.fftn(rdata, norm='forward')*np.exp(1j*np.pi*self.scalprod)
         return np.fft.fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
-        # return np.fft.fftn(rdata, norm='backward')
     
     def ifft(self, fdata):
-        # return np.fft.ifftn(fdata, norm='backward').real
-        # return np.fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm='forward')
         return np.fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None)*np.prod(self.npoints)
 

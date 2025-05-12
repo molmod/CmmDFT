@@ -52,6 +52,7 @@ class FreeEnergy(object):
         for part_name in self.part_names:
             fenercopy.part_names.append(part_name)
         if hasattr(self, 'epot_fn'): fenercopy.epot_fn = self.epot_fn
+        fenercopy.set_temperature(self.temperature)
         return fenercopy
     
     def set_temperature(self, temperature, **kwargs):
@@ -150,31 +151,32 @@ class FreeEnergy(object):
             
         '''
         #ideal gas contribution
-        N = self.grid.integrate(rho).real
-        rho_reg = rho.copy()
-        rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
-        #print('Minimum density in rho_reg {:e}'.format(np.min(self.system.guest.wavelength(self.temperature)**3*rho_reg)))
-        Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0)).real/self.beta
-        G = Fid - chempot*N
-        line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, (-chempot*N/unit), Fid/unit)
-        krho = self.grid.fft(rho)#*self.grid.dr
-        for part in self.parts:
-            Fpart = part.value(krho).real
-            if print_out: print(part.name, round(Fpart/kjmol,2))
-            G += Fpart
-            line += "\t% .6e" %(Fpart/unit)
-        line += "\t% .6e" %(G/unit)
-        if fn is None:
-            file = self.fn_tracking
-        else:
-            file = fn
-        if write:
-            with open(file, 'a') as f:
-                print(line, file=f)
-            self.tracking_step += 1
-        return G
+        with log.section('FREEENER', 2, timer='Tracking'):        
+            N = self.grid.integrate(rho).real
+            rho_reg = rho.copy()
+            rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
+            #print('Minimum density in rho_reg {:e}'.format(np.min(self.system.guest.wavelength(self.temperature)**3*rho_reg)))
+            Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0)).real/self.beta
+            G = Fid - chempot*N
+            line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, (-chempot*N/unit), Fid/unit)
+            krho = self.grid.fft(rho)#*self.grid.dr
+            for part in self.parts:
+                Fpart = part.value(krho).real
+                if print_out: print(part.name, round(Fpart/kjmol,2))
+                G += Fpart
+                line += "\t% .6e" %(Fpart/unit)
+            line += "\t% .6e" %(G/unit)
+            if fn is None:
+                file = self.fn_tracking
+            else:
+                file = fn
+            if write:
+                with open(file, 'a') as f:
+                    print(line, file=f)
+                self.tracking_step += 1
+            return G
     
-    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e6*kjmol, positive=False, rewrite=False, fn=None,
+    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e6*kjmol, positive=False, rewrite=False, load_fn=None, save_fn=None,
                                 **kwargs):
         '''The `add_external_potential` function adds an external potential contribution for spherical particles in a system.
             
@@ -199,21 +201,21 @@ class FreeEnergy(object):
             be saved in the work directory with the name epot.npy.
         
         '''
-        with log.section('FREEENER', 2, timer='ExtPot init'):
+        with log.section('FREEENER', 2, timer='Initializing'):
             log.dump('Initializing external potential')
 
-            if isinstance(self.system.host, EmptyHost):
-                assert fn is not None, 'fn must be a filename of an external potential'
-                assert str(fn).endswith('.npy'), 'fn must be a filename of an external potential'
-                assert os.path.isfile(fn), f'fn must be a filename of an external potential, {fn} does not exist'
-                fn = Path(fn)
+            if load_fn is not None:
+                assert str(load_fn).endswith('.npy'), 'fn must be a filename of an external potential'
+                assert os.path.isfile(load_fn), f'fn must be a filename of an external potential, {load_fn}'
+                fn = Path(load_fn)
                 epot_dr = fn.parent
                 epot = ExternalPotential(self.grid, 0, None, epot_dr, positive=positive, **kwargs)
+                log.dump('loading external potential from %s' %fn)
+                epot.load_potential(fn)  
             else:
-                if fn is not None:
-                    assert str(fn).endswith('.npy'), 'fn must be a filename of an external potential'
-                    fn = Path(fn)
-                    epot_dr = fn.parent
+                if save_fn is not None:
+                    fn = Path(save_fn)
+                    epot_dr = fn.parent            
                 else:
                     pos_str = 'pos_' if positive else ''
                     epot_dr = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] 
@@ -227,10 +229,10 @@ class FreeEnergy(object):
                         
                     else:
                         fn = epot_dr / f'{pos_str}epot.npy'
-                #create a symlink to the potential directory so everything is in one place
-                sym_fn = self.workdir / 'ExtPots'
-                if not sym_fn.is_symlink():
-                    sym_fn.symlink_to(epot_dr.absolute())    
+                    #create a symlink to the potential directory so everything is in one place
+                    sym_fn = self.workdir / 'ExtPots'
+                    if not sym_fn.is_symlink():
+                        sym_fn.symlink_to(epot_dr.absolute())    
 
                 if isinstance(self.system.guest, SphericalLJGuest):
                     log.dump('Creating parameter file for guest molecule from LJ parameters')
@@ -245,14 +247,15 @@ class FreeEnergy(object):
                 ff_ext = get_ff(self.system.host.mol, guest_mol, pars_fn, rcut)
                 epot = ExternalPotential(self.grid, self.system.guest.natom, ff_ext, epot_dr, positive=positive, **kwargs)
             
-            if not os.path.isfile(fn) or self.overwrite or rewrite:
-                log.dump('computing external potential on grid')
-                epot.generate_potential(temperature, rewrite=rewrite)
-                log.dump('writing external potential to %s' %fn)
-                epot.dump_potential(fn)
-            else:
-                log.dump('loading external potential from %s' %fn)
-                epot.load_potential(fn)   
+                if not os.path.isfile(fn) or self.overwrite or rewrite:
+                    log.dump('computing external potential on grid')
+                    epot.generate_potential(temperature, rewrite=rewrite)
+                    log.dump('writing external potential to %s' %fn)
+                    epot.dump_potential(fn)
+                else:
+                    log.dump('loading external potential from %s' %fn)
+                    epot.load_potential(fn)   
+
             # If a framework atom coincides with a grid point, the potential can be infinite
             mask = np.isfinite(epot.potential)
             epot.potential[~mask] = upper_limit
@@ -270,13 +273,13 @@ class FreeEnergy(object):
             ----------
             eos : EOS from eos.py
         """
-        with log.section('FREEENER', 2, timer='LDA init'):
+        with log.section('FREEENER', 2, timer='Initializing'):
             log.dump('Initializing LDA functional for attractive interaction contribution')
             eos.set_temperature(self.temperature)
             lda = LDAFunctional(self.temperature, self.grid, eos)
         self.add_part(lda)
     
-    def add_wdav(self, eos, new=False, **kwargs):
+    def add_wdav(self, eos, **kwargs):
         """
             Adds a weighted density approximation functional
 
@@ -284,16 +287,16 @@ class FreeEnergy(object):
             ----------
             eos : EOS from eos.py
         """
-        with log.section('FREEENER', 2, timer='WDA-v init'):
+        with log.section('FREEENER', 2, timer='Initializing'):
             log.dump('Initializing WDA-v functional for attractive interaction contribution')
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
             
-            wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos, new=new)
+            wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos)
         self.add_part(wda)
 
-    def add_hard_sphere(self, change='None',version='MFMT'):
+    def add_hard_sphere(self,version='MFMT'):
         """
             Adds a hard sphere repulsion functional of various types
 
@@ -302,12 +305,12 @@ class FreeEnergy(object):
             version : 'FMT': fundamental measure theory, 'MFMT': modified fundamental measure theory of 'WBII': second whitebear variant, optional
                 Specifies the type of functional. The default is 'MFMT'.
         """
-        with log.section("FREEENER", 2, timer='(M)FMT init'):
+        with log.section("FREEENER", 2, timer='Initializing'):
             log.dump('Initializing %s functional for hard-sphere contribution' %version)
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
-            HardSphere = HardSphereFunctional(self.system.guest.Rhs, self.grid, change=change,version=version)
+            HardSphere = HardSphereFunctional(self.system.guest.Rhs, self.grid, version=version)
             self.add_part(HardSphere)
     
     def add_mean_field(self, tailcorrections=False, **kwargs):
@@ -322,7 +325,7 @@ class FreeEnergy(object):
             this one
         """
         
-        with log.section('FREEENER', 2, timer='MFA init'):
+        with log.section('FREEENER', 2, timer='Initializing'):
             log.dump('Initializing MFA functional for attractive interaction contribution' + (' with tail corrections' if tailcorrections else ''))
             fn = self.workdir / 'mfa.npy'
             if 'repetitions' in kwargs:
@@ -371,7 +374,7 @@ class FreeEnergy(object):
             (sigma and epsilon) from an MFA potential that has been added to the system. If set to True, the
             sigma and epsilon parameters are not required as input.
         '''
-        with log.section('FREEENER', 2, timer='Correlation WDA init'):
+        with log.section('FREEENER', 2, timer='Initializing'):
             log.dump('Initializing correlation WDA functional for attractive interaction contribution')
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
@@ -409,7 +412,7 @@ class FreeEnergy(object):
         computational cost, defaults to 7.
         
         '''
-        with log.section('DUAL', 2, timer='Coarsened interaction init'):
+        with log.section('DUAL', 2, timer='Initializing'):
             log.dump('Initializing coarsened model for interaction contribution')
 
             assert style.lower() in ['su', 'ave', 'bo'], 'Style of averaging must be "su", "bo" or "ave"'
@@ -450,7 +453,7 @@ class HardSphereFunctional(Functional):
     
     name = 'HardSphere'
     
-    def __init__(self, Rhs, grid, version='MFMT', change='None'):
+    def __init__(self, Rhs, grid, version='MFMT'):
         """
         **Arguments:**
 
@@ -465,13 +468,10 @@ class HardSphereFunctional(Functional):
         self.grid = grid  
         self.R = Rhs
         self.version = version
-        self.change = change
-        self.savedr = f'FMTcmmdftRho/{self.version}'
-        if not os.path.isdir(self.savedr): os.makedirs(self.savedr)
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        return type(self)(self.R, grid)
+        return type(self)(self.R, grid, self.version)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         self.temperature = temperature
@@ -509,12 +509,6 @@ class HardSphereFunctional(Functional):
         self.kwv2 = -1.j*(self.kw3)[:,:,:,np.newaxis]*self.grid.kpoints[:,:,:,:3] 
         self.kwv2[~mask] = 0.0
         self.kwv1 = self.kwv2/(4*np.pi*self.R)
-        np.save(self.savedr + '/kw0.npy', self.kw0)
-        np.save(self.savedr + '/kw1.npy', self.kw1)
-        np.save(self.savedr + '/kw2.npy', self.kw2)
-        np.save(self.savedr + '/kw3.npy', self.kw3)
-        np.save(self.savedr + '/kwv1.npy', self.kwv1)
-        np.save(self.savedr + '/kwv2.npy', self.kwv2)
         self.weight_functions = [self.kw0, self.kw1, self.kw2, self.kw3, self.kwv1, self.kwv2]
 
     def _get_density_functions(self, krho):
@@ -559,13 +553,6 @@ class HardSphereFunctional(Functional):
 
         xi = (nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2])/((n2+1e-16)**2)
         xi[xi>=1] = 1-1e-12
-        np.save(self.savedr + '/n0.npy', n0)
-        np.save(self.savedr + '/n1.npy', n1)
-        np.save(self.savedr + '/n2.npy', n2)
-        np.save(self.savedr + '/n3.npy', n3)
-        np.save(self.savedr + '/nv1.npy', nv1)
-        np.save(self.savedr + '/nv2.npy', nv2)
-        np.save(self.savedr + '/xi.npy', xi)
         return n0,n1,n2,n3,np.array(nv1),np.array(nv2),xi
 
     def get_n3(self, krho):
@@ -599,12 +586,6 @@ class HardSphereFunctional(Functional):
             phi += n2**3*(1-xi)**3*self._phi3(n3)
         else:
             phi += (n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._phi3(n3)
-        np.save(self.savedr + '/phi1.npy', self._phi1(n3))
-        np.save(self.savedr + '/phi2.npy', self._phi2(n3))
-        np.save(self.savedr + '/phi3.npy', self._phi3(n3))
-        np.save(self.savedr + '/dphi1dn3.npy', self._dphi1dn(n3))
-        np.save(self.savedr + '/dphi2dn3.npy', self._dphi2dn(n3))
-        np.save(self.savedr + '/dphi3dn3.npy', self._dphi3dn(n3))
         return phi
 
     def derive(self, krho):
@@ -626,24 +607,16 @@ class HardSphereFunctional(Functional):
             # applying the chain rule, we find that the functional derivative can
             # be obtained by convoluting the derivatives of phi wrt the density
             # functions with the corresponding weight function
-            i = 0
             for get_dphi, kweight in [
                     (self._get_dphi_n0, self.kw0), (self._get_dphi_n1, self.kw1),
                     (self._get_dphi_n2, self.kw2), (self._get_dphi_n3, self.kw3)]:
                 dphi = get_dphi(n0,n1,n2,n3,nv1,nv2,xi)
                 dFk_total += self.grid.fft(dphi)*kweight
-                np.save(self.savedr + '/dF_%d.npy' %i, self.grid.ifft(self.grid.fft(dphi)*kweight))
-                i += 1
             # The vector contribution
-            i = 0
             for get_dphi, kweight in [(self._get_dphi_nv1, self.kwv1), (self._get_dphi_nv2, self.kwv2)]:
-                dF_temp = np.zeros(krho.shape, dtype=np.complex_)
                 for alpha in range(3):
                     dphi = get_dphi(n0,n1,n2,n3,nv1,nv2,xi,alpha)
                     dFk_total -= self.grid.fft(dphi)*kweight[:,:,:,alpha]
-                    dF_temp += self.grid.fft(dphi)*kweight[:,:,:,alpha]
-                np.save(self.savedr + '/dF_nv%d.npy' %(i), self.grid.ifft(dF_temp))
-                i += 1
             dF_total = self.grid.ifft(dFk_total)
             return dF_total/self.beta
     
@@ -703,30 +676,37 @@ class HardSphereFunctional(Functional):
         if self.version in ['FMT', 'MFMT', 'aFMT', 'aMFMT']:
             return 1/(1.0-n3)
         elif self.version in ['WBII', 'aWBII']:
-            return ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3))
+            # return ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3))
+            return np.where(n3<=1e-8,(1+ n3**2/9)/(1-n3), ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3)))
                 
     def _dphi2dn(self, n3):
         if self.version in ['FMT', 'MFMT', 'aFMT', 'aMFMT']:
             return 1/(1-n3)**2
         elif self.version in ['WBII', 'aWBII']:
-            return -2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2)
+            # return -2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2)
+            return np.where(n3<=1e-8,(1+ 2*n3/9 + n3**2/18)/(1-n3)**2,-2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2))
 
     def _phi3(self, n3):
         if self.version in ['FMT', 'aFMT']:
             return 1/(24*np.pi*(1-n3)**2)
         elif self.version in ['MFMT', 'aMFMT']:
-            return (n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2)
+            # return (n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2)
+            return np.where(n3<=1e-8,(1.0-2*n3/9-n3**2/18)/(24*np.pi*(1-n3)**2),(n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2))
         elif self.version in ['WBII', 'aWBII']:
-            return -2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2)
+            # return -2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2)
+            return np.where(n3<=1e-8,(1-4*n3/9+n3**2/18)/(24*np.pi*(1-n3)**2),-2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2))
 
     def _dphi3dn(self, n3):
         if self.version in ['FMT', 'aFMT']:
             return 1/(12*np.pi*(1-n3)**3)
         elif self.version in ['MFMT', 'aMFMT']:
-            return -(n3*(2-5*n3+n3**2)+2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
+            # return -(n3*(2-5*n3+n3**2)+2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
+            return np.where(n3<=1e-8,(8/3-0.5*n3-0.1*n3**2)/(36*np.pi*(1-n3)**3),-(n3*(2-5*n3+n3**2)+2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3))
         elif self.version in ['WBII', 'aWBII']:
-            return (2*n3-5*n3**2+6*n3**3-n3**4 + 2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
+            # return (2*n3-5*n3**2+6*n3**3-n3**4 + 2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
+            return np.where(n3<=1e-8,(7/3-n3/2+n3**2/10)/(36*np.pi*(1-n3)**3),(2*n3-5*n3**2+6*n3**3-n3**4 + 2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3))
     
+  
 
 class MFAFunctional(Functional):
     """
@@ -754,13 +734,12 @@ class MFAFunctional(Functional):
         self.potential = None
         self.kpotential = None
 
-    def copy(self, grid=None, copy_potential=True):
+    def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        cp = type(self)(grid, self.tailcorrections, self.repetitions)
-        if copy_potential and self.potential is not None:
-            cp.potential = self.potential.copy()
-            cp.kpotential = self.kpotential.copy()
-        return cp
+        mfa = type(self)(grid, self.tailcorrections, self.repetitions)
+        mfa.potential = self.potential.copy()
+        mfa.kpotential = self.kpotential.copy()
+        return mfa
 
     def load_potential(self, fn):
         self.potential = np.load(fn)
@@ -968,11 +947,15 @@ class ExternalPotential(Functional):
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        return ExternalPotential(grid, self.natom, self.ff, self.epot_dr, self.positive, self.limit_potential, self.degree)
-
+        extpot = type(self)(grid, self.natom, self.ff, self.epot_dr, self.positive, self.limit_potential, self.degree)
+        if self.potential is not None:
+            extpot.potential = self.potential.copy()
+            extpot.kpotential = self.kpotential.copy()
+        return extpot
+    
     def load_potential(self, fn):
         self.potential = np.load(fn)
-        assert self.grid.points.shape[:3]==self.potential.shape
+        assert self.grid.points.shape[:3]==self.potential.shape, f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {self.potential.shape}'
         self.kpotential = self.grid.fft(self.potential)
 
     def set_temperature(self, temperature, **kwargs):

@@ -6,7 +6,7 @@ import scipy.optimize as opt
 import getpass, datetime
 import json
 import itertools
-from gemmi import cif
+# from gemmi import cif
 
 from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom, amu
 from molmod.constants import boltzmann
@@ -537,7 +537,7 @@ class Calculator(object):
         cvs_mat = shifted_points@unit_vector
         
         if supercell:
-            points = make_supercell(points, repetitions=[3,3,3], periodic=False)
+            points = make_supercell(points, grid_spacings=self.grid.spacings, repetitions=[3,3,3], periodic=False)
             cvs_mat = (points - diffusion_path[0])@unit_vector
 
         # cvs = np.linspace(np.min(cvs_mat), np.max(cvs_mat), nbins+1) #sift out values which virtually identical and sort the cv in ascending order

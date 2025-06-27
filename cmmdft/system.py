@@ -67,7 +67,7 @@ class Host(object):
 
     
 class NanoporousHost(Host):
-    def __init__(self, name, chk, par):
+    def __init__(self, name, chk, par, shift=True):
         '''This function initializes a nanoporous host system
         
         Parameters
@@ -83,7 +83,8 @@ class NanoporousHost(Host):
             log.dump('Reading host structure from %s with parameters from %s' %(chk,par))
             self.mol = YaffSystem.from_file(chk)
             #shift molecule so that center of positions is the origin (as cDFT grid will be centered around this origin)
-            self.mol.pos -= self.mol.pos.sum(axis=0)/len(self.mol.pos) 
+            if shift:
+                self.mol.pos -= self.mol.pos.sum(axis=0)/len(self.mol.pos) 
             Host.__init__(self, name, self.mol.cell)
             self.chk = chk
             self.par = par
@@ -212,7 +213,7 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
 
 
 class Grid(object):
-    def __init__(self, cell, npoints=None, spacing=0.25*angstrom):
+    def __init__(self, cell, npoints=None, spacing=0.25*angstrom, shift=True):
         """
             cell
                     an instance of a Yaff cell used for extracting the system dimensions.
@@ -255,7 +256,10 @@ class Grid(object):
             # Real space grid, centered at the origin, storing x,y,z and norm of 
             # vector of each grid point
             self.points = np.zeros((self.npoints+[4]))
-            grid = [np.linspace(-0.5, 0.5, num=self.npoints[alpha], endpoint=False) for alpha in range(3)]
+            if shift:
+                grid = [np.linspace(-0.5, 0.5, num=self.npoints[alpha], endpoint=False) for alpha in range(3)]
+            else:
+                grid = [np.linspace(0, 1, num=self.npoints[alpha], endpoint=False) for alpha in range(3)]
             gridpoints = np.asarray(np.meshgrid(grid[0],grid[1],grid[2], indexing='ij'))
             # Cartesian components of the real space grid
 

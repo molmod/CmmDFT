@@ -280,5 +280,10 @@ class AngularGrid(Grid):
         # load npz file corresponding to the given degree & size
         filename = f"lebedev_{degree}_{size}.npz"
         npz_file = os.path.join('lebedev', filename)
-        data = np.load(npz_file)
+        
+        longer_npz_file = os.path.join('Files_CmmDFT', 'cmmdft', 'rotations', 'lebedev', filename)
+        abs_longer_npz_file = os.path.abspath(longer_npz_file)
+
+        data = np.load(abs_longer_npz_file)
+        # data = np.load(npz_file)
         return data["points"], data["weights"]

@@ -122,7 +122,7 @@ class Solver(object):
         """
         Check the convergence of the solver.
         """
-        with log.section(self.name, self.log_level, timer='Convergence check'):
+        with log.section(self.name, self.log_level, timer=None):
             CRIT = False
 
             self.IUE = self.grid.integrate(np.abs(rho_new-rho)).real
@@ -135,6 +135,7 @@ class Solver(object):
             if self.fener.fn_tracking is not None:
                 G = self.fener.track(self.chempot, rho_new, self.iphase, write=True, print_out=False).real
                 self.omega0 = G
+
             log.dump("step %3i/%3i *  Loading                           = %11.4e mol./uc" % (self.curr_step,self.nsteps,N_new))
             if self.criterion.lower() == 'riue':
                 crit = self.RIUE
@@ -193,39 +194,59 @@ class Solver(object):
         self.log_level = log_level
         with log.section('SOLVER', self.log_level, timer=self.name):
             self._initiate_solving(chempot)
-            tstart = time.perf_counter()
+            tstart_tot = time.perf_counter()
 
             krho = self.grid.fft(rho)
             Grho = self.get_new_rho(rho, krho, self.fugacity)
+            # tstart = time.perf_counter()
+            if self.fener.fn_tracking is not None:
+                self.omega0 = self.fener.track(self.chempot, rho, self.iphase, write=True, print_out=False).real
 
             for istep in range(self.nsteps):
+
+
+                # tstart_track = time.perf_counter()
                 self.curr_step = istep + 1
-                if self.fener.fn_tracking is not None:
-                    self.omega0 = self.fener.track(self.chempot, rho, self.iphase, write=True, print_out=False).real
+                # tstop_track = time.perf_counter()
+                # log.dump(f'Tracking the free energy took {round(tstop_track-tstart_track,2)} seconds')
+
+                # tupdatestart = time.perf_counter()
                 rho_new = self.update_rho(rho, krho, Grho)
+                # tupdatestop = time.perf_counter()
+                # log.dump(f'Updating the density took {round(tupdatestop-tupdatestart,2)} seconds')
 
                 if not np.all(np.isfinite(rho_new)):
                     log.dump("new loading is infinite! PICARD failed, aborting")
                     raise FloatingPointError
-
+                
+                # tgetstart = time.perf_counter()
                 krho_new = self.grid.fft(rho_new)
                 Grho_new = self.get_new_rho(rho, krho_new, self.fugacity)
+                # tgetstop = time.perf_counter()
+                # log.dump(f'Getting the new rho took {round(tgetstop-tgetstart,2)} seconds')
 
                 N_new = self.grid.integrate(rho_new).real
                 
+                # tconvstart = time.perf_counter()
                 if self._check_convergence(rho_new, Grho_new, rho, N_new):
                     break
+                # tconvstop = time.perf_counter()
+                # log.dump(f'Checking the convergence took {round(tconvstop-tconvstart,2)} seconds')
 
                 rho = rho_new.copy()
                 Grho = Grho_new.copy()
                 krho = krho_new.copy()
+                # tstop = time.perf_counter()
+                # log.dump(f'Iteration %d took %5.3f seconds'%(istep+1, tstop-tstart))
+                # log.dump('#################################################################################')
+                tstart = time.perf_counter()
 
             if istep==self.nsteps-1:
                 log.warning("Solution not converged after %d steps at temperature %5.3f and chemical potential %7.5f"%(self.nsteps, self.fener.temperature, chempot/kjmol), label_section='solve')
 
-            tstop = time.perf_counter()
+            tstop_tot = time.perf_counter()
             log.dump('#################################################################################')
-            log.dump(f'Calculated the density for a chemical potential of {round(chempot/kjmol,3)} kJ/mol in {round(tstop-tstart,2)} seconds')
+            log.dump(f'Calculated the density for a chemical potential of {round(chempot/kjmol,3)} kJ/mol in {round(tstop_tot-tstart_tot,2)} seconds')
             log.dump('#################################################################################')
             return N_new, rho_new 
 
@@ -328,6 +349,8 @@ class Picard(Solver):
 
             #Quadratic approximation
             alpha_max = np.min([abs((1-n3_max)/(n3_max_new - n3_max)), 1])
+            if self.fener.fn_tracking is None:
+                self.omega0 = self.fener.track(self.chempot, rho, self.iphase, write=False, print_out=False).real
 
             if np.isclose(alpha_max,0):
                 alpha_opt = 0

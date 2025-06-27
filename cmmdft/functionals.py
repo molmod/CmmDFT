@@ -220,7 +220,7 @@ class FreeEnergy(object):
                     pos_str = 'pos_' if positive else ''
                     epot_dr = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] 
                     if not epot_dr.is_dir(): epot_dr.mkdir(parents=True)
-                    if not isinstance(self.system.guest, SphericalLJGuest):
+                    if isinstance(self.system.guest, NonSphericalGuest):
                         if self.system.guest.mol.natom != 1: 
                             assert temperature is not None, 'Temperature must be provided for non-spherical particles'
                             fn = epot_dr / f'{pos_str}eff_epot_{temperature:#3.2f}K.npy'  
@@ -234,7 +234,7 @@ class FreeEnergy(object):
                     if not sym_fn.is_symlink():
                         sym_fn.symlink_to(epot_dr.absolute())    
 
-                if isinstance(self.system.guest, SphericalLJGuest):
+                if isinstance(self.system.guest, SphericalLJGuest) and not isinstance(self.system.guest, NonSphericalGuest):
                     log.dump('Creating parameter file for guest molecule from LJ parameters')
                     guest_mol, guest_par = write_LJ_pars_chk(self.system.guest, self.workdir)
                 else:
@@ -954,8 +954,17 @@ class ExternalPotential(Functional):
         return extpot
     
     def load_potential(self, fn):
-        self.potential = np.load(fn)
-        assert self.grid.points.shape[:3]==self.potential.shape, f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {self.potential.shape}'
+        potential = np.load(fn)
+        shape_diff = np.array([self.grid.points.shape[i] - potential.shape[i] for i in range(3)])
+        if np.allclose(shape_diff, -1):
+            # print('Shape of potential is one less than grid shape')
+            self.potential = potential[:-1, :-1, :-1]
+        elif np.allclose(shape_diff, 0):
+            # print('Shape of potential matches grid shape')
+            self.potential = potential
+        else:
+            raise ValueError(f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {potential.shape}')
+        # assert self.grid.points.shape[:3]==self.potential.shape, f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {self.potential.shape}'
         self.kpotential = self.grid.fft(self.potential)
 
     def set_temperature(self, temperature, **kwargs):

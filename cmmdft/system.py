@@ -5,6 +5,7 @@
 from __future__ import division
 
 import numpy as np, sys, os
+from scipy.fft import fftn, ifftn
 from pathlib import Path
 import json
 
@@ -170,7 +171,10 @@ class SphericalLJGuest(Guest):
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         beta = 1/(boltzmann*temperature)
-        return hard_spheres_barker_henderson(beta, len_jon=(self.sigma,self.epsilon), natom=1)
+        Tt = 1/beta/self.epsilon
+        Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        return Rhs, self.sigma
+
 
 
 class NonSphericalGuest(Guest):
@@ -226,6 +230,7 @@ class Grid(object):
         with log.section('GRID', 2, timer='Initializing'):
             log.dump('Initializing grid')
             self.cell = cell
+            self.shift = shift
             assert self.cell.nvec==3
             if npoints is None:
                 lengths, angles = self.cell.parameters
@@ -293,8 +298,8 @@ class Grid(object):
         return np.sum(data)*self.dr
     
     def fft(self, rdata):
-        return np.fft.fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
+        return fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
     
     def ifft(self, fdata):
-        return np.fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None)*np.prod(self.npoints)
+        return ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None)*np.prod(self.npoints)
 

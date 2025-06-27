@@ -220,7 +220,7 @@ class FreeEnergy(object):
                     pos_str = 'pos_' if positive else ''
                     epot_dr = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] 
                     if not epot_dr.is_dir(): epot_dr.mkdir(parents=True)
-                    if not isinstance(self.system.guest, SphericalLJGuest):
+                    if  isinstance(self.system.guest, NonSphericalGuest):
                         if self.system.guest.mol.natom != 1: 
                             assert temperature is not None, 'Temperature must be provided for non-spherical particles'
                             fn = epot_dr / f'{pos_str}eff_epot_{temperature:#3.2f}K.npy'  
@@ -234,7 +234,7 @@ class FreeEnergy(object):
                     if not sym_fn.is_symlink():
                         sym_fn.symlink_to(epot_dr.absolute())    
 
-                if isinstance(self.system.guest, SphericalLJGuest):
+                if isinstance(self.system.guest, SphericalLJGuest) and not isinstance(self.system.guest, NonSphericalGuest):
                     log.dump('Creating parameter file for guest molecule from LJ parameters')
                     guest_mol, guest_par = write_LJ_pars_chk(self.system.guest, self.workdir)
                 else:
@@ -533,7 +533,7 @@ class HardSphereFunctional(Functional):
         n3 = self.grid.ifft(kn3).real#*self.grid.dk
         #When n3 approaches 1, things can go wrong because the functional
         # contains terms with log(1-n3) and 1/(1-n3)
-        n3[n3>0.95] = 0.95
+        n3[n3>0.99] = 0.99
         #When n3 approaches 0 things can also go wrong:
         n3[n3==0] = 1e-30
         # The vector density functions
@@ -557,7 +557,7 @@ class HardSphereFunctional(Functional):
 
     def get_n3(self, krho):
         kn3 = krho*self.kw3
-        return self.grid.ifft(kn3)#*self.grid.dk        
+        return self.grid.ifft(kn3).real#*self.grid.dk        
 
     def get_n2_nv2(self, krho):
         kn2 = krho*self.kw2
@@ -676,25 +676,25 @@ class HardSphereFunctional(Functional):
         if self.version in ['FMT', 'MFMT', 'aFMT', 'aMFMT']:
             return 1/(1.0-n3)
         elif self.version in ['WBII', 'aWBII']:
-            # return ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3))
-            return np.where(n3<=1e-8,(1+ n3**2/9)/(1-n3), ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3)))
+            return ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3))
+            # return np.where(n3<=1e-8,(1+ n3**2/9)/(1-n3), ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3)))
                 
     def _dphi2dn(self, n3):
         if self.version in ['FMT', 'MFMT', 'aFMT', 'aMFMT']:
             return 1/(1-n3)**2
         elif self.version in ['WBII', 'aWBII']:
-            # return -2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2)
-            return np.where(n3<=1e-8,(1+ 2*n3/9 + n3**2/18)/(1-n3)**2,-2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2))
+            return -2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2)
+            # return np.where(n3<=1e-8,(1+ 2*n3/9 + n3**2/18)/(1-n3)**2,-2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2))
 
     def _phi3(self, n3):
         if self.version in ['FMT', 'aFMT']:
             return 1/(24*np.pi*(1-n3)**2)
         elif self.version in ['MFMT', 'aMFMT']:
-            # return (n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2)
-            return np.where(n3<=1e-8,(1.0-2*n3/9-n3**2/18)/(24*np.pi*(1-n3)**2),(n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2))
+            return (n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2)
+            # return np.where(n3<=1e-8,(1.0-2*n3/9-n3**2/18)/(24*np.pi*(1-n3)**2),(n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2))
         elif self.version in ['WBII', 'aWBII']:
-            # return -2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2)
-            return np.where(n3<=1e-8,(1-4*n3/9+n3**2/18)/(24*np.pi*(1-n3)**2),-2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2))
+            return -2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2)
+            # return np.where(n3<=1e-8,(1-4*n3/9+n3**2/18)/(24*np.pi*(1-n3)**2),-2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2))
 
     def _dphi3dn(self, n3):
         if self.version in ['FMT', 'aFMT']:
@@ -954,8 +954,17 @@ class ExternalPotential(Functional):
         return extpot
     
     def load_potential(self, fn):
-        self.potential = np.load(fn)
-        assert self.grid.points.shape[:3]==self.potential.shape, f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {self.potential.shape}'
+        potential = np.load(fn)
+        shape_diff = np.array([self.grid.points.shape[i] - potential.shape[i] for i in range(3)])
+        if np.allclose(shape_diff, -1):
+            # print('Shape of potential is one less than grid shape')
+            self.potential = potential[:-1, :-1, :-1]
+        elif np.allclose(shape_diff, 0):
+            # print('Shape of potential matches grid shape')
+            self.potential = potential
+        else:
+            raise ValueError(f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {potential.shape}')
+        # assert self.grid.points.shape[:3]==self.potential.shape, f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {self.potential.shape}'
         self.kpotential = self.grid.fft(self.potential)
 
     def set_temperature(self, temperature, **kwargs):

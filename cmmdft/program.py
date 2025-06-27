@@ -103,7 +103,7 @@ class Program(object):
     def set_system(self, host, guest):
         self.system = System(host, guest)
     
-    def set_grid(self, npoints=None, spacing=0.25*angstrom):
+    def set_grid(self, npoints=None, spacing=0.25*angstrom, shift=True):
         '''This function sets up a grid for a given program with a specified number of points or spacing. npoints or spacing must be provided
             
             Parameters
@@ -117,7 +117,7 @@ class Program(object):
         '''
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
-        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing)
+        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, shift=shift)
     
     def init_free_energy(self, temperature):
         '''This function initializes the FreeEnergy object of a program at a given temperature.
@@ -339,7 +339,7 @@ class Program(object):
             log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
 
             if energy_tracking:
-                convergence_fn = os.path.join(self.workdir,  "convergence_%7.5fK_step_%7.5fkJmol.txt" %(self.fener.temperature/kelvin, chempot/kjmol))
+                convergence_fn = os.path.join(self.workdir,  "convergence_%7.5fkJmol_%7.5fK.txt" %(chempot/kjmol,self.fener.temperature/kelvin))
                 self.fener.init_tracking(convergence_fn)
 
             self.file_suffix = '_%7.5fkJmol_%7.5fK' %(chempot/kjmol,self.fener.temperature/kelvin)
@@ -353,6 +353,13 @@ class Program(object):
             if rho is None:
                 raise ValueError('No solution found')
             np.save(self.rho_fn, rho)
+            if self.solver.track_history:
+                solving_name = 'solving_history%s.csv'%(self.file_suffix)
+                solver_history_fn = self.workdir / solving_name
+                data = self.solver.history[:self.solver.curr_step, :]
+                np.savetxt(solver_history_fn, data, delimiter=',', header=self.solver.history_header)
+                log.dump('  saving history to %s' %(solver_history_fn))
+
 
 
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):

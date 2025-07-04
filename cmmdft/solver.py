@@ -76,8 +76,8 @@ class Solver(object):
 
         self.track_history = track_history
         if self.track_history: 
-            self.history_header = "Loading [au], Grand potential [Eh], Norm of residuals [au], IUE [au], Time per step [s]"
-            self.history = np.empty((self.nsteps+1, 6)) #history of [0] the loading,[1] grand_potential, [2] norm of residuals, [3] difference in subsequent densities, [5] time per step
+            self.history_header = "Loading [au], Grand potential [Eh], Norm of residuals [au], IUE [au], Time per step [s], Cumulative time [s]"
+            self.history = np.zeros((self.nsteps+1, 6)) #history of [0] the loading,[1] grand_potential, [2] norm of residuals, [3] difference in subsequent densities, [5] time per step
 
     def _initiate_solving(self, chempot):
         """
@@ -85,7 +85,8 @@ class Solver(object):
         """
         self.fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
         self.chempot = chempot
-
+        if self.track_history:
+            self.history = np.zeros((self.nsteps+1, 6)) #history of [0] the loading,[1] grand_potential, [2] norm of residuals, [3] difference in subsequent densities, [5] time per step
 
     def get_new_rho(self, rho, krho, fugacity):
         """
@@ -130,8 +131,6 @@ class Solver(object):
         if krho is None:
             krho = self.grid.fft(rho)
         F = np.zeros(self.grid.npoints)
-        print('#' * 50)
-        print('Calculating the functional derivative')
         for part in self.fener.parts:
             dF = part.derive(krho).real
             print(part.name, np.max(dF), np.min(dF))
@@ -140,8 +139,6 @@ class Solver(object):
         rho_reg = rho.copy().real
         rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
         lnrho = np.log(self.fener.wavelength**3*rho_reg, dtype='float64') / self.fener.beta # Avoid log(0)
-        print('ideal gas contribution', np.max(lnrho), np.min(lnrho))
-        print('#' * 50)
         F += lnrho
         return F.real
         
@@ -176,7 +173,7 @@ class Solver(object):
             self.RIUE = np.nan
             self.RES = np.nan
             self.RES_RATIO = np.nan
-            self.f = np.linalg.norm(Grho_new - rho_new)**2   
+            self.f = np.linalg.norm(Grho_new - rho_new)**2  
 
             if self.track_history:
                 self.history[self.curr_step, 0] = N_new
@@ -190,7 +187,6 @@ class Solver(object):
             if self.fener.fn_tracking is not None:
                 G = self.fener.track(self.chempot, rho_new, self.iphase, write=True, print_out=False).real
                 self.omega0 = G
-
             log.dump("step %3i/%3i *  Loading                           = %11.4e mol./uc" % (self.curr_step,self.nsteps,N_new))
             if self.criterion.lower() == 'riue':
                 crit = self.RIUE
@@ -222,7 +218,7 @@ class Solver(object):
                 CRIT = True
 
             return CRIT
-
+        
     def _solve(self, chempot, rho, log_level):
         """
         Solve the density functional theory (DFT) problem for a given chemical potential.
@@ -389,7 +385,7 @@ class Picard(Solver):
     def update_rho_hybrid(self, rho, krho, Grho):
         with log.section(self.name, self.log_level, timer='Update rho_hyb'): 
             alpha_max = self._get_alpha_max(rho, krho, Grho)
-            log.dump('alpha_max: %5.5f'%alpha_max)
+
             if self.fener.fn_tracking is None:
                 self.omega0 = self.fener.track(self.chempot, rho, self.iphase, write=False, print_out=False).real
 
@@ -548,6 +544,16 @@ class Anderson(Picard):
             self.it_eps = 0
         else:
             self.it_eps = np.sqrt(self.f/self.grid.integrate(rho).real)
+            if self.curr_step < 5:
+                self.it_eps0 = self.it_eps
+        
+        self._save_previous_rhos(rho, krho, Grho)
+
+        print('#' * 50)
+        if self.curr_step == 0:
+            self.it_eps = 0
+        else:
+            self.it_eps = np.sqrt(self.f/self.grid.integrate(rho).real)
             if self.curr_step == 1 or self.curr_step == 2:
                 self.it_eps0 = self.it_eps
         
@@ -557,8 +563,7 @@ class Anderson(Picard):
             rho_new, krho_new, Grho_new = self.update_rho_Anderson(rho, krho, Grho)
 
         elif self.Anderson_method.lower() == 'hybridanderson':
-            print(self.it_eps, self.it_eps0, self.delta, self.And_true)
-            if self.curr_step == 1 or self.curr_step == 2:
+            if self.curr_step < 4:
                 rho_new, krho_new, Grho_new = self.update_rho_hybrid(rho, krho, Grho) 
                             
             elif self.it_eps>self.it_eps0*self.delta and not self.And_true:
@@ -581,10 +586,8 @@ class Anderson(Picard):
             
             bds = opt.Bounds(0,1)
             alphas = opt.minimize(sum_res, np.full(mk,1/mk), method='SLSQP', tol=1e-15, bounds=bds, constraints={'type': 'eq', 'fun': lambda x:np.sum(x)-1}).x
-            print(alphas)
             rho_result = alphas[:,None,None,None]*self.prev_rhos[-mk:]
             Grho_result = alphas[:,None,None,None]*self.prev_Grhos[-mk:]
-
 
             if self.adaptive_damping: self._get_damping_coefficient()
 

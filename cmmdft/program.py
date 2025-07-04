@@ -103,7 +103,7 @@ class Program(object):
     def set_system(self, host, guest):
         self.system = System(host, guest)
     
-    def set_grid(self, npoints=None, spacing=0.25*angstrom):
+    def set_grid(self, npoints=None, spacing=0.25*angstrom, shift=True):
         '''This function sets up a grid for a given program with a specified number of points or spacing. npoints or spacing must be provided
             
             Parameters
@@ -117,7 +117,7 @@ class Program(object):
         '''
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
-        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing)
+        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, shift=shift)
     
     def init_free_energy(self, temperature):
         '''This function initializes the FreeEnergy object of a program at a given temperature.
@@ -356,7 +356,8 @@ class Program(object):
             if self.solver.track_history:
                 solving_name = 'solving_history%s.csv'%(self.file_suffix)
                 solver_history_fn = self.workdir / solving_name
-                np.savetxt(solver_history_fn, self.solver.history, delimiter=',', header=self.solver.history_header)
+                data = self.solver.history[:self.solver.curr_step, :]
+                np.savetxt(solver_history_fn, data, delimiter=',', header=self.solver.history_header)
                 log.dump('  saving history to %s' %(solver_history_fn))
 
 

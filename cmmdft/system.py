@@ -5,6 +5,7 @@
 from __future__ import division
 
 import numpy as np, sys, os
+from scipy.fft import fftn, ifftn
 from pathlib import Path
 import json
 
@@ -293,8 +294,8 @@ class Grid(object):
         return np.sum(data)*self.dr
     
     def fft(self, rdata):
-        return np.fft.fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
+        return fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
     
     def ifft(self, fdata):
-        return np.fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None)*np.prod(self.npoints)
+        return (ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None)*np.prod(self.npoints)).real
 

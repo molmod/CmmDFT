@@ -9,7 +9,7 @@ import itertools
 # from gemmi import cif
 
 from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom, amu
-from molmod.constants import boltzmann
+from molmod.constants import boltzmann, avogadro
 from yaff import log as ylog
 ylog.set_level(ylog.silent)
 
@@ -187,9 +187,25 @@ class Calculator(object):
             ext_pot.generate_potential()
             ext_pot.dump_potential(fn=self.workdir/'ExtPots/He_potential.npy')
             He_pot = ext_pot.potential
-
-        He_vol = self.grid.integrate(np.exp(-He_pot/kelvin/temperature)).real
+        exp_He_pot = np.clip(np.exp(-He_pot/boltzmann/temperature), 0, 1)
+        He_vol = self.grid.integrate(exp_He_pot).real
         return He_vol/self.host.cell.volume
+    
+    def get_Henry_Coefficient(self, temperature):
+        """
+        Returns the Henry coefficient for a given temperature
+        """
+        potential = None
+        for name in self.fener.part_names:
+            if 'ExtPot' in name:
+                potential = self.fener.part_dict[name].potential.real
+                break
+        if potential is None:
+            raise ValueError('No external potential found in the functional')
+    
+        epot_int = self.grid.integrate(np.exp(-potential/temperature/boltzmann))
+        return 1/avogadro/boltzmann/temperature/self.host.cell.volume*epot_int
+
 
     def save_loadings(self, temperature, chempots=None, pressure=False, excess=False, eos=None, fn=None):
         '''This function saves the loadings of all the calculated densities at the specified temperatures in a csv
@@ -379,8 +395,9 @@ class Calculator(object):
         krho = self.grid.fft(rho)#*self.grid.dr
         if partname.lower() in ["fid", "fideal"]:
             prefactor = boltzmann*temp
-            integrandum = np.zeros(rho.shape)
-            integrandum[rho>0] = rho[rho>0].real*(np.log(rho[rho>0].real*self.fener.wavelength**3)-1)
+            rho_reg = rho.copy()
+            rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
+            integrandum = rho_reg.real*(np.log(rho_reg.real*self.fener.wavelength**3)-1)
             if local:
                 if over_loading: return prefactor*integrandum.real/N
                 else: return prefactor*integrandum.real                

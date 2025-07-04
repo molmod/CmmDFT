@@ -21,6 +21,7 @@ units = {
     '-µN'    : 'kjmol',
     'IdGas'  : 'kjmol',
     'ExtPot' : 'kjmol', 
+    'HardSphere' : 'kjmol',
     'FMT'    : 'kjmol',
     'MFMT'   : 'kjmol',
     'MFA'    : 'kjmol',
@@ -39,6 +40,7 @@ ylabels = {
     '-µN'    : 'Energy',
     'IdGas'  : 'Energy',
     'ExtPot' : 'Energy',
+    'HardSphere' : 'Energy',
     'FMT'    : 'Energy',
     'MFMT'   : 'Energy',
     'MFA'    : 'Energy',
@@ -93,7 +95,7 @@ class Plotter(object):
         
         '''
         self.fig = pp.figure()
-        fn_suffix = 'convergence_%7.5fkJmol_%7.5fK.txt' %(chempot/kjmol,temp)
+        fn_suffix = 'convergence_%7.5fkJmol_%7.5fK.txt' %(chempot/kjmol, temp)
 
         fn = self.calculator.workdir / fn_suffix
         assert fn.is_file(), 'No convergence file found for %3.0f K and %3.0f kJ/mol, searched at %s' %(temp,chempot/kjmol,fn)
@@ -119,9 +121,8 @@ class Plotter(object):
         for i, field in enumerate(fields):
             irow, icol = i//3, i%3
             for iphase in range(max_num_phases):
-                phase = iphase+1
                 masked_data = data[:,i+2].copy()
-                masked_data[data[:,0]!=phase] = np.nan
+                masked_data[data[:,0]!=iphase] = np.nan
                 #get last few phases
                 if len(np.where(data[:-1,0]-data[1:,0]!=0)[0])>0:
                     index_last_phases = np.where(data[:-1,0]-data[1:,0]!=0)[0][-max_num_phases]+1
@@ -134,7 +135,7 @@ class Plotter(object):
                 axs[irow, icol].set_title(field)
         self.fig.set_size_inches([3*3,int(np.ceil(len(fields)/3))*3])
         self.fig.tight_layout()
-        self.fig.savefig(fn.replace('txt', 'png'))
+        self.fig.savefig(fn.with_suffix('.png')) if save_fig else None
         return self.fig
 
     def observable(self, temperatures, chempots, function, fn='isotherm.png',                    

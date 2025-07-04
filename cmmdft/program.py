@@ -339,7 +339,7 @@ class Program(object):
             log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
 
             if energy_tracking:
-                convergence_fn = os.path.join(self.workdir,  "convergence_%7.5fK_step_%7.5fkJmol.txt" %(self.fener.temperature/kelvin, chempot/kjmol))
+                convergence_fn = os.path.join(self.workdir,  "convergence_%7.5fkJmol_%7.5fK.txt" %(chempot/kjmol,self.fener.temperature/kelvin))
                 self.fener.init_tracking(convergence_fn)
 
             self.file_suffix = '_%7.5fkJmol_%7.5fK' %(chempot/kjmol,self.fener.temperature/kelvin)
@@ -353,6 +353,12 @@ class Program(object):
             if rho is None:
                 raise ValueError('No solution found')
             np.save(self.rho_fn, rho)
+            if self.solver.track_history:
+                solving_name = 'solving_history%s.csv'%(self.file_suffix)
+                solver_history_fn = self.workdir / solving_name
+                np.savetxt(solver_history_fn, self.solver.history, delimiter=',', header=self.solver.history_header)
+                log.dump('  saving history to %s' %(solver_history_fn))
+
 
 
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):

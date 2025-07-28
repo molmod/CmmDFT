@@ -511,7 +511,7 @@ class HardSphereFunctional(Functional):
         self.kwv1 = self.kwv2/(4*np.pi*self.R)
         self.weight_functions = [self.kw0, self.kw1, self.kw2, self.kw3, self.kwv1, self.kwv2]
 
-    def _get_density_functions(self, krho):
+    def _get_density_functions(self, krho, xi_max=1):
         """
         Compute the density functions, which are convolutions of the weight
         functions and the density. These are computed by making use of the
@@ -552,7 +552,9 @@ class HardSphereFunctional(Functional):
             nv2.append(nv2alpha)
 
         xi = (nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2])/((n2+1e-16)**2)
-        xi[xi>=1] = 1-1e-12
+        xi[1,1,1] = xi_max
+        print(np.min(xi), np.max(xi))
+        # xi[xi>=1] = 1-1e-12
         return n0,n1,n2,n3,np.array(nv1),np.array(nv2),xi
 
     def get_n3(self, krho):
@@ -588,7 +590,7 @@ class HardSphereFunctional(Functional):
             phi += (n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._phi3(n3)
         return phi
 
-    def derive(self, krho):
+    def derive(self, krho, xi_max):
         """
         Functional derivative with respect to the density
 
@@ -599,7 +601,7 @@ class HardSphereFunctional(Functional):
         """
         with log.section('(M)FMT', 3, timer='(M)FMT derive'):
             # Compute the density functions
-            n0,n1,n2,n3,nv1,nv2,xi = self._get_density_functions(krho)
+            n0,n1,n2,n3,nv1,nv2,xi = self._get_density_functions(krho, xi_max)
             dFk_total = 0.0
             # Fhe functional is (up to a factor k_B T) the integral of Phi.
             # Phi is a function of the density functions, which are in turn

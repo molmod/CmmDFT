@@ -239,10 +239,11 @@ class Calculator(object):
         data = np.zeros((2, len(chempots)))
         if pressure:
             header = 'pressures [Eh/a0**3], loadings [molecules/uc]'
-            if eos is not None:
-                data[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, temperature)) for chem in chempots])
-            else:
-                raise ValueError('Must provide an equation of state object, with the function calculate_mu')
+            data[0] = np.array([eos.calculate_pressure(temperature, chem) for chem in chempots])
+            # if eos is not None:
+            #     data[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, temperature)) for chem in chempots])
+            # else:
+            #     raise ValueError('Must provide an equation of state object, with the function calculate_mu')
         else:
             header = 'chempot [Eh], loadings [molecules/uc]'
             data[0] = chempots
@@ -395,8 +396,9 @@ class Calculator(object):
         krho = self.grid.fft(rho)#*self.grid.dr
         if partname.lower() in ["fid", "fideal"]:
             prefactor = boltzmann*temp
-            integrandum = np.zeros(rho.shape)
-            integrandum[rho>0] = rho[rho>0].real*(np.log(rho[rho>0].real*self.fener.wavelength**3)-1)
+            rho_reg = rho.copy()
+            rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
+            integrandum = rho_reg.real*(np.log(rho_reg.real*self.fener.wavelength**3)-1)
             if local:
                 if over_loading: return prefactor*integrandum.real/N
                 else: return prefactor*integrandum.real                

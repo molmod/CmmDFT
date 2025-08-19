@@ -57,7 +57,7 @@ class Program(object):
         workdir = Path(prefix) / hostname /guestname / ff_suffix / funct_suffix / grid_suffix / suffix
 
         if not workdir.is_dir():
-            workdir.mkdir(parents=True)
+            workdir.mkdir(parents=True, exist_ok=True)
             print('Created work directory %s' %workdir)  
 
         if silent:
@@ -263,7 +263,8 @@ class Program(object):
                                 index = self.fener.part_names.index(partname)
                         if index is not None:
                             epot_data = self.fener.parts[index].potential
-                            self.rho0 = Ninit*np.exp(-0.1*epot_data/boltzmann/Temp)
+                            epot_pos = np.maximum(epot_data, 0)
+                            self.rho0 = Ninit*np.exp(-epot_pos/boltzmann/Temp)
                             log.dump('Setting initial guess for density at %.3e/cellvolume in pores' %Ninit)
                         else:
                             log.dump('Setting initial guess for density at %.3e/cellvolume' %(Ninit*self.system.host.cell.volume))

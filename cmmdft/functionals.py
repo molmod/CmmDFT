@@ -121,7 +121,7 @@ class FreeEnergy(object):
                     index = int(words[1])
                     self.tracking_step = index+1
     
-    def track(self, chempot, rho, iphase=0, write=True, print_out=False, fn=None, unit=1):
+    def track(self, chempot, rho, krho=None, iphase=0, write=True, print_out=False, fn=None, unit=1):
         '''The "track" function calculates the grand potential and writes a line in a convergence file
             containing the adsorption and energetic contributions towards the grand potential.
             
@@ -159,7 +159,8 @@ class FreeEnergy(object):
             Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0)).real/self.beta
             G = Fid - chempot*N
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, (-chempot*N/unit), Fid/unit)
-            krho = self.grid.fft(rho)#*self.grid.dr
+            if krho is None:
+                krho = self.grid.fft(rho)#*self.grid.dr
             for part in self.parts:
                 Fpart = part.value(krho).real
                 if print_out: print(part.name, round(Fpart/kjmol,2))
@@ -296,7 +297,7 @@ class FreeEnergy(object):
             wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos)
         self.add_part(wda)
 
-    def add_hard_sphere(self,version='MFMT'):
+    def add_hard_sphere(self,version='MFMT', xi_limit=1, nv_contrib='neg_nv'):
         """
             Adds a hard sphere repulsion functional of various types
 
@@ -310,7 +311,7 @@ class FreeEnergy(object):
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
-            HardSphere = HardSphereFunctional(self.system.guest.Rhs, self.grid, version=version)
+            HardSphere = HardSphereFunctional(self.system.guest.Rhs, self.grid, version=version, xi_limit=xi_limit, nv_contrib=nv_contrib)
             self.add_part(HardSphere)
     
     def add_mean_field(self, tailcorrections=False, **kwargs):
@@ -453,7 +454,7 @@ class HardSphereFunctional(Functional):
     
     name = 'HardSphere'
     
-    def __init__(self, Rhs, grid, version='MFMT'):
+    def __init__(self, Rhs, grid, version='MFMT', xi_limit=1, nv_contrib='neg_nv'):
         """
         **Arguments:**
 
@@ -468,6 +469,8 @@ class HardSphereFunctional(Functional):
         self.grid = grid  
         self.R = Rhs
         self.version = version
+        self.xi_limit = xi_limit
+        self.nv_contrib = nv_contrib
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
@@ -550,9 +553,15 @@ class HardSphereFunctional(Functional):
             nv2alpha = self.grid.ifft(nv2kalpha).real#*self.grid.dk
             knv2.append(nv2kalpha)
             nv2.append(nv2alpha)
-
-        xi = (nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2])/((n2+1e-16)**2)
-        xi[xi>=1] = 1-1e-12
+        nv2 = np.array(nv2)
+        nv1 = np.array(nv1)
+        xi = (np.sum(nv2*nv2, axis=0))/((n2)**2+1e-6)
+        # print('n2**2 min/max:', np.min(n2**2), np.max(n2**2))
+        # print('nv2 min/max:', np.min(nv2), np.max(nv2))
+        # print('nv2**2 min/max:', np.min(np.sum(nv2*nv2, axis=0)), np.max(np.sum(nv2*nv2, axis=0)))
+        # print('xi min/max:', np.min(xi), np.max(xi))
+        # print(np.max(xi))
+        xi[xi>=self.xi_limit] = self.xi_limit
         return n0,n1,n2,n3,np.array(nv1),np.array(nv2),xi
 
     def get_n3(self, krho):
@@ -583,7 +592,7 @@ class HardSphereFunctional(Functional):
         phi = n0*self._phi1(n3)
         phi += (n1*n2 - (nv1[0]*nv2[0]+nv1[1]*nv2[1]+nv1[2]*nv2[2]))*self._phi2(n3)
         if 'a' in self.version:
-            phi += n2**3*(1-xi)**3*self._phi3(n3)
+            phi += (n2**3)*((1-xi)**3)*self._phi3(n3)
         else:
             phi += (n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._phi3(n3)
         return phi
@@ -616,7 +625,10 @@ class HardSphereFunctional(Functional):
             for get_dphi, kweight in [(self._get_dphi_nv1, self.kwv1), (self._get_dphi_nv2, self.kwv2)]:
                 for alpha in range(3):
                     dphi = get_dphi(n0,n1,n2,n3,nv1,nv2,xi,alpha)
-                    dFk_total -= self.grid.fft(dphi)*kweight[:,:,:,alpha]
+                    if self.nv_contrib == 'neg_nv':
+                        dFk_total -= self.grid.fft(dphi)*kweight[:,:,:,alpha]
+                    elif self.nv_contrib == 'pos_nv':
+                        dFk_total += self.grid.fft(dphi)*kweight[:,:,:,alpha]
             dF_total = self.grid.ifft(dFk_total)
             return dF_total/self.beta
     
@@ -638,7 +650,7 @@ class HardSphereFunctional(Functional):
     def _get_dphi_n2(self, n0, n1, n2, n3, nv1, nv2, xi):
         tmp0 = n1*self._phi2(n3)
         if 'a' in self.version:
-            tmp1 = (3*n2**2*(1+xi)*(1-xi)**2)*self._phi3(n3)
+            tmp1 = (3*(n2**2)*(1+xi)*((1-xi)**2))*self._phi3(n3)
         else:
             tmp1 = 3*(n2**2-(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._phi3(n3)
         dphi = tmp0+tmp1
@@ -648,7 +660,7 @@ class HardSphereFunctional(Functional):
         tmp0 = n0*self._dphi1dn(n3)
         tmp1 = (n1*n2-(nv1[0]*nv2[0]+nv1[1]*nv2[1]+nv1[2]*nv2[2]))*self._dphi2dn(n3)
         if 'a' in self.version:
-            tmp2 = n2**3*(1-xi)**3*self._dphi3dn(n3)
+            tmp2 = (n2**3)*((1-xi)**3)*self._dphi3dn(n3)
         else:
             tmp2 = (n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._dphi3dn(n3)
         dphi = tmp0+tmp1+tmp2
@@ -661,7 +673,7 @@ class HardSphereFunctional(Functional):
     def _get_dphi_nv2(self, n0, n1, n2, n3, nv1, nv2, xi, index):
         dphi = -nv1[index]*self._phi2(n3)
         if 'a' in self.version:
-            dphi += -6*n2*nv2[index]*(1-xi)**2*self._phi3(n3)
+            dphi += -6*n2*nv2[index]*((1-xi)**2)*self._phi3(n3)
         else:
             dphi += -6*n2*nv2[index]*self._phi3(n3)
         return dphi
@@ -676,25 +688,25 @@ class HardSphereFunctional(Functional):
         if self.version in ['FMT', 'MFMT', 'aFMT', 'aMFMT']:
             return 1/(1.0-n3)
         elif self.version in ['WBII', 'aWBII']:
-            return ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3))
-            # return np.where(n3<=1e-8,(1+ n3**2/9)/(1-n3), ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3)))
+            # return ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3))
+            return np.where(n3<=1e-8,(1+ n3**2/9)/(1-n3), ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3)))
                 
     def _dphi2dn(self, n3):
         if self.version in ['FMT', 'MFMT', 'aFMT', 'aMFMT']:
             return 1/(1-n3)**2
         elif self.version in ['WBII', 'aWBII']:
-            return -2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2)
-            # return np.where(n3<=1e-8,(1+ 2*n3/9 + n3**2/18)/(1-n3)**2,-2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2))
+            # return -2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2)
+            return np.where(n3<=1e-8,(1+ 2*n3/9 + n3**2/18)/(1-n3)**2,-2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2))
 
     def _phi3(self, n3):
         if self.version in ['FMT', 'aFMT']:
             return 1/(24*np.pi*(1-n3)**2)
         elif self.version in ['MFMT', 'aMFMT']:
-            return (n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2)
-            # return np.where(n3<=1e-8,(1.0-2*n3/9-n3**2/18)/(24*np.pi*(1-n3)**2),(n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2))
+            # return (n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2)
+            return np.where(n3<=1e-8,(1.0-2*n3/9-n3**2/18)/(24*np.pi*(1-n3)**2),(n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2))
         elif self.version in ['WBII', 'aWBII']:
-            return -2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2)
-            # return np.where(n3<=1e-8,(1-4*n3/9+n3**2/18)/(24*np.pi*(1-n3)**2),-2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2))
+            # return -2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2)
+            return np.where(n3<=1e-8,(1-4*n3/9+n3**2/18)/(24*np.pi*(1-n3)**2),-2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2))
 
     def _dphi3dn(self, n3):
         if self.version in ['FMT', 'aFMT']:

@@ -48,6 +48,10 @@ class EquationOfState(object):
         "Returns the excess free energy per volume"
         return rho*self.excess_free_energy_particle(rho)
     
+    def free_energy_volume(self, rho):
+        "Returns the free energy per volume"
+        return self.excess_free_energy_volume(rho) + boltzmann*self.temperature*rho*(np.log(self.wvl**3*rho)-1)
+    
     def derivative_excess_free_energy_particle(self, rho):
         "Returns the density derivative of the excess free energy per particle"
         raise NotImplementedError

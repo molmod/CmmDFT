@@ -315,12 +315,15 @@ class Program(object):
             for solver in solvers:
                 self.set_solver(solver)
                 try:
-                    self.solve(chempot, **kwargs)
-                    break  # Stop if successful
+                    N, rho, converged = self.solve(chempot, **kwargs)
+                    if converged:
+                        break  # Stop if successful
+                    log.dump('Solver %s did not converge, trying next one...' %solver.name)
                 except NoSolutionError:
                     log.dump('Solver %s failed, trying next one...' %solver.name)
             else:
-                log.dump('All solvers failed.')
+                log.warning('All solvers failed, at %7.5fkJmol %7.5fK.' %(chempot/kjmol,self.fener.temperature/kelvin))
+
 
     def solve(self, chempot, Ninit=None, rewrite=False, energy_tracking=True, silent=False, continue_solving=False):
         '''This function solves for the density profile at given a chemical potential and temperature
@@ -363,7 +366,7 @@ class Program(object):
                 return
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
             rho_old = self.rho0.copy()
-            N, rho = self.solver.solve(chempot, rho_old, log_level)
+            N, rho, converged = self.solver.solve(chempot, rho_old, log_level)
 
             if self.solver.track_history:
                 solving_name = 'solving_history%s.csv'%(self.file_suffix)
@@ -373,6 +376,8 @@ class Program(object):
                 log.dump('  saving history to %s' %(solver_history_fn))
 
             np.save(self.rho_fn, rho)
+            return N, rho, converged
+
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):
         '''This function calculates the reference chemical potential by solving an adsorption isotherm and
             finding the chemical potential with the steepest incline.

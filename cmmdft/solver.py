@@ -52,11 +52,11 @@ class Solver(object):
         self.fener = program.fener
         self.nsteps = nsteps
 
-        if isinstance(list, criterion):
+        if isinstance(criterion, list):
             for crit in criterion:
                 assert crit.lower() in ['riue', 'res', 'der'], 'Criterion must be either RIUE (relative integrated unsigned error), RES (Residual error) or DER (Derivative error)'
             self.criterion = [crit.lower() for crit in criterion]
-            if isinstance(list, threshold):
+            if isinstance(threshold, list):
                 assert len(criterion) == len(threshold), 'If multiple criterions are given, the same amount of thresholds should be given'
                 self.threshold = threshold
             elif isinstance(threshold, (int, float)):
@@ -74,8 +74,6 @@ class Solver(object):
             if 'ExtPot' in part.name:
                 self.mask = np.where(part.potential>50*boltzmann*self.fener.temperature, False, True)
             
-
-        self.threshold = threshold
         self.a_tol = a_tol
         self.r_tol = r_tol
         self.min_iter = min_iter
@@ -197,7 +195,6 @@ class Solver(object):
                     Grho_new = self.get_new_rho(C1_new, self.fugacity)
                     res_norm = np.linalg.norm(Grho_new - rho_new)
                     self.RES = res_norm/np.sqrt(N_new)/np.sqrt(np.prod(self.grid.npoints))
-
                     crit = self.RES
                     log.dump("             *  Norm of residual                  = %11.4e" %self.RES)
 
@@ -207,7 +204,7 @@ class Solver(object):
                     crit = self.DER
                     log.dump("             *  Norm of derivative                  = %11.4e" %self.DER)
 
-                CRIT_PASS *= (crit > thresh)
+                CRIT_PASS *= (crit < thresh)
 
             if self.track_history:
                 self.history[self.curr_step, 0] = N_new
@@ -229,17 +226,8 @@ class Solver(object):
             if self.omega0 is not None:
                 log.dump("             *  Grand potential                   = %11.4e kJ/mol " %(self.omega0/kjmol))
             
-            if crit<=self.threshold and self.curr_step>=self.min_iter:
-                log.dump("Converged after %d steps"%(self.curr_step))
-                log.dump("")
-                CRIT_PASS = True
 
-            elif np.isclose(self.RIUE, 0, atol=1e-10):
-                log.dump("Converged after %d steps with RIUE close to zero"%(self.curr_step))
-                log.dump("")
-                CRIT_PASS = True
-
-            elif self.IUE==0 and np.isnan(self.RIUE):
+            if self.IUE==0 and np.isnan(self.RIUE):
                 log.dump("Converged after %d steps"%(self.curr_step))
                 log.dump("Loading is zero")
                 CRIT_PASS = True
@@ -269,6 +257,7 @@ class Solver(object):
             If the new density contains non-finite values, indicating a failure in the Picard iteration.
         """
         self.log_level = log_level
+        converged = False
         with log.section('SOLVER', self.log_level, timer=self.name):
             self._initiate_solving(chempot)
             tstart_tot = time.perf_counter()
@@ -309,6 +298,7 @@ class Solver(object):
                     self.history[self.curr_step, 6] = tstop - tstart_tot
                 
                 if self._check_convergence(rho_new, krho_new, C1_new, rho, N_new):
+                    converged = True
                     break
 
                 rho = rho_new.copy()
@@ -318,13 +308,12 @@ class Solver(object):
 
             if istep==self.nsteps-1:
                 log.warning("Solution not converged after %d steps at temperature %5.3f and chemical potential %7.5f"%(self.nsteps, self.fener.temperature, chempot/kjmol), label_section='solve')
-                raise NoSolutionError("Solution not converged after %d steps at temperature %5.3f and chemical potential %7.5f"%(self.nsteps, self.fener.temperature, chempot/kjmol))
             
             tstop_tot = time.perf_counter()
             log.dump('#################################################################################')
             log.dump(f'Calculated the density for a chemical potential of {round(chempot/kjmol,3)} kJ/mol in {round(tstop_tot-tstart_tot,2)} seconds')
             log.dump('#################################################################################')
-            return N_new, rho_new 
+            return N_new, rho_new, converged
 
     def solve(self, chempot, rho, log_level):
         """

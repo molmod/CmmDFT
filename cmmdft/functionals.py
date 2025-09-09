@@ -12,10 +12,10 @@ from molmod.units import kjmol, angstrom
 from molmod.constants import planck, boltzmann
 from yaff import ForceField
 
-from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell
+from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell, effective_potential_Leb
 from .log import log
 from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost
-from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS
+from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS, SumOfEOS
 from .yukawa import lj3dFT
 __all__ = [
     'FreeEnergy', 'Functional','FMTFunctional','MFMTFunctional', 'WhiteBearIIFunctional',
@@ -121,7 +121,7 @@ class FreeEnergy(object):
                     index = int(words[1])
                     self.tracking_step = index+1
     
-    def track(self, chempot, rho, iphase=0, write=True, print_out=False, fn=None, unit=1):
+    def track(self, chempot, rho, krho=None, iphase=0, write=True, print_out=False, fn=None, unit=1):
         '''The "track" function calculates the grand potential and writes a line in a convergence file
             containing the adsorption and energetic contributions towards the grand potential.
             
@@ -159,7 +159,8 @@ class FreeEnergy(object):
             Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0)).real/self.beta
             G = Fid - chempot*N
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, (-chempot*N/unit), Fid/unit)
-            krho = self.grid.fft(rho)#*self.grid.dr
+            if krho is None:
+                krho = self.grid.fft(rho)#*self.grid.dr
             for part in self.parts:
                 Fpart = part.value(krho).real
                 if print_out: print(part.name, round(Fpart/kjmol,2))
@@ -293,10 +294,10 @@ class FreeEnergy(object):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
             
-            wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos)
+            wda = WDAVFunctional(self.grid, self.system.guest.Rhs, eos)
         self.add_part(wda)
 
-    def add_hard_sphere(self,version='MFMT', xi_limit=1-1e-12):
+    def add_hard_sphere(self,version='MFMT', xi_limit=1):
         """
             Adds a hard sphere repulsion functional of various types
 
@@ -310,7 +311,7 @@ class FreeEnergy(object):
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
-            HardSphere = HardSphereFunctional(self.system.guest.Rhs, self.grid, version=version, xi_limit=xi_limit)
+            HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, version=version, xi_limit=xi_limit)
             self.add_part(HardSphere)
     
     def add_mean_field(self, tailcorrections=False, **kwargs):
@@ -379,8 +380,17 @@ class FreeEnergy(object):
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
+            mass = self.system.guest.mass
+            Rhs = self.system.guest.Rhs
+            sigma = self.system.guest.sigma
+            epsilon = self.system.guest.epsilon
+            
+            MBWR = ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon)
+            CS = CarnahanStarlingEOS(mass, Rhs)
+            MFA = MFAEOS(mass, sigma, epsilon)
+            SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
 
-            corr = WDACorFMTunctional(self.system.guest.Rhs, self.grid, self.system.guest.mass, self.system.guest.sigma, self.system.guest.epsilon, **kwargs)
+            corr = WDAVFunctional(self.grid, self.system.guest.Rhs, SUM)
             self.add_part(corr)
 
     def _OLD_add_coarse_MFA(self, temperature, rcut=12*angstrom, limit_potential=0, style='su', rewrite=False, degree=7):
@@ -447,13 +457,12 @@ class Functional(object):
     def set_temperature(self, temperature, **kwargs):
         pass
 
-
 class HardSphereFunctional(Functional):
     """The framework for hard sphere functionals."""
     
     name = 'HardSphere'
     
-    def __init__(self, Rhs, grid, version='MFMT', xi_limit=1-1e-12):
+    def __init__(self, grid, Rhs, xi_limit=1, version='MFMT'):
         """
         **Arguments:**
 
@@ -469,15 +478,18 @@ class HardSphereFunctional(Functional):
         self.R = Rhs
         self.version = version
         self.xi_limit = xi_limit
+        self.xi_limit = xi_limit
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        return type(self)(self.R, grid, self.version)
+        return type(self)(grid, self.R, self.version)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         self.temperature = temperature
         self.beta = 1/(boltzmann*temperature)
         self.R = Rhs
+        self.krho = None
+        self.nt = None
         self._init_weight_functions()
 
     def _init_weight_functions(self):
@@ -496,21 +508,57 @@ class HardSphereFunctional(Functional):
         omega = self.grid.kpoints[:,:,:,3]*self.R
         mask = ~np.isclose(omega,0)
 
-        self.kw0 = np.zeros_like(omega, dtype=np.complex_)
-        self.kw0[mask] = np.sinc(omega[mask]/np.pi)
-        self.kw0[~mask] = 1.0
-        self.kw0 *= self.grid.sigma_lanczos
+        kw0 = np.ones_like(omega, dtype=np.complex_)
+        kw0[mask] = np.sinc(omega[mask]/np.pi)
+        kw0 *= self.grid.sigma_lanczos
+        kw1 = self.R*kw0
+        kw2 = 4.0*np.pi*self.R**2*kw0
 
-        self.kw1 = self.R*self.kw0
-        self.kw2 = 4.0*np.pi*self.R**2*self.kw0
-        self.kw3 = np.zeros_like(omega, dtype=np.complex_)
-        self.kw3[mask] = 4.0*np.pi*self.R**3*(np.sin(omega[mask])-omega[mask]*np.cos(omega[mask]))/omega[mask]**3
-        self.kw3[~mask] = 4.0*np.pi*self.R**3/3.0
-        self.kw3 *= self.grid.sigma_lanczos
-        self.kwv2 = -1.j*(self.kw3)[:,:,:,np.newaxis]*self.grid.kpoints[:,:,:,:3] 
-        self.kwv2[~mask] = 0.0
-        self.kwv1 = self.kwv2/(4*np.pi*self.R)
-        self.weight_functions = [self.kw0, self.kw1, self.kw2, self.kw3, self.kwv1, self.kwv2]
+        j2_basis = np.ones_like(omega, dtype=np.complex_)
+        j2_basis[mask] = 3*(np.sin(omega[mask])-omega[mask]*np.cos(omega[mask]))/omega[mask]**3
+        j2_basis *= self.grid.sigma_lanczos
+
+        kw3 = (4.0*np.pi*self.R**3/3.0)*j2_basis
+
+        kwv2 = -1.j*(kw3)[:,:,:,np.newaxis]*self.grid.kpoints[:,:,:,:3] 
+        kwv2[~mask] = 0.0
+        kwv1 = kwv2/(4*np.pi*self.R)
+
+
+        self.scalar_weight_functions = [kw0, kw1, kw2, kw3]
+        self.vector_weight_functions = [kwv1, kwv2]
+
+        if 't' in self.version:
+            #tensor version taken from: https://doi.org/10.1063/5.0010974
+            KX = self.grid.kpoints[:,:,:,0]
+            KY = self.grid.kpoints[:,:,:,1]
+            KZ = self.grid.kpoints[:,:,:,2]
+            K = self.grid.kpoints[:,:,:,3]
+            K2 = K**2
+            # unit-k tensor hat{k}_i hat{k}_j, with safe k=0 handling
+            eps = 0.0  # use exact zero test
+            with np.errstate(invalid='ignore', divide='ignore'):
+                Hxx = np.where(K>eps, (KX*KX)/K2, 1/3)
+                Hyy = np.where(K>eps, (KY*KY)/K2, 1/3)
+                Hzz = np.where(K>eps, (KZ*KZ)/K2, 1/3)
+                Hxy = np.where(K>eps, (KX*KY)/K2, 0.0)
+                Hxz = np.where(K>eps, (KX*KZ)/K2, 0.0)
+                Hyz = np.where(K>eps, (KY*KZ)/K2, 0.0)
+
+            # scalar coefficients
+            J2 = j2_basis - kw0
+            B = -4*np.pi*self.R**2 * J2                   # multiplies (hat{k}_i hat{k}_j - δ_ij/3)
+
+            # build each component of w_ij(k) in the continuous convention
+            kwxx = B*(Hxx - 1/3) # + 1/3*kw2
+            kwxy = B*(Hxy - 0.0) # + 0.0*kw2
+            kwxz = B*(Hxz - 0.0) # + 0.0*kw2
+            kwyy = B*(Hyy - 1/3) # + 1/3*kw2
+            kwyz = B*(Hyz - 0.0) # + 0.0*kw2
+            kwzz = B*(Hzz - 1/3) # + 1/3*kw2
+
+
+            self.tensor_weight_functions = [kwxx, kwxy, kwxz, kwyy, kwyz, kwzz]
 
     def _get_density_functions(self, krho):
         """
@@ -524,70 +572,76 @@ class HardSphereFunctional(Functional):
             The density in reciprocal space
         """
         # The scalar density functions
-        kn0 = krho*self.kw0
+        kn0 = krho*self.scalar_weight_functions[0]
         n0 = self.grid.ifft(kn0).real#*self.grid.dk
-        kn1 = krho*self.kw1
+        kn1 = krho*self.scalar_weight_functions[1]
         n1 = self.grid.ifft(kn1).real#*self.grid.dk
-        kn2 = krho*self.kw2
+        kn2 = krho*self.scalar_weight_functions[2]
         n2 = self.grid.ifft(kn2).real#*self.grid.dk
-        kn3 = krho*self.kw3
+        kn3 = krho*self.scalar_weight_functions[3]
         n3 = self.grid.ifft(kn3).real#*self.grid.dk
         #When n3 approaches 1, things can go wrong because the functional
         # contains terms with log(1-n3) and 1/(1-n3)
-        n3[n3>0.99] = 0.99
-        #When n3 approaches 0 things can also go wrong:
-        n3[n3==0] = 1e-30
+        n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n3 is in [0, 1-1e-12]
         # The vector density functions
 
-        knv1, nv1 = [], []
-        for alpha in range(3):
-            nv1kalpha = krho*self.kwv1[:,:,:,alpha]
-            nv1alpha = self.grid.ifft(nv1kalpha).real#*self.grid.dk
-            knv1.append(nv1kalpha)
-            nv1.append(nv1alpha)
-        knv2, nv2 = [], []
-        for alpha in range(3):
-            nv2kalpha = krho*self.kwv2[:,:,:,alpha]
-            nv2alpha = self.grid.ifft(nv2kalpha).real#*self.grid.dk
-            knv2.append(nv2kalpha)
-            nv2.append(nv2alpha)
 
-        xi = (nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2])/((n2+1e-16)**2)
-        xi[xi>=self.xi_limit] = self.xi_limit
-        return n0,n1,n2,n3,np.array(nv1),np.array(nv2),xi
+        knv1 = krho[..., None] * self.vector_weight_functions[0]
+        nv1 = self.grid.ifftn(knv1).real  
+
+        knv2 = krho[..., None] * self.vector_weight_functions[1]
+        nv2 = self.grid.ifftn(knv2).real
+        
+        xi = None
+        if 'a' in self.version:
+            xi = (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)/((n2)**2+1e-16)
+            xi = np.clip(xi, 0.0, self.xi_limit)  # Ensure xi is in [0, xi_limit]
+
+        ln_n3 = np.log(1-n3)
+        n3_2 = n3*n3
+        n3_3 = n3_2*n3
+
+        return n0,n1,n2,n3,ln_n3,n3_2,n3_3,nv1,nv2,xi
+
+    def _get_tensor_density_functions(self, krho):
+        knxx = krho*self.tensor_weight_functions[0]
+        knxy = krho*self.tensor_weight_functions[1]
+        knxz = krho*self.tensor_weight_functions[2]
+        knyy = krho*self.tensor_weight_functions[3]
+        knyz = krho*self.tensor_weight_functions[4]
+        knzz = krho*self.tensor_weight_functions[5]
+
+        nxx = self.grid.ifft(knxx).real
+        nxy = self.grid.ifft(knxy).real
+        nxz = self.grid.ifft(knxz).real
+        nyy = self.grid.ifft(knyy).real
+        nyz = self.grid.ifft(knyz).real
+        nzz = self.grid.ifft(knzz).real
+
+
+        tr2 = (nxx**2 + nyy**2 + nzz**2 + 2*(nxy**2 + nxz**2 + nyz**2))
+        tr3 = (nxx**3 + nyy**3 + nzz**3 + 3*(nxx*nxy*nxy + nxx*nxz*nxz + nyy*nxy*nxy + nyy*nyz*nyz + nzz*nxz*nxz + nzz*nyz*nyz) + 6*nxy*nxz*nyz)
+        return [nxx, nxy, nxz, nyy, nyz, nzz, tr2, tr3]
 
     def get_n3(self, krho):
-        kn3 = krho*self.kw3
+        kn3 = krho*self.scalar_weight_functions[3]
         return self.grid.ifft(kn3).real#*self.grid.dk        
 
     def get_n2_nv2(self, krho):
-        kn2 = krho*self.kw2
+        kn2 = krho*self.scalar_weight_functions[2]
         n2 = self.grid.ifft(kn2)#*self.grid.dk
-        knv2, nv2 = [], []
-        for alpha in range(3):
-            tmp = self.grid.kpoints[:,:,:,alpha]
-            nv2kalpha = krho*self.kwv2*tmp
-            nv2alpha = self.grid.ifft(nv2kalpha)#*self.grid.dk
-            knv2.append(nv2kalpha)
-            nv2.append(nv2alpha)   
+        knv2 = krho[..., None] * self.vector_weight_functions[1]
+        nv2 = self.grid.ifftn(knv2).real
         return abs(n2)/nv2
 
-    def get_phi(self, n0, n1, n2, n3, nv1, nv2, xi):
-        """
-        Compute the functional value
-
-        **Arguments:**
-
-        n0, n1, n2, n3, nv1, nv2
-            The density functions, should be computed using _get_density_functions
-        """
-        phi = n0*self._phi1(n3)
-        phi += (n1*n2 - (nv1[0]*nv2[0]+nv1[1]*nv2[1]+nv1[2]*nv2[2]))*self._phi2(n3)
-        if 'a' in self.version:
-            phi += n2**3*(1-xi)**3*self._phi3(n3)
-        else:
-            phi += (n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._phi3(n3)
-        return phi
+    def set_density(self, krho):
+        #check if current density is the same as previous one
+        if np.array_equal(krho, self.krho):
+            return
+        self.krho = krho
+        self.weighted_densities = self._get_density_functions(krho)
+        if 't' in self.version:
+            self.nt = self._get_tensor_density_functions(krho)
 
     def derive(self, krho):
         """
@@ -600,7 +654,7 @@ class HardSphereFunctional(Functional):
         """
         with log.section('(M)FMT', 3, timer='(M)FMT derive'):
             # Compute the density functions
-            n0,n1,n2,n3,nv1,nv2,xi = self._get_density_functions(krho)
+            self.set_density(krho)
             dFk_total = 0.0
             # Fhe functional is (up to a factor k_B T) the integral of Phi.
             # Phi is a function of the density functions, which are in turn
@@ -608,106 +662,207 @@ class HardSphereFunctional(Functional):
             # applying the chain rule, we find that the functional derivative can
             # be obtained by convoluting the derivatives of phi wrt the density
             # functions with the corresponding weight function
-            for get_dphi, kweight in [
-                    (self._get_dphi_n0, self.kw0), (self._get_dphi_n1, self.kw1),
-                    (self._get_dphi_n2, self.kw2), (self._get_dphi_n3, self.kw3)]:
-                dphi = get_dphi(n0,n1,n2,n3,nv1,nv2,xi)
-                dFk_total += self.grid.fft(dphi)*kweight
+
+            scalar_dphi = [_get_dphi_n0, _get_dphi_n1, _get_dphi_n2, _get_dphi_n3]
+            for get_dphi, kweight in zip(scalar_dphi, self.scalar_weight_functions):
+                dFk_total += self.grid.fft(get_dphi(*self.weighted_densities, nt=self.nt, version=self.version))*kweight
             # The vector contribution
-            for get_dphi, kweight in [(self._get_dphi_nv1, self.kwv1), (self._get_dphi_nv2, self.kwv2)]:
-                for alpha in range(3):
-                    dphi = get_dphi(n0,n1,n2,n3,nv1,nv2,xi,alpha)
-                    dFk_total -= self.grid.fft(dphi)*kweight[:,:,:,alpha]
+            vector_dphi = [_get_dphi_nv1, _get_dphi_nv2]
+            for get_dphi, kweight in zip(vector_dphi, self.vector_weight_functions):
+                kdphi = self.grid.fftn(get_dphi(*self.weighted_densities, nt=self.nt, version=self.version))
+                dFk_total += -(kdphi[...,0] * kweight[...,0] + kdphi[...,1] * kweight[...,1] + kdphi[...,2] * kweight[...,2])
+
+            if 't' in self.version:
+                kdphi = self.grid.fftn(_get_dphi_nt(*self.weighted_densities, nt=self.nt, version=self.version))
+                dFk_total += (kdphi[...,0] * self.tensor_weight_functions[0] + kdphi[...,1] * self.tensor_weight_functions[1] + kdphi[...,2] * self.tensor_weight_functions[2] 
+                               + kdphi[...,3] * self.tensor_weight_functions[3] + kdphi[...,4] * self.tensor_weight_functions[4] + kdphi[...,5] * self.tensor_weight_functions[5])
+
             dF_total = self.grid.ifft(dFk_total)
             return dF_total/self.beta
     
     def value(self, krho, local=False):
         with log.section('(M)FMT', 3, timer='(M)FMT value'):
-            n0, n1, n2, n3, nv1, nv2, xi = self._get_density_functions(krho)        
-            phi = self.get_phi(n0, n1, n2, n3, nv1, nv2, xi)
+            self.set_density(krho)  
+            phi = get_phi(*self.weighted_densities, nt=self.nt, version=self.version)
             if local:
                 return phi/self.beta
             else:
                 return self.grid.integrate(phi)/self.beta
+
+def get_phi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt=None, version=None):
+    """
+    Compute the functional value
+
+    **Arguments:**
+
+    n0, n1, n2, n3, nv1, nv2
+        The density functions, should be computed using _get_density_functions
+    """
+    phi = n0*_phi1(n3, ln_n3)
+    phi += (n1*n2 - (nv1[...,0]*nv2[...,0]+nv1[...,1]*nv2[...,1]+nv1[...,2]*nv2[...,2]))*_phi2(n3, ln_n3, n3_2, version)
+    if 'a' in version:
+        prefactor3 = (n2**3)*((1-xi)**3)
+    else:
+        prefactor3 = (n2**3-3.0*n2*(nv2[...,0]**2+nv2[...,1]**2+nv2[...,2]**2))
+
+    if 't' in version:
+        xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
         
-    def _get_dphi_n0(self, n0, n1, n2, n3, nv1, nv2, xi):
-        return self._phi1(n3)
+        prefactor3 += (9/2)*(xx*nv2[...,0]**2 + yy*nv2[...,1]**2 + zz*nv2[...,2]**2 
+                            + 2*xy*nv2[...,0]*nv2[...,1] + 2*xz*nv2[...,0]*nv2[...,2] + 2*yz*nv2[...,1]*nv2[...,2]) #quadratic form nv2*nt*nv2
+        # prefactor3 -= (9/2)*(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)*n2 #n2*nv2*nv2
+        # prefactor3 += (9/2)*n2*tr2 #n2*Tr(nt**2)
+        prefactor3 -= (9/2)*tr3
+    phi += prefactor3*_phi3(n3, ln_n3, n3_2, n3_3, version)
+    return phi
 
-    def _get_dphi_n1(self, n0, n1, n2, n3, nv1, nv2, xi):
-        return n2*self._phi2(n3)    
+def _get_dphi_n0(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+    return _phi1(n3, ln_n3)
 
-    def _get_dphi_n2(self, n0, n1, n2, n3, nv1, nv2, xi):
-        tmp0 = n1*self._phi2(n3)
-        if 'a' in self.version:
-            tmp1 = (3*n2**2*(1+xi)*(1-xi)**2)*self._phi3(n3)
-        else:
-            tmp1 = 3*(n2**2-(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._phi3(n3)
-        dphi = tmp0+tmp1
-        return dphi
+def _get_dphi_n1(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+    return n2*_phi2(n3, ln_n3, n3_2, version)    
 
-    def _get_dphi_n3(self, n0, n1, n2, n3, nv1, nv2, xi):
-        tmp0 = n0*self._dphi1dn(n3)
-        tmp1 = (n1*n2-(nv1[0]*nv2[0]+nv1[1]*nv2[1]+nv1[2]*nv2[2]))*self._dphi2dn(n3)
-        if 'a' in self.version:
-            tmp2 = n2**3*(1-xi)**3*self._dphi3dn(n3)
-        else:
-            tmp2 = (n2**3-3.0*n2*(nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2]))*self._dphi3dn(n3)
-        dphi = tmp0+tmp1+tmp2
-        return dphi
+def _get_dphi_n2(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+    dphi = n1*_phi2(n3, ln_n3, n3_2, version)
+    if 'a' in version:
+        dphi += (3*(n2**2)*(1+xi)*((1-xi)**2))*_phi3(n3, ln_n3, n3_2, n3_3, version)
+    # elif 't' in version:
+    #     tr2 = nt[-2]
+    #     dphi += (9/2)*( -3* (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2) 
+    #                 + tr2)*_phi3(n3, ln_n3, n3_2, n3_3, version)
+    else:
+        dphi += 3*(n2**2-(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2))*_phi3(n3, ln_n3, n3_2, n3_3, version)
 
-    def _get_dphi_nv1(self, n0, n1, n2, n3, nv1, nv2, xi, index):
-        dphi = -nv2[index]*self._phi2(n3)
-        return dphi
+    return dphi
 
-    def _get_dphi_nv2(self, n0, n1, n2, n3, nv1, nv2, xi, index):
-        dphi = -nv1[index]*self._phi2(n3)
-        if 'a' in self.version:
-            dphi += -6*n2*nv2[index]*(1-xi)**2*self._phi3(n3)
-        else:
-            dphi += -6*n2*nv2[index]*self._phi3(n3)
-        return dphi
-
-    def _phi1(self, n3):
-        return -np.log(1.0-n3)
+def _get_dphi_n3(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+    dphi = n0*_dphi1dn(n3)
+    dphi += (n1*n2-(nv2[...,0]*nv1[...,0] + nv2[...,1]*nv1[...,1] + nv2[...,2]*nv1[...,2]))*_dphi2dn(n3, ln_n3, n3_2, version)
+    if 'a' in version:
+        prefactor3 = (n2**3)*((1-xi)**3)
+    else:
+        prefactor3 = (n2**3-3.0*n2*(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2))
     
-    def _dphi1dn(self, n3):
-        return 1.0/(1.0-n3)
-    
-    def _phi2(self, n3):
-        if self.version in ['FMT', 'MFMT', 'aFMT', 'aMFMT']:
-            return 1/(1.0-n3)
-        elif self.version in ['WBII', 'aWBII']:
-            return ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3))
-            # return np.where(n3<=1e-8,(1+ n3**2/9)/(1-n3), ((5 - n3)*n3 + 2*(1-n3)*np.log(1-n3))/(3*n3*(1-n3)))
-                
-    def _dphi2dn(self, n3):
-        if self.version in ['FMT', 'MFMT', 'aFMT', 'aMFMT']:
-            return 1/(1-n3)**2
-        elif self.version in ['WBII', 'aWBII']:
-            return -2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2)
-            # return np.where(n3<=1e-8,(1+ 2*n3/9 + n3**2/18)/(1-n3)**2,-2*(n3 - 3*n3**2 + (1-n3)**2*np.log(1-n3))/(3*n3**2*(1-n3)**2))
+    if 't' in version:
+        xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
 
-    def _phi3(self, n3):
-        if self.version in ['FMT', 'aFMT']:
-            return 1/(24*np.pi*(1-n3)**2)
-        elif self.version in ['MFMT', 'aMFMT']:
-            return (n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2)
-            # return np.where(n3<=1e-8,(1.0-2*n3/9-n3**2/18)/(24*np.pi*(1-n3)**2),(n3+(1-n3)**2*np.log(1-n3))/(36*np.pi*n3**2*(1-n3)**2))
-        elif self.version in ['WBII', 'aWBII']:
-            return -2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2)
-            # return np.where(n3<=1e-8,(1-4*n3/9+n3**2/18)/(24*np.pi*(1-n3)**2),-2*(n3 + (n3-3)*n3**2+np.log(1-n3)*(1-n3)**2)/((3*n3**2)*24*np.pi*(1-n3)**2))
+        prefactor3 += (9/2)*(xx*nv2[...,0]**2 + yy*nv2[...,1]**2 + zz*nv2[...,2]**2 + 
+                   2*xy*nv2[...,0]*nv2[...,1] + 2*xz*nv2[...,0]*nv2[...,2] + 2*yz*nv2[...,1]*nv2[...,2]) #quadratic form nv2*nt*nv2
+        # contrib -= (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)*n2 #n2*nv2*nv2
+        # contrib += n2*tr2 #n2*Tr(nt**2)
+        prefactor3 -= (9/2)*tr3
+    dphi += prefactor3*_dphi3dn(n3, ln_n3, n3_2, n3_3, version)
+    return dphi
 
-    def _dphi3dn(self, n3):
-        if self.version in ['FMT', 'aFMT']:
-            return 1/(12*np.pi*(1-n3)**3)
-        elif self.version in ['MFMT', 'aMFMT']:
-            # return -(n3*(2-5*n3+n3**2)+2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
-            return np.where(n3<=1e-8,(8/3-0.5*n3-0.1*n3**2)/(36*np.pi*(1-n3)**3),-(n3*(2-5*n3+n3**2)+2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3))
-        elif self.version in ['WBII', 'aWBII']:
-            # return (2*n3-5*n3**2+6*n3**3-n3**4 + 2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3)
-            return np.where(n3<=1e-8,(7/3-n3/2+n3**2/10)/(36*np.pi*(1-n3)**3),(2*n3-5*n3**2+6*n3**3-n3**4 + 2*(1-n3)**3*np.log(1-n3))/(36*np.pi*n3**3*(1-n3)**3))
+def _get_dphi_nv1(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+    dphi = - nv2 * _phi2(n3, ln_n3, n3_2, version)[..., None]
+    return dphi
+
+def _get_dphi_nv2(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+    dphi = - nv1 * _phi2(n3, ln_n3, n3_2, version)[..., None]
+    phi3 = _phi3(n3, ln_n3, n3_2, n3_3, version)
+    if 'a' in version:
+        factor = -6*n2*((1-xi)**2)*phi3
+        dphi += nv2 * factor[..., None]
+    else:
+        factor = -6*n2*phi3
+        dphi += nv2 * factor[..., None]
+
+    if 't' in version:
+        vx, vy, vz = nv2[...,0], nv2[...,1], nv2[...,2]
+
+        xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
+
+        # # grad wrt nv
+        # grad_nv = np.empty_like(nv2)
+        # grad_nv[...,0] = 2 * ((xx - 3*n2) * vx + xy * vy + xz * vz)
+        # grad_nv[...,1] = 2 * (xy * vx + (yy - 3*n2) * vy + yz * vz)
+        # grad_nv[...,2] = 2 * (xz * vx + yz * vy + (zz - 3*n2) * vz)
+        
+        grad_nv = np.empty_like(nv2)
+        grad_nv[...,0] = 2 * (xx * vx + xy * vy + xz * vz)
+        grad_nv[...,1] = 2 * (xy * vx + yy * vy + yz * vz)
+        grad_nv[...,2] = 2 * (xz * vx + yz * vy + zz * vz)
+
+        dphi += (9/2)*grad_nv*phi3[..., None]
+    return dphi
+
+def _get_dphi_nt(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+    vx, vy, vz = nv2[...,0], nv2[...,1], nv2[...,2]
+
+    xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
+
+    # nt^2 terms (symmetrized)
+    # g_xx =  vx*vx + 2*n2*xx - 3*(xx*xx + xy*xy + xz*xz)
+    # g_xy = (vx*vy + 2*n2*xy - 3*(xx*xy + yy*xy + xz*yz))*2
+    # g_xz = (vx*vz + 2*n2*xz - 3*(xx*xz + zz*xz + xy*yz))*2
+    # g_yy =  vy*vy + 2*n2*yy - 3*(yy*yy + xy*xy + yz*yz)
+    # g_yz = (vy*vz + 2*n2*yz - 3*(yy*yz + zz*yz + xy*xz))*2
+    # g_zz =  vz*vz + 2*n2*zz - 3*(zz*zz + xz*xz + yz*yz)
     
-  
+    g_xx =  vx*vx - 3*(xx*xx + xy*xy + xz*xz)
+    g_xy = (vx*vy - 3*(xx*xy + yy*xy + xz*yz))*2
+    g_xz = (vx*vz - 3*(xx*xz + zz*xz + xy*yz))*2
+    g_yy =  vy*vy - 3*(yy*yy + xy*xy + yz*yz)
+    g_yz = (vy*vz - 3*(yy*yz + zz*yz + xy*xz))*2
+    g_zz =  vz*vz - 3*(zz*zz + xz*xz + yz*yz)
+
+    grad_nt = np.stack([g_xx, g_xy, g_xz, g_yy, g_yz, g_zz], axis=-1)
+    return (9/2)*grad_nt*_phi3(n3, ln_n3, n3_2, n3_3, version)[...,None]
+            
+FMT_NAMES = ['FMT', 'aFMT', 'tFMT', 'atFMT', 'taFMT']
+MFMT_NAMES = ['MFMT', 'aMFMT', 'tMFMT', 'atMFMT', 'taMFMT']
+WBII_NAMES = ['WBII', 'aWBII', 'tWBII', 'atWBII', 'taWBII']
+
+def _phi1(n3, ln_n3):
+    return -ln_n3
+
+def _dphi1dn(n3):
+    return 1.0/(1.0-n3)
+
+def _phi2(n3, ln_n3, n3_2, version):
+    if version in FMT_NAMES or version in MFMT_NAMES:
+        return 1/(1.0-n3)
+    elif version in WBII_NAMES:
+        return np.where(n3<=1e-8,
+                        (1+ n3_2/9)/(1-n3), 
+                        (5*n3 - n3_2 + 2*(1-n3)*ln_n3)/(3*(n3-n3_2)))
+            
+def _dphi2dn( n3, ln_n3, n3_2, version):
+    n3_1_2 = (1-2*n3 + n3_2)
+    if version in FMT_NAMES or version in MFMT_NAMES:
+        return 1/n3_1_2
+    elif version in WBII_NAMES:
+        return np.where(n3<=1e-8,
+                        (1+ 2*n3/9 + n3_2/18)/n3_1_2,
+                        -2*(n3 - 3*n3_2 + n3_1_2*ln_n3)/(3*n3_2*n3_1_2))
+
+def _phi3(n3, ln_n3, n3_2, n3_3, version):
+    n3_1_2 = (1-2*n3 + n3_2)
+    if version in FMT_NAMES:
+        return 1/(24*np.pi*n3_1_2)
+    elif version in MFMT_NAMES:
+        return np.where(n3<=1e-8,
+                        (1.0-2*n3/9-n3_2/18)/(24*np.pi*n3_1_2),
+                        (n3+n3_1_2*ln_n3)/(36*np.pi*n3_2*n3_1_2))
+    elif version in WBII_NAMES:
+        return np.where(n3<=1e-8,
+                        (1-4*n3/9+n3_2/18)/(24*np.pi*n3_1_2),
+                        -2*(n3 -3*n3_2 + n3_3 + ln_n3*n3_1_2)/((3*n3_2)*24*np.pi*n3_1_2))
+
+def _dphi3dn(n3, ln_n3, n3_2, n3_3, version):
+    n3_1_3 = (1-3*n3 + 3*n3_2 - n3_3)
+    if version in FMT_NAMES:
+        return 1/(12*np.pi*n3_1_3)
+    elif version in MFMT_NAMES:
+        return np.where(n3<=1e-8,
+                        (8/3-0.5*n3-0.1*n3_2)/(36*np.pi*n3_1_3),
+                        -(2*n3-5*n3_2+n3_3+2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
+    elif version in WBII_NAMES:
+        return np.where(n3<=1e-8,
+                        (7/3-n3/2+n3_2/10)/(36*np.pi*n3_1_3),
+                        (2*n3-5*n3_2+6*n3_3-n3_2*n3_2 + 2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
+
 
 class MFAFunctional(Functional):
     """
@@ -790,7 +945,7 @@ class MFAFunctional(Functional):
         """
         with(log.section('MFA', 2, timer='MFA init')):
             ff.system.pos[:] = limit_potential
-            self.potential = np.zeros(self.grid.points.shape[:3])
+            self.potential = np.zeros(self.grid.points.shape[:3], dtype=np.float64)
             for r in np.unique(self.grid.points[:,:,:,3].round(decimals=4)):
                 if r<rmin: continue
                 mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
@@ -958,14 +1113,11 @@ class ExternalPotential(Functional):
         potential = np.load(fn)
         shape_diff = np.array([self.grid.points.shape[i] - potential.shape[i] for i in range(3)])
         if np.allclose(shape_diff, -1):
-            # print('Shape of potential is one less than grid shape')
             self.potential = potential[:-1, :-1, :-1]
         elif np.allclose(shape_diff, 0):
-            # print('Shape of potential matches grid shape')
             self.potential = potential
         else:
             raise ValueError(f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {potential.shape}')
-        # assert self.grid.points.shape[:3]==self.potential.shape, f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {self.potential.shape}'
         self.kpotential = self.grid.fft(self.potential)
 
     def set_temperature(self, temperature, **kwargs):
@@ -978,7 +1130,7 @@ class ExternalPotential(Functional):
                 self.generate_potential(temperature)
                 self.dump_potential(epot_fn)
 
-    def generate_potential(self, temperature=None, rewrite=False):
+    def generate_potential(self, temperature=None, rewrite=False, method='pre'):
         '''This function generates a potential energy grid for a given force field and set of points, and
         optionally sets negative values to zero.
         
@@ -994,7 +1146,7 @@ class ExternalPotential(Functional):
         
         '''
         points = self.grid.points
-        self.potential = np.zeros(points.shape[:3], dtype='complex128')
+        self.potential = np.zeros(points.shape[:3], dtype='float64')
         COM = np.sum(self.ff.system.pos[-self.natom:]*self.ff.system.masses[-self.natom:].reshape((self.natom,1)), axis=0)/np.sum(self.ff.system.masses[-self.natom:])
         neutr_pos = np.copy(self.ff.system.pos[-self.natom:] - COM)
 
@@ -1003,13 +1155,16 @@ class ExternalPotential(Functional):
 
         for i in range(points.shape[0]):
             for j in range(points.shape[1]):
-                for k in range(points.shape[2]):        
+                for k in range(points.shape[2]):
                     self.ff.system.pos[-self.natom:] = neutr_pos + points[i,j,k,:3]
                     if self.natom == 1:
                         self.ff.update_pos(self.ff.system.pos)
                         poten = self.ff.compute()
                     else:
-                        integrand = effective_potential_precalc(self.ff, self.natom, 1/boltzmann/temperature, degree=self.degree)
+                        if method == 'pre':
+                            integrand = effective_potential_precalc(self.ff, self.natom, 1/boltzmann/temperature, degree=self.degree)
+                        else:
+                            integrand = effective_potential_Leb(self.ff, self.natom, 1/boltzmann/temperature, degree=self.degree)[0]
                         try:
                             poten = -boltzmann*temperature*np.log(integrand) 
                         except FloatingPointError:
@@ -1080,7 +1235,7 @@ class WDAVFunctional(LDAFunctional):
 
     name = 'WDA-V'
     
-    def __init__(self, Rhs, grid, eos):
+    def __init__(self, grid, Rhs, eos):
         LDAFunctional.__init__(self, grid, eos)
         self.temperature = None
         self.R = Rhs
@@ -1103,7 +1258,7 @@ class WDAVFunctional(LDAFunctional):
         # if self.FMTun is not None:
         #     return type(self)(self.FMTun, grid, self.eos)
         # else:
-        return type(self)(self.R, grid, self.eos)
+        return type(self)(grid, self.R, self.eos)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         LDAFunctional.set_temperature(self, temperature, **kwargs)
@@ -1135,7 +1290,7 @@ class WDAVFunctional(LDAFunctional):
     def _get_weighted_density(self, krho):
         return self.grid.ifft(krho*self.kw)#*self.grid.dk
     
-    def derive(self, krho):
+    def derive(self, krho, wd=None):
         """
         Functional derivative with respect to the density
 
@@ -1145,14 +1300,16 @@ class WDAVFunctional(LDAFunctional):
             The density in reciprocal space
         """
         with log.section('WDA', 3, timer='WDA derive'):
-            wd = self._get_weighted_density(krho)
+            if wd is None:
+                wd = self._get_weighted_density(krho)
             dphi = self.eos.derivative_excess_free_energy_volume(wd)
             dF = self.grid.ifft(self.grid.fft(dphi)*self.kw)
             return dF
     
-    def value(self, krho, local=False):
+    def value(self, krho, wd=None, local=False):
         with log.section('WDA', 3, timer='WDA value'):
-            wd = self._get_weighted_density(krho)
+            if wd is None:
+                wd = self._get_weighted_density(krho)
             phi = self.eos.excess_free_energy_volume(wd)
             if local:
                 return phi
@@ -1160,7 +1317,7 @@ class WDAVFunctional(LDAFunctional):
                 return self.grid.integrate(phi)
 
 
-class WDACorFMTunctional(Functional):
+class WDACorFunctional(WDAVFunctional):
     """
         linear combination of 3 WDA functionals, each with their own EOS:
         
@@ -1175,18 +1332,18 @@ class WDACorFMTunctional(Functional):
 
     name = 'CORR'
     
-    def __init__(self, Rhs, grid, mass, sigma, epsilon):
+    def __init__(self, grid, Rhs, mass, sigma, epsilon):
         self.temperature = None
-        self.Flj  = WDAVFunctional(Rhs, grid, ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon))
-        self.Fhs  = WDAVFunctional(Rhs, grid, CarnahanStarlingEOS(mass, Rhs))
-        self.Fmfa = WDAVFunctional(Rhs, grid, MFAEOS(mass, sigma, epsilon))
+        self.Flj  = WDAVFunctional(grid, Rhs, ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon))
+        self.Fhs  = WDAVFunctional(grid, Rhs, CarnahanStarlingEOS(mass, Rhs))
+        self.Fmfa = WDAVFunctional(grid, Rhs, MFAEOS(mass, sigma, epsilon))
 
     def copy(self, grid=None):
         if grid is None: grid = self.Flj.grid.copy()
         # if self.Flj.FMTun is not None:
         #     return type(self)(self.Flj.FMTun, grid, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon)
         # else:
-        return type(self)(self.Flj.R, grid, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon)
+        return type(self)(grid, self.Flj.R, self.Flj.eos.mass, self.Flj.eos.sigma, self.Flj.eos.epsilon)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         self.temperature = temperature
@@ -1195,14 +1352,16 @@ class WDACorFMTunctional(Functional):
         self.Fmfa.set_temperature(temperature, Rhs, **kwargs)
 
     def derive(self, krho):
-        deriv  = self.Flj.derive(krho)
-        deriv -= self.Fhs.derive(krho)
-        deriv -= self.Fmfa.derive(krho)
+        wd = self.Flj._get_weighted_density(krho)
+        deriv  = self.Flj.derive(krho, wd=wd)
+        deriv -= self.Fhs.derive(krho, wd=wd)
+        deriv -= self.Fmfa.derive(krho, wd=wd)
         return deriv
     
     def value(self, krho, local=False):
+        wd = self.Flj._get_weighted_density(krho)
         value = 0.0
-        value += self.Flj.value(krho, local=local)
-        value -= self.Fhs.value(krho, local=local)
-        value -= self.Fmfa.value(krho, local=local)
+        value += self.Flj.value(krho, wd=wd, local=local)
+        value -= self.Fhs.value(krho, wd=wd, local=local)
+        value -= self.Fmfa.value(krho, wd=wd, local=local)
         return value

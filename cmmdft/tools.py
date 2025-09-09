@@ -535,7 +535,6 @@ def effective_potential_Leb(ff, natom, beta, degree = 10, Taylor=None):
     """
     neutral_pos = np.copy(ff.system.pos)
     COM = np.sum(neutral_pos[-natom:]*ff.system.masses[-natom:].reshape((natom,1)), axis=0)/np.sum(ff.system.masses[-natom:])
-
     rotations1, weights = generate_rotation_matrix(degree, 3)
     rotations2 = generate_rotation_matrix(degree, 2)
 
@@ -543,11 +542,17 @@ def effective_potential_Leb(ff, natom, beta, degree = 10, Taylor=None):
 
     for e, rot1 in enumerate(rotations1):
         for ee, rot2 in enumerate(rotations2):  
-            ff.system.pos[-natom:] = np.matmul(rot1,np.matmul(rot2,(neutral_pos[-natom:]- COM).transpose())).transpose() + COM
+            rot_pos = np.matmul(rot1,np.matmul(rot2,(neutral_pos[-natom:]- COM).transpose())).transpose() + COM
+            ff.system.pos[-natom:] = rot_pos
+            # ff.system.pos[-natom:] = np.matmul(rot1,np.matmul(rot2,(neutral_pos[-natom:]- COM).transpose())).transpose() + COM
             ff.update_pos(ff.system.pos)
-            pot[e,ee] = ff.compute()
+            energy = ff.compute()
+            # print('transformed_pos', rot_pos)
+            # print(energy/kjmol)
+            pot[e,ee] = energy
     ff.update_pos(neutral_pos)
     potential = np.sum(weights.reshape((len(rotations1),1))*np.exp(-pot*beta))/degree/4/np.pi
+    # print(potential)
     if Taylor==1:
         if np.isclose(potential,0):
             der = 0

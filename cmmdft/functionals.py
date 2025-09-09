@@ -12,7 +12,7 @@ from molmod.units import kjmol, angstrom
 from molmod.constants import planck, boltzmann
 from yaff import ForceField
 
-from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell
+from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell, effective_potential_Leb
 from .log import log
 from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS, SumOfEOS
@@ -944,7 +944,7 @@ class MFAFunctional(Functional):
         """
         with(log.section('MFA', 2, timer='MFA init')):
             ff.system.pos[:] = limit_potential
-            self.potential = np.zeros(self.grid.points.shape[:3])
+            self.potential = np.zeros(self.grid.points.shape[:3], dtype=np.float64)
             for r in np.unique(self.grid.points[:,:,:,3].round(decimals=4)):
                 if r<rmin: continue
                 mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
@@ -1112,14 +1112,11 @@ class ExternalPotential(Functional):
         potential = np.load(fn)
         shape_diff = np.array([self.grid.points.shape[i] - potential.shape[i] for i in range(3)])
         if np.allclose(shape_diff, -1):
-            # print('Shape of potential is one less than grid shape')
             self.potential = potential[:-1, :-1, :-1]
         elif np.allclose(shape_diff, 0):
-            # print('Shape of potential matches grid shape')
             self.potential = potential
         else:
             raise ValueError(f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {potential.shape}')
-        # assert self.grid.points.shape[:3]==self.potential.shape, f'Grid shape {self.grid.points.shape[:3]} does not match potential shape {self.potential.shape}'
         self.kpotential = self.grid.fft(self.potential)
 
     def set_temperature(self, temperature, **kwargs):
@@ -1132,7 +1129,7 @@ class ExternalPotential(Functional):
                 self.generate_potential(temperature)
                 self.dump_potential(epot_fn)
 
-    def generate_potential(self, temperature=None, rewrite=False):
+    def generate_potential(self, temperature=None, rewrite=False, method='pre'):
         '''This function generates a potential energy grid for a given force field and set of points, and
         optionally sets negative values to zero.
         
@@ -1157,13 +1154,16 @@ class ExternalPotential(Functional):
 
         for i in range(points.shape[0]):
             for j in range(points.shape[1]):
-                for k in range(points.shape[2]):        
+                for k in range(points.shape[2]):
                     self.ff.system.pos[-self.natom:] = neutr_pos + points[i,j,k,:3]
                     if self.natom == 1:
                         self.ff.update_pos(self.ff.system.pos)
                         poten = self.ff.compute()
                     else:
-                        integrand = effective_potential_precalc(self.ff, self.natom, 1/boltzmann/temperature, degree=self.degree)
+                        if method == 'pre':
+                            integrand = effective_potential_precalc(self.ff, self.natom, 1/boltzmann/temperature, degree=self.degree)
+                        else:
+                            integrand = effective_potential_Leb(self.ff, self.natom, 1/boltzmann/temperature, degree=self.degree)[0]
                         try:
                             poten = -boltzmann*temperature*np.log(integrand) 
                         except FloatingPointError:

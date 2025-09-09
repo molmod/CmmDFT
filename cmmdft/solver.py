@@ -403,7 +403,6 @@ class Picard(Solver):
                 solve for.
             
         """
-        print('#' * 50)
         self.log_level = log_level
         self.correction_factor = 1
         with log.section(self.name, self.log_level, timer=None):
@@ -587,7 +586,6 @@ class Anderson(Picard):
         print('Damping coefficient: %5.3f'%(self.damping))
         
     def update_rho(self, rho, krho, Grho):
-        print('#' * 50)
         if self.curr_step == 0:
             self.it_eps = 0
         else:
@@ -646,7 +644,7 @@ class Fire(Solver):
 
     name = 'FIRE'
 
-    def __init__(self, program, nsteps=100, method='abc-fire', alpha=0.15, dt=0.002, **kwargs):
+    def __init__(self, program, nsteps=2000, method='abc-fire', alpha=0.15, dt=0.002, **kwargs):
         """
         Initialize the solver with the given parameters.
         Parameters:
@@ -665,7 +663,6 @@ class Fire(Solver):
         **kwargs : dict
             Additional keyword arguments to be passed to the parent class initializer.
         """
-        raise NotImplementedError('The FIRE solver is not bugfixed yet')
         super().__init__(program, nsteps, **kwargs)
 
         self.method = method
@@ -689,18 +686,11 @@ class Fire(Solver):
         """
         super()._initiate_solving(chempot)
         self.V = np.zeros(self.grid.npoints)
-    
-    def _get_c1(self, krho):
-        F = np.zeros(self.grid.npoints)
-        for part in self.fener.parts:
-            dF = part.derive(krho).real
-            F += dF
-        return -self.fener.beta*F
 
     def update_rho(self, rho, krho, Grho):
         with log.section(self.name, self.log_level, timer='Update rho'):
             lnrho = np.log(rho, where=rho>0)   
-            F = -self._get_dOmega(rho, krho)
+            F = -self.fener.beta*self._get_dOmega(rho, krho)
 
             if self.curr_step == 0:
                 self.V = np.zeros(self.grid.npoints)
@@ -724,7 +714,6 @@ class Fire(Solver):
                     self.alpha = self.alpha0
                 lnrho[self.mask] -= self.V[self.mask]*0.5*self.dt
                 self.V[self.mask] = 0.0
-                rho_new[self.mask] = np.exp(lnrho[self.mask])
 
             self.V[self.mask] += F[self.mask]*0.5*self.dt
             self.V[self.mask] = (1-self.alpha)*self.V[self.mask] + self.alpha*F[self.mask]*np.linalg.norm(self.V[self.mask])/np.linalg.norm(F[self.mask])

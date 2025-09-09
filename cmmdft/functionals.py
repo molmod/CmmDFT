@@ -296,7 +296,7 @@ class FreeEnergy(object):
             wda = WDAVFunctional(self.system.guest.Rhs, self.grid, eos)
         self.add_part(wda)
 
-    def add_hard_sphere(self,version='MFMT'):
+    def add_hard_sphere(self,version='MFMT', xi_limit=1-1e-12):
         """
             Adds a hard sphere repulsion functional of various types
 
@@ -310,7 +310,7 @@ class FreeEnergy(object):
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
-            HardSphere = HardSphereFunctional(self.system.guest.Rhs, self.grid, version=version)
+            HardSphere = HardSphereFunctional(self.system.guest.Rhs, self.grid, version=version, xi_limit=xi_limit)
             self.add_part(HardSphere)
     
     def add_mean_field(self, tailcorrections=False, **kwargs):
@@ -453,7 +453,7 @@ class HardSphereFunctional(Functional):
     
     name = 'HardSphere'
     
-    def __init__(self, Rhs, grid, version='MFMT'):
+    def __init__(self, Rhs, grid, version='MFMT', xi_limit=1-1e-12):
         """
         **Arguments:**
 
@@ -468,6 +468,7 @@ class HardSphereFunctional(Functional):
         self.grid = grid  
         self.R = Rhs
         self.version = version
+        self.xi_limit = xi_limit
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
@@ -552,7 +553,7 @@ class HardSphereFunctional(Functional):
             nv2.append(nv2alpha)
 
         xi = (nv2[0]*nv2[0]+nv2[1]*nv2[1]+nv2[2]*nv2[2])/((n2+1e-16)**2)
-        xi[xi>=1] = 1-1e-12
+        xi[xi>=self.xi_limit] = self.xi_limit
         return n0,n1,n2,n3,np.array(nv1),np.array(nv2),xi
 
     def get_n3(self, krho):

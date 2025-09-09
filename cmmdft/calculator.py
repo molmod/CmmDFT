@@ -396,7 +396,9 @@ class Calculator(object):
         if partname.lower() in ["fid", "fideal"]:
             prefactor = boltzmann*temp
             integrandum = np.zeros(rho.shape)
-            integrandum[rho>0] = rho[rho>0].real*(np.log(rho[rho>0].real*self.fener.wavelength**3)-1)
+            rho_reg = rho.copy()
+            rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
+            integrandum = rho_reg.real*(np.log(rho_reg.real*self.fener.wavelength**3)-1)
             if local:
                 if over_loading: return prefactor*integrandum.real/N
                 else: return prefactor*integrandum.real                

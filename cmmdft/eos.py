@@ -224,11 +224,16 @@ class EquationOfState(object):
         
 
 class SumOfEOS(EquationOfState):
-    def __init__(self, mass, list_eos):
+    def __init__(self, mass, list_eos, factors=None):
         assert isinstance(list_eos, list), 'list_eos argument should be a list'
         assert len(list_eos)>1, 'list_eos should contain more than 1 eos'
+        if factors is None:
+            factors = [1.0]*len(list_eos)
+        else:
+            assert len(factors) == len(list_eos), 'factors and list_eos must have the same length'
         EquationOfState.__init__(self, mass)
         self.list_eos = list_eos
+        self.factors = factors
 
     def set_temperature(self, temperature):
         for eos in self.list_eos:
@@ -237,27 +242,28 @@ class SumOfEOS(EquationOfState):
 
     def excess_free_energy_particle(self, rho):
         result = rho*0.0
-        for eos in self.list_eos:
-            result += eos.excess_free_energy_particle(rho)
+        for eos, factor in zip(self.list_eos, self.factors):
+            result += factor*eos.excess_free_energy_particle(rho)
         return result
     
     def excess_free_energy_volume(self, rho):
         result = rho*0.0
-        for eos in self.list_eos:
-            result += eos.excess_free_energy_volume(rho)
+        for eos, factor in zip(self.list_eos, self.factors):
+            result += factor*eos.excess_free_energy_volume(rho)
         return result
 
     def derivative_excess_free_energy_particle(self, rho):
         result = rho*0.0
-        for eos in self.list_eos:
-            result += eos.derivative_excess_free_energy_particle(rho)
+        for eos, factor in zip(self.list_eos, self.factors):
+            result += factor*eos.derivative_excess_free_energy_particle(rho)
         return result
 
     def derivative_excess_free_energy_volume(self, rho):
         result = rho*0.0
-        for eos in self.list_eos:
-            result += eos.derivative_excess_free_energy_volume(rho)
+        for eos, factor in zip(self.list_eos, self.factors):
+            result += factor*eos.derivative_excess_free_energy_volume(rho)
         return result
+
 
 
 class VanderWaalsEOS(EquationOfState):

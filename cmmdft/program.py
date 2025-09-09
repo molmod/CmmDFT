@@ -12,7 +12,7 @@ from molmod.units import angstrom, kelvin, kjmol, bar
 
 from .functionals import FreeEnergy
 from .system import System, Grid
-from .solver import Solver, Picard, Anderson
+from .solver import Solver, Picard, Anderson, NoSolutionError
 from .log import log
 from .tools import find_local_maxima, find_neighbours
 __all__ = ['Program']
@@ -308,7 +308,20 @@ class Program(object):
             assert isinstance(solver, Solver), "solver is not an instance of Solver, aborting!"
             self.solver = solver
             log.dump('Solver set to %s' %solver.name)
-    
+
+    def cascade_solver(self, solvers, chempot, **kwargs):
+        '''This function attempts to solve the system using a cascade of solvers.'''
+        with log.section('PROGRAM', 1, timer='Initializing'):
+            for solver in solvers:
+                self.set_solver(solver)
+                try:
+                    self.solve(chempot, **kwargs)
+                    break  # Stop if successful
+                except NoSolutionError:
+                    log.dump('Solver %s failed, trying next one...' %solver.name)
+            else:
+                log.dump('All solvers failed.')
+
     def solve(self, chempot, Ninit=None, rewrite=False, energy_tracking=True, silent=False, continue_solving=False):
         '''This function solves for the density profile at given a chemical potential and temperature
         
@@ -351,18 +364,15 @@ class Program(object):
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
             rho_old = self.rho0.copy()
             N, rho = self.solver.solve(chempot, rho_old, log_level)
-            if rho is None:
-                raise ValueError('No solution found')
-            np.save(self.rho_fn, rho)
+
             if self.solver.track_history:
                 solving_name = 'solving_history%s.csv'%(self.file_suffix)
                 solver_history_fn = self.workdir / solving_name
-                data = self.solver.history[:self.solver.curr_step, :]
+                data = self.solver.history[:self.solver.curr_step+1, :]
                 np.savetxt(solver_history_fn, data, delimiter=',', header=self.solver.history_header)
                 log.dump('  saving history to %s' %(solver_history_fn))
 
-
-
+            np.save(self.rho_fn, rho)
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):
         '''This function calculates the reference chemical potential by solving an adsorption isotherm and
             finding the chemical potential with the steepest incline.
@@ -544,3 +554,4 @@ class Program(object):
             np.savetxt(self.workdir+f'/hybrid_loadings.csv', np.array([loadings, chempots]).T, delimiter=',', header='loading, chemical pot')
             np.savetxt(self.workdir+'/precentage_grid.csv', percentages, header='step, percentage, percentage non mof', delimiter=', ')
             np.save(self.workdir+f'/hybrid_loadings.npy', loadings)
+

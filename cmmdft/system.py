@@ -176,8 +176,6 @@ class SphericalLJGuest(Guest):
         Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
         return Rhs, self.sigma
 
-
-
 class NonSphericalGuest(Guest):
     def __init__(self, name, chk, par):
         with log.section('SYSTEM', 1, timer='Initializing'):
@@ -210,7 +208,80 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)
 
+class PCSAFTGuest(Guest):
+    def __init__(self, name, mass, sigma, epsilon, m):
+        Guest.__init__(self, name, mass)
+        self.m = m
+        self.sigma = sigma
+        self.epsilon = epsilon
+        self.natom = 1
+    
+    def copy(self):
+        return type(self)(self.name, self.mass, self.m, self.sigma, self.epsilon)
 
+    def _calculate_hardsphere_radius(self, temperature, **kwargs):
+        beta = 1/(boltzmann*temperature)
+        Tt = 1/beta/self.epsilon
+        Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        Rhs *= (self.m)**(1/3)  # PC-SAFT hard sphere radius
+        return Rhs, self.sigma*(self.m)**(1/3)
+
+class GuestMixture(object):
+    def __init__(self, guests, fractions):
+        self.guests = guests
+        self.fractions = fractions
+        assert len(guests) == len(fractions)
+        assert all(isinstance(g, Guest) for g in guests)
+        assert all(f >= 0 for f in fractions)
+        self.fractions = np.array(fractions)/np.sum(fractions)
+        self.nspecies = len(guests)
+        self.mass = np.array([g.mass for g in guests])
+        self.preset_Rhs = None
+        self.preset_Rhs_zero = None
+        self.Rhs = None
+        self.Rhs_zero = None
+        pass
+
+    def copy(self):
+        return type(self)([g.copy() for g in self.guests], list(self.fractions))
+    
+    def _calculate_hardsphere_radius(self, temperature, **kwargs):
+        Rhs_sigma = [g._calculate_hardsphere_radius(temperature, **kwargs) for g in self.guests]
+        Rhs = [r[0] for r in Rhs_sigma]
+        Rhs_zero = [r[1] for r in Rhs_sigma]
+        return Rhs, Rhs_zero
+    
+    def compute_hardsphere_radius(self, temperature, **kwargs):
+        with log.section('GUEST', 2, timer="Initializing"):
+            if self.preset_Rhs_zero is not None:
+                log.dump('Using preset Rhs and Rhs_zero')
+                self.Rhs = self.preset_Rhs
+                self.Rhs_zero = self.preset_Rhs_zero
+            else:
+                path = kwargs.get('fn', None)
+                if path is None:
+                    log.dump('Computing Rhs and Rhs_zero at %7.5f without storing...' %(temperature))
+                    self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
+                elif path.exists():
+                    dict_sig = json.load(path.open())
+                    if kwargs.get('rewrite', False):
+                        log.dump('Computing Rhs and Rhs_zero at %7.5f and overwriting %s...'%(temperature, path))
+                        self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
+                        dict_sig['%7.5f'%(temperature)] = self.Rhs, self.Rhs_zero
+                        json.dump(dict_sig, path.open(mode='w'))
+                    else:
+                        log.dump('Reading Rhs and Rhs_zero at %7.5f from %s...'%(temperature, path))
+                        self.Rhs, self.Rhs_zero = dict_sig['%7.5f'%(temperature)]
+                else:
+                    log.dump('Computing Rhs and Rhs_zero at %7.5f and writing to %s...'%(temperature, path))
+                    self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
+                    dict_sig = {'%7.5f'%(temperature): (self.Rhs, self.Rhs_zero)}
+                    json.dump(dict_sig, path.open(mode='w'))
+                log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
+
+    def wavelength(self, temperature):
+        kT = boltzmann*temperature
+        return planck/np.sqrt(2*np.pi*self.mass*kT)    
 
 class Grid(object):
     def __init__(self, cell, npoints=None, spacing=0.25*angstrom, shift=True):

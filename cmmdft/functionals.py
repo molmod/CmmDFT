@@ -177,7 +177,7 @@ class FreeEnergy(object):
                 self.tracking_step += 1
             return G
     
-    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e6*kjmol, positive=False, rewrite=False, load_fn=None, save_fn=None,
+    def add_external_potential(self, epot_fn, temperature=None, rcut=12*angstrom, upper_limit=1e6*kjmol,
                                 **kwargs):
         '''The `add_external_potential` function adds an external potential contribution for spherical particles in a system.
             
@@ -205,9 +205,10 @@ class FreeEnergy(object):
         with log.section('FREEENER', 2, timer='Initializing'):
             log.dump('Initializing external potential')
 
-            if load_fn is not None:
-                assert str(load_fn).endswith('.npy'), 'fn must be a filename of an external potential'
-                assert os.path.isfile(load_fn), f'fn must be a filename of an external potential, {load_fn}'
+            if isinstance(epot_fn, list):
+                for load_fn in epot_fn:
+                    assert str(load_fn).endswith('.npy'), 'fn must be a filename of an external potential'
+                    assert os.path.isfile(load_fn), f'fn must be a filename of an external potential, {load_fn}'
                 fn = Path(load_fn)
                 epot_dr = fn.parent
                 epot = ExternalPotential(self.grid, 0, None, epot_dr, positive=positive, **kwargs)

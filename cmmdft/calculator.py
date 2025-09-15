@@ -233,8 +233,6 @@ class Calculator(object):
          
         if chempots is None:
             chempots = self.get_chemical_potential(temperature)
-        def hack(P, eos, mu, temperature):
-            return eos.calculate_mu(temperature, P) - mu
         
         data = np.zeros((2, len(chempots)))
         if pressure:

@@ -239,10 +239,11 @@ class Calculator(object):
         data = np.zeros((2, len(chempots)))
         if pressure:
             header = 'pressures [Eh/a0**3], loadings [molecules/uc]'
-            if eos is not None:
-                data[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, temperature)) for chem in chempots])
-            else:
-                raise ValueError('Must provide an equation of state object, with the function calculate_mu')
+            data[0] = np.array([eos.calculate_pressure(temperature, chem) for chem in chempots])
+            # if eos is not None:
+            #     data[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, temperature)) for chem in chempots])
+            # else:
+            #     raise ValueError('Must provide an equation of state object, with the function calculate_mu')
         else:
             header = 'chempot [Eh], loadings [molecules/uc]'
             data[0] = chempots

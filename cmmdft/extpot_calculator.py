@@ -8,8 +8,7 @@ from __future__ import division
 import numpy as np
 from itertools import product
 from functools import partial
-import numpy.random as rd
-from scipy.optimize import brentq
+from scipy.special import logsumexp
 from .rotations.AngGrid import AngularGrid
 from .rotations._stroud_1969 import *
 
@@ -17,6 +16,7 @@ from molmod.units import kjmol, angstrom, kcalmol, amu, gram, centimeter, parse_
 from molmod.constants import boltzmann
 
 from yaff import System, ForceField, Parameters
+
 coefficients = np.array([
 [  1,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0],
@@ -153,21 +153,28 @@ __all__ = ['Interpolator', 'effective_potential', 'effective_potential_vectorize
            'generate_rotation_matrix', 'generate_effective_potential', 'get_external_potential_derivatives',
            'get_interpolator_dict', 'get_external_potential_dict', 'read_pars_file']
 
-def lennard_jones(r, sigma, epsilon, derivative=False):
+def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
     """ Lennard-Jones potential """
     r6 = (sigma / r) ** 6
     r12 = r6 * r6
+
+    dist_mask = r > cutoff
+    r[dist_mask] = cutoff
+
+    rc6 = (sigma / cutoff) ** 6
+    V_shift = 4 * epsilon * (rc6 * rc6 - rc6)
+
     if derivative:
-        V = 4 * epsilon * (r12 - r6)
+        V = 4 * epsilon * (r12 - r6) - V_shift
         dV = 24 * epsilon * (r6 - 2 * r12) / r**2
         ddV = 96 * epsilon * (7 * r12 - 2 * r6) / r**4
         dddV = 384 * epsilon * (5 * r6 - 28 * r12) / r**6
         return V, dV, ddV, dddV
     else:
-        return 4 * epsilon * (r12 - r6)
+        return 4 * epsilon * (r12 - r6) - V_shift
 
 
-def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_syst):
+def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_syst, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones potential.
 
@@ -202,8 +209,8 @@ def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_syst):
         rz -= L[2]*(rz/L[2]).round() #periodic BC
 
         R = np.sqrt(rx**2 + ry**2 + rz**2+1e-16) # to avoid zero
-        Vext[:] += lennard_jones(R, sigma_mixed, epsilon_mixed)
-        
+        Vext[:] += lennard_jones(R, sigma_mixed, epsilon_mixed, cutoff=cutoff)
+
     return Vext
 
 def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host_syst, spacings):
@@ -435,7 +442,6 @@ def generate_rotation_matrix(degree, dimension):
         c1, s1 = np.cos(phi1), np.sin(phi1)
         c2, s2 = np.cos(phi2), np.sin(phi2)
         c3, s3 = np.cos(phi3), np.sin(phi3)
-        #rot_tot = np.array([[c3*c2, c3*s2*s1-s3*c1, c3*s2*c1+s3*s1], [s3*c2, s3*s2*s1+c3*c1, s3*s2*c1-c3*s1], [-s2, c2*s1, c2*c1]])
         rot_tot = np.array([[c1*c3-c2*s1*s3,-c1*s3-c2*c3*s1,s1*s2],[c3*s1+c1*c2*s3,c1*c2*c3-s1*s3,-c1*s2],[s2*s3,c3*s2,c2]])      
         return rot_tot.transpose(2, 0, 1), scheme.weights
     else:
@@ -619,12 +625,13 @@ def effective_potential(guest, position_shift, interpolator_dict, beta, limit_po
     else:
         return -np.log(total_potential)/beta
 
-def effective_potential_vectorized(guest, position_shifts, epot_generator_dict, beta, degree=11):
+def effective_potential_vectorized(guest, position_shifts, epot_generator_dict, beta, rotations, weights, limit_potential=1e+4*kjmol):
     position_shifts = position_shifts#.astype(np.float32)  # (m, 3)
     #beta = np.float32(beta)
 
     m = position_shifts.shape[0]
     natom = guest.natom
+    nrot = rotations.shape[0] 
 
     pos = guest.pos #.astype(np.float32)                # (natom, 3)
     masses = guest.masses.reshape(natom, 1)#.astype(np.float32)
@@ -637,16 +644,9 @@ def effective_potential_vectorized(guest, position_shifts, epot_generator_dict, 
     COMs = np.sum(neutral_pos * masses[None, :, :], axis=1) / total_mass  # (m, 3)
     rel_pos = neutral_pos - COMs[:, None, :]  # (m, natom, 3)
 
-    # Generate rotations and weights
-    R1, weights1 = generate_rotation_matrix(degree, 3)          # (50, 3, 3), (50,)
-    R2, weights2 = generate_rotation_matrix(degree, 2)                   # (11, 3, 3)
-
-    combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3)  # (nrot, 3, 3)
-    nrot = combined_rot.shape[0] 
-    expanded_weights = np.repeat(weights1*weights2, len(R2))#.astype(np.float32)   # (nrot,)
-
     # Apply all nrot rotations to all positions
-    rotated = np.einsum('rij,mnj->mnri', combined_rot, rel_pos) + COMs[:, None, None, :]  # (m, natom, nrot, 3)
+    rotated = np.einsum('rij,mnj->mnri', rotations, rel_pos) + COMs[:, None, None, :]  # (m, natom, nrot, 3)
+
     # Interpolate by atom type
     pot = np.zeros((m, natom, nrot), dtype=np.float32)
 
@@ -665,6 +665,14 @@ def effective_potential_vectorized(guest, position_shifts, epot_generator_dict, 
     # sum over atoms of the molecule
     pot = np.sum(pot, axis=1)  # (m, nrot)
 
+    log_sum = logsumexp(-beta*pot, b=weights, axis=1)  # (m,)
+
+    result = -log_sum / beta  # (m,)
+
+    result = np.where(np.isinf(result), limit_potential, result)
+    result = np.where(np.isnan(result), limit_potential, result)
+
+    return result  # shape: (m,)
     # apply weights and sum over rotations
     total_pot = np.einsum('mn,n->m', np.exp(-pot*beta), expanded_weights)  # (m,)
 
@@ -694,12 +702,21 @@ def generate_effective_potential(guest_chk_fn, points, beta, epot_generator_dict
 
     position_shift = points.reshape(-1,3)
     potentials_flat = []
+
+    # Generate rotations and weights
+    R1, weights1 = generate_rotation_matrix(degree, 3)          # (50, 3, 3), (50,)
+    R2, weights2 = generate_rotation_matrix(degree, 2)          # (11, 3, 3) - Fixed dimension
+
+    combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3)  # (nrot, 3, 3)
+    expanded_weights = np.repeat(weights1*weights2, len(R2))   # (nrot,)
+
+
     if len(position_shift) > max_size:
         position_shift_split = np.array_split(position_shift, np.shape(position_shift)[0]//max_size)
     else:
         position_shift_split = [position_shift]
     for part_positions in position_shift_split:
-        potentials_flat.append(effective_potential_vectorized(guest, part_positions, epot_generator_dict, beta, degree=degree))
+        potentials_flat.append(effective_potential_vectorized(guest, part_positions, epot_generator_dict, beta, rotations=combined_rot, weights=expanded_weights))
 
     potentials_flat = np.concatenate(potentials_flat)
     potential = potentials_flat.reshape(points.shape[0], points.shape[1], points.shape[2])
@@ -726,7 +743,7 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
         interpolator_dict[key] = getattr(interpolator, int_method)
     return interpolator_dict
     
-def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, mic=True):
+def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, mic=True, shift=True, cutoff=12*angstrom):
     """
     Generate a dictionary of external potentials for each atom type.
     
@@ -741,12 +758,14 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, mic=T
     FF_dict = read_pars_file(pars_file_host)
     FF_dict_guest = read_pars_file(pars_file_guest)
     host_syst = System.from_file(chk_host)
+    if shift:
+        host_syst.pos -= host_syst.pos.sum(axis=0)/len(host_syst.pos) 
     
     external_potential_dict = {}
     for key in FF_dict_guest:
         sigmaff, epsilonff = FF_dict_guest[key]
         if mic:
-            external_potential_dict[key] = partial(get_external_potential, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst)
+            external_potential_dict[key] = partial(get_external_potential, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst, cutoff=cutoff)
         else:
             external_potential_dict[key] = partial(compute_batch_insertion_energy_typed, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst)
         

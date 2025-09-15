@@ -9,8 +9,8 @@ from scipy.fft import fftn, ifftn
 from pathlib import Path
 import json
 
-from molmod.constants import *
-from molmod.units import *
+from molmod.constants import boltzmann, planck
+from molmod.units import angstrom
 from yaff import System as YaffSystem, Cell
 
 from .tools import hard_spheres_barker_henderson, get_ff
@@ -304,6 +304,24 @@ class Grid(object):
     def fft(self, rdata):
         return fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
     
+    def fftn(self, rdata):
+        """
+        Fourier transform along the first 3 axes.
+        supports vector/tensor fields (N,N,N,M)
+        """
+        F = fftn(rdata, axes=(0,1,2), norm=None)
+        factor = np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
+        return F * factor[..., None]
+    
     def ifft(self, fdata):
-        return (ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None)*np.prod(self.npoints)).real
+        return ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None).real*np.prod(self.npoints)
+    
+    def ifftn(self, fdata):
+        """
+        Inverse ourier transform along the first 3 axes.
+        supports vector/tensor fields (N,N,N,M)
+        """
+        ifft_input = fdata * np.exp(-1j * np.pi * self.scalprod)[..., None]
+        F = ifftn(ifft_input, axes=(0,1,2), norm=None)
+        return F.real * np.prod(self.npoints)
 

@@ -15,7 +15,8 @@ ylog.set_level(ylog.silent)
 
 from .system import System, Grid, NanoporousHost, SphericalLJGuest
 from .program import Program
-from .functionals import FreeEnergy, WDAVFunctional, ExternalPotential
+from .functionals import WDAVFunctional, ExternalPotential
+from .free_energy import FreeEnergy
 from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
 from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff
@@ -409,8 +410,8 @@ class Calculator(object):
                 if part.name == partname:
                     if partname in ['MFMT', 'FMT', 'WDA-V', 'WDA-N', 'CORR']:
                         if self.fener.temperature != temp: self.fener.set_temperature(temp)
-                    if over_loading: return part.value(krho, local).real/N
-                    else: return part.value(krho, local).real
+                    if over_loading: return part.value(rho, krho, local).real/N
+                    else: return part.value(rho, krho, local).real
             raise IOError(f"Recieved partname ({partname}) not present in functional (contains: {','.join([part.name for part in self.fener.parts])})" )
 
     def free_energy(self, temp, chempot, local=False):
@@ -620,26 +621,25 @@ class Calculator(object):
             else:
 
                 n_list = np.empty(cvs.shape[0]-1)
+                fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
+                assert os.path.isfile(fn), f'No density found for {fn}'
+                rho = np.load(fn).real
+                if supercell:
+                    rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
 
                 for e in range(len(cvs)-1):  # now calculating n and p for the different input collective variables
-                    
                     q_min = cvs[e]
                     q_max = cvs[e+1]
                     step_dist = q_max - q_min
                     mask = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
 
-                    fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:3.0f}K.npy'
-                    if not fn.is_file():
-                        fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
-                        assert os.path.isfile(fn), f'No density found for {fn}'
-                    rho = np.load(fn).real
-                    if supercell:
-                        rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
                     if normalize:
                         n_list[e] =  self.grid.integrate(mask*rho)/step_dist
                     else:
                         n_list[e] =  self.grid.integrate(mask*rho)
+                        
                 q_list = (cvs[1:]+cvs[:-1])/2
+
                 if save:
                     data = np.array((q_list, n_list)).T
                     fn = self.workdir / f'projected_density_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.csv'
@@ -1150,7 +1150,7 @@ class Calculator(object):
                     continue
                 else:
                     # print(part.name)
-                    dF += part.derive(krho)
+                    dF += part.derive(rho, krho)
             
             # dF = self.grid.ifft(dF).real
             ext_pot[~rho_mask] = -boltzmann*temperature*np.log(rho[~rho_mask]*self.fener.wavelength**3) - dF[~rho_mask] + chempot

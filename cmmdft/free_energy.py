@@ -63,7 +63,7 @@ class FreeEnergy(object):
             #set temperature and directly related properties
             self.temperature = temperature
             self.beta = 1.0/(boltzmann*temperature)
-            self.wavelength = self.system.guest.wavelength(self.temperature)
+            self.wavelength = np.asarray(self.system.guest.wavelength(self.temperature))
             self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #set temperature for each part in the free energy functional
             for part in self.parts:
@@ -160,7 +160,7 @@ class FreeEnergy(object):
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, (-chempot*N/unit), Fid/unit)
             krho = self.grid.fft(rho)#*self.grid.dr
             for part in self.parts:
-                Fpart = part.value(krho).real
+                Fpart = part.value(rho, krho).real
                 G += Fpart
                 line += "\t% .6e" %(Fpart/unit)
             line += "\t% .6e" %(G/unit)
@@ -202,7 +202,7 @@ class FreeEnergy(object):
                 assert os.path.isfile(load_fn), f'fn must be a filename of an external potential, {load_fn}'
                 fn = Path(load_fn)
                 epot_dr = fn.parent
-                epot = ExternalPotential(self.grid, natom=0, ff=None, epot_dr=epot_dr, **kwargs)
+                epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, **kwargs)
                 log.dump('loading external potential from %s' %fn)
                 epot.load_potential(fn)  
             else:
@@ -226,23 +226,11 @@ class FreeEnergy(object):
                     if not sym_fn.is_symlink():
                         sym_fn.symlink_to(epot_dr.absolute())    
 
-                if isinstance(self.system.guest, SphericalLJGuest) and not isinstance(self.system.guest, NonSphericalGuest):
-                    log.dump('Creating parameter file for guest molecule from LJ parameters')
-                    guest_mol, guest_par = write_LJ_pars_chk(self.system.guest, self.workdir)
-                else:
-                    guest_mol, guest_par = self.system.guest.mol, self.system.guest.par
+                epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, **kwargs)
 
-                pars_fn = self.workdir / 'pars.txt'
-                merge_ffpar_files(pars_fn, self.system.host.par, guest_par) 
-                log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.host.par, guest_par, pars_fn))
-
-                ff_ext = get_ff(self.system.host.mol, guest_mol, pars_fn, rcut)
-                epot = ExternalPotential(self.grid, self.system.guest.natom, ff_ext, epot_dr, **kwargs)
-
-            
                 if not os.path.isfile(fn) or self.overwrite or rewrite:
                     log.dump('computing external potential on grid')
-                    epot.generate_potential(temperature, rewrite=rewrite)
+                    epot.generate_potential(temperature)
                     log.dump('writing external potential to %s' %fn)
                     epot.dump_potential(fn)
                 else:
@@ -376,3 +364,12 @@ class FreeEnergy(object):
             corr = WDAVFunctional(self.grid, self.system.guest.Rhs, SUM)
 
             self.add_part(corr)
+
+    def add_PCSAFT(self, **kwargs):
+        """
+            Adds a PC-SAFT functional for attractive and repulsive interaction contributions
+        """
+        with log.section('FREEENER', 2, timer='Initializing'):
+            log.dump('Initializing PC-SAFT functional for attractive and repulsive interaction contribution')
+            PCSAFT = PCSAFTFunctional(self.grid, self.system.guest)
+            self.add_part(PCSAFT)

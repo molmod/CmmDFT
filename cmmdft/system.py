@@ -16,7 +16,10 @@ from yaff import System as YaffSystem, Cell
 from .tools import hard_spheres_barker_henderson, get_ff
 from .log import log
 
-__all__ = ['System', 'EmptyHost', 'NanoporousHost', 'Guest', 'Grid']
+__all__ = ['System', 
+           'EmptyHost', 'NanoporousHost', 
+           'Guest', 'NonSphericalGuest', 'GuestMixture', 'DualModelGuest', 'SphericalLJGuest', 
+           'Grid']
 
 class System(object):
     def __init__(self, host, guest):
@@ -107,7 +110,6 @@ class EmptyHost(Host):
             Host.__init__(self, name, cell)
 
 
-
 class Guest(object):
     def __init__(self, name, mass):
         self.name = name
@@ -116,6 +118,9 @@ class Guest(object):
         self.preset_Rhs_zero = None
         self.Rhs = None
         self.Rhs_zero = None
+        self.nspecies = 1
+        self.fractions = np.array([1.0])
+        self.m = np.array([1.0])
     
     def copy(self):
         return type(self)(self.name, self.mass)
@@ -161,11 +166,12 @@ class Guest(object):
                     
 
 class SphericalLJGuest(Guest):
-    def __init__(self, name, mass, sigma, epsilon):
+    def __init__(self, name, mass, sigma, epsilon, m=1):
         Guest.__init__(self, name, mass)
         self.sigma = sigma
         self.epsilon = epsilon
         self.natom = 1
+        self.m = m #m parameter for PC-SAFT model
     
     def copy(self):
         return type(self)(self.name, self.mass, self.sigma, self.epsilon)
@@ -175,6 +181,7 @@ class SphericalLJGuest(Guest):
         Tt = 1/beta/self.epsilon
         Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
         return Rhs, self.sigma
+
 
 class NonSphericalGuest(Guest):
     def __init__(self, name, chk, par):
@@ -197,6 +204,7 @@ class NonSphericalGuest(Guest):
         ff_int = get_ff(self.mol, self.mol, self.par, kwargs.get('rcut', 12*angstrom))
         return hard_spheres_barker_henderson(beta, ff_int, natom=self.mol.natom, style=kwargs.get('style', 'su'))
 
+
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
     def __init__(self, name, mass, sigma, epsilon, chk, par):
         SphericalLJGuest.__init__(self, name, mass, sigma, epsilon)
@@ -208,47 +216,44 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)
 
-class PCSAFTGuest(Guest):
-    def __init__(self, name, mass, sigma, epsilon, m):
-        Guest.__init__(self, name, mass)
-        self.m = m
-        self.sigma = sigma
-        self.epsilon = epsilon
-        self.natom = 1
-    
-    def copy(self):
-        return type(self)(self.name, self.mass, self.m, self.sigma, self.epsilon)
-
-    def _calculate_hardsphere_radius(self, temperature, **kwargs):
-        beta = 1/(boltzmann*temperature)
-        Tt = 1/beta/self.epsilon
-        Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
-        Rhs *= (self.m)**(1/3)  # PC-SAFT hard sphere radius
-        return Rhs, self.sigma*(self.m)**(1/3)
 
 class GuestMixture(object):
-    def __init__(self, guests, fractions):
+    def __init__(self, names, guests, fractions, k_inter=None):
+        self.names = names
         self.guests = guests
         self.fractions = fractions
-        assert len(guests) == len(fractions)
-        assert all(isinstance(g, Guest) for g in guests)
+
+        assert len(guests) == len(fractions) == len(names)
+        # assert all(isinstance(g, Guest) for g in guests)
         assert all(f >= 0 for f in fractions)
         self.fractions = np.array(fractions)/np.sum(fractions)
         self.nspecies = len(guests)
+        self.m = np.array([g.m for g in guests])
         self.mass = np.array([g.mass for g in guests])
+        self.natom = np.array([g.natom for g in guests])
         self.preset_Rhs = None
         self.preset_Rhs_zero = None
         self.Rhs = None
         self.Rhs_zero = None
-        pass
+
+        if k_inter is None:
+            self.k_inter = np.zeros((self.nspecies, self.nspecies))
+        else:
+            self.k_inter = k_inter
+            assert self.k_inter.shape == (self.nspecies, self.nspecies)
+            assert np.allclose(self.k_inter, self.k_inter.T), 'k_inter should be symmetric'
+            assert np.all(np.diag(self.k_inter) == 0), 'diagonal elements of k_inter should be zero'
+
+        self.epsilon = np.array([(1-self.k_inter[i,j])*np.sqrt(gi.epsilon*gj.epsilon) for i, gi in enumerate(guests) for j, gj in enumerate(guests)]).reshape((self.nspecies, self.nspecies))
+        self.sigma = np.array([( (gi.sigma + gj.sigma)/2 ) for gi in guests for gj in guests]).reshape((self.nspecies, self.nspecies))
 
     def copy(self):
         return type(self)([g.copy() for g in self.guests], list(self.fractions))
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         Rhs_sigma = [g._calculate_hardsphere_radius(temperature, **kwargs) for g in self.guests]
-        Rhs = [r[0] for r in Rhs_sigma]
-        Rhs_zero = [r[1] for r in Rhs_sigma]
+        Rhs = np.array([r[0] for r in Rhs_sigma])
+        Rhs_zero = np.array([r[1] for r in Rhs_sigma])
         return Rhs, Rhs_zero
     
     def compute_hardsphere_radius(self, temperature, **kwargs):
@@ -277,11 +282,13 @@ class GuestMixture(object):
                     self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
                     dict_sig = {'%7.5f'%(temperature): (self.Rhs, self.Rhs_zero)}
                     json.dump(dict_sig, path.open(mode='w'))
-                log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
+                for i in range(self.nspecies):
+                    log.dump(' %s  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.names[i], self.Rhs[i]/angstrom, 4.0/3.0*np.pi*self.Rhs[i]**3/angstrom**3))
 
     def wavelength(self, temperature):
         kT = boltzmann*temperature
         return planck/np.sqrt(2*np.pi*self.mass*kT)    
+
 
 class Grid(object):
     def __init__(self, cell, npoints=None, spacing=0.25*angstrom, shift=True):
@@ -312,6 +319,7 @@ class Grid(object):
                     self.npoints = [npoints]*3
                 else:
                     self.npoints = npoints
+            self.npoints = np.array(self.npoints)
             self.suffix = '_'.join("%d"%n for n in self.npoints)
             self.spacings = [            
                 np.linalg.norm(self.cell.rvecs[:,0])/self.npoints[0],
@@ -326,7 +334,7 @@ class Grid(object):
             self.dk = 1.0/self.dr
             # Real space grid, centered at the origin, storing x,y,z and norm of 
             # vector of each grid point
-            self.points = np.zeros((self.npoints+[4]))
+            self.points = np.zeros((list(self.npoints)+[4]))
             if shift:
                 grid = [np.linspace(-0.5, 0.5, num=self.npoints[alpha], endpoint=False) for alpha in range(3)]
             else:
@@ -339,7 +347,7 @@ class Grid(object):
             # Norms of the vectors of the real space grid
             self.points[:,:,:,3] = np.sqrt(self.points[:,:,:,0]**2+self.points[:,:,:,1]**2+self.points[:,:,:,2]**2)
             # Fourier grid
-            self.kpoints = np.zeros(self.npoints+[4])
+            self.kpoints = np.zeros(list(self.npoints)+[4])
             kgrid = [np.fft.fftfreq(self.npoints[alpha],d=self.spacings[alpha]) for alpha in range(3)]
             gridpoints = np.meshgrid(kgrid[0],kgrid[1],kgrid[2], indexing='ij')
             #NIEUWE VERANDERING: 2*pi toegevoegd bij de kpoints
@@ -377,22 +385,65 @@ class Grid(object):
     
     def fftn(self, rdata):
         """
-        Fourier transform along the first 3 axes.
-        supports vector/tensor fields (N,N,N,M)
+        Fourier transform along the 3 spatial axes (matching self.npoints).
+        Supports fields with arbitrary leading/trailing dimensions, e.g.:
+        (N,N,N), (N,N,N,M), (M,N,N,N), (M1,N,N,N,M2), etc.
         """
-        F = fftn(rdata, axes=(0,1,2), norm=None)
-        factor = np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
-        return F * factor[..., None]
+        shape = rdata.shape
+        npoints = tuple(self.npoints)
+
+        # Find where the spatial block (Nx, Ny, Nz) lives
+        for start in range(len(shape) - 2):
+            if tuple(shape[start:start+3]) == npoints:
+                axes = tuple(range(start, start+3))
+                break
+        else:
+            raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
+
+        # Perform FFT on the spatial axes
+        F = fftn(rdata, axes=axes, norm=None)
+
+        # Compute scaling factor
+        factor = np.exp(1j*np.pi*self.scalprod) / np.prod(npoints)
+
+        # Reshape/broadcast factor to match the right axes
+        # Expand dimensions around the spatial block
+        expand_shape = [1] * len(shape)
+        expand_shape[axes[0]:axes[0]+3] = factor.shape
+        factor = factor.reshape(expand_shape)
+
+        return F * factor
     
     def ifft(self, fdata):
         return ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None).real*np.prod(self.npoints)
     
+    
     def ifftn(self, fdata):
         """
-        Inverse ourier transform along the first 3 axes.
-        supports vector/tensor fields (N,N,N,M)
+        Inverse Fourier transform along the 3 spatial axes (matching self.npoints).
+        Supports arbitrary leading/trailing dims, e.g.
+        (N,N,N), (N,N,N,M), (M,N,N,N), (M1,N,N,N,M2), etc.
         """
-        ifft_input = fdata * np.exp(-1j * np.pi * self.scalprod)[..., None]
-        F = ifftn(ifft_input, axes=(0,1,2), norm=None)
-        return F.real * np.prod(self.npoints)
+        shape = fdata.shape
+        npoints = tuple(self.npoints)
 
+        # Locate spatial block
+        for start in range(len(shape) - 2):
+            if tuple(shape[start:start+3]) == npoints:
+                axes = tuple(range(start, start+3))
+                break
+        else:
+            raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
+
+        # Conjugate phase factor
+        factor = np.exp(-1j*np.pi*self.scalprod)
+
+        # Broadcast factor
+        expand_shape = [1] * len(shape)
+        expand_shape[axes[0]:axes[0]+3] = factor.shape
+        factor = factor.reshape(expand_shape)
+
+        ifft_input = fdata * factor
+        F = ifftn(ifft_input, axes=axes, norm=None)
+
+        return F.real * np.prod(npoints)

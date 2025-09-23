@@ -679,8 +679,7 @@ def effective_potential_vectorized(guest_data, position_shifts, epot_generator_d
     return result  # shape: (m,)
 
 
-
-def generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=11, max_size=1e+5/500):
+def generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=11, max_size=1e+3):
     """
     Generate the effective potential for a guest molecule in a grid.
     
@@ -740,7 +739,7 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
     return interpolator_dict
     
 
-def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, chk_guest, mic=True):
+def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, chk_guest, mic=True, cutoff=12*angstrom):
     """
     Generate a dictionary of external potentials for each atom type.
     
@@ -765,7 +764,7 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, chk_g
         sigmaff, epsilonff = FF_dict_guest[i]
         if mic:
             key = guest_ffatypes[i]
-            external_potential_dict[key] = partial(get_external_potential, FF_dict=FF_dict_host, sigmaff=sigmaff, epsilonff=epsilonff, host_pos=host_pos, ffatype_ids=ffatype_ids, rvecs=rvecs)
+            external_potential_dict[key] = partial(get_external_potential, FF_dict=FF_dict_host, sigmaff=sigmaff, epsilonff=epsilonff, host_pos=host_pos, ffatype_ids=ffatype_ids, rvecs=rvecs, cutoff=cutoff)
         else:
             raise NotImplementedError("Non-MIC external potentials are not implemented yet.")
             # external_potential_dict[key] = partial(compute_batch_insertion_energy_typed, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst)

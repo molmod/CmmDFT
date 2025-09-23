@@ -10,8 +10,8 @@ from pathlib import Path
 from molmod.constants import boltzmann
 from molmod.units import angstrom, kelvin, kjmol, bar
 
-from .functionals import FreeEnergy
-from .system import System, Grid
+from .free_energy import FreeEnergy
+from .system import System, Grid, GuestMixture
 from .solver import Solver, Picard, Anderson, NoSolutionError
 from .log import log
 from .tools import find_local_maxima, find_neighbours
@@ -244,6 +244,7 @@ class Program(object):
         """
         if silent: label_log_level = 3
         else: label_log_level = 1
+        rho_shape = [self.system.guest.nspecies] + list(self.grid.npoints)
         with log.section('PROGRAM', label_log_level, timer='Initializing'):
             if self.rho_fn is not None and os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite:
                 log.dump('Reading initial guess for density from %s' %self.rho_fn)
@@ -268,11 +269,15 @@ class Program(object):
                             log.dump('Setting initial guess for density at %.3e/cellvolume in pores' %Ninit)
                         else:
                             log.dump('Setting initial guess for density at %.3e/cellvolume' %(Ninit*self.system.host.cell.volume))
-                            self.rho0 = np.full(self.grid.npoints, Ninit)  
+                            self.rho0 = np.full(rho_shape, Ninit)  
                     elif isinstance(Ninit, np.ndarray):
-                        assert Ninit.shape == tuple(self.grid.npoints), 'Ninit must have the same shape as the grid'
-                        log.dump('Setting initial guess for density from array')
-                        self.rho0 = Ninit
+                        if Ninit.ndim == 1:
+                            assert len(Ninit) == self.system.guest.ncomponents, 'Ninit must have the same length as the number of components'
+                            Ninit = np.array([Ninit[i]*np.ones(self.grid.npoints) for i in range(self.system.guest.ncomponents)])
+                        else:
+                            assert Ninit.shape == tuple(rho_shape), 'Ninit must have the same shape as the grid'
+                            log.dump('Setting initial guess for density from array')
+                            self.rho0 = Ninit
                 else:
                     log.dump('Setting initial guess for density from ideal gas at chempot = %.3f kJ/mol' %(chempot/kjmol))
                     index = None
@@ -282,7 +287,7 @@ class Program(object):
                     if index is not None:
                         epot_data = self.fener.parts[index].potential        
                     else:
-                        epot_data = np.zeros(self.grid.npoints)          
+                        epot_data = np.zeros(rho_shape)          
                     self.rho0 = np.exp(self.fener.beta*(chempot-epot_data))/self.fener.wavelength**3
                     
     def _set_split_density(self, masks, densities):
@@ -348,22 +353,40 @@ class Program(object):
         if silent: log_level = 3
         else: log_level = 2
         with log.section('PROGRAM', log_level, timer='Solve'):
-
-            fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
             log.dump('Thermodynamic conditions:')
-            log.dump('  temperature = %7.3f   K' %(self.fener.temperature/kelvin))
-            log.dump('  chem. pot.  = %7.3f kJ/mol' %(chempot/kjmol))
-            log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
+            # if isinstance(self.system.guest, GuestMixture):
+            if self.system.guest.nspecies > 1:
+                if not hasattr(chempot, '__iter__'):
+                    chempot = np.full(self.system.guest.nspecies, chempot)
+                
+                self.file_suffix = ''
+                for e in range(self.system.guest.nspecies):
+                    fugacity = np.exp(self.fener.beta*chempot[e])/self.fener.beta/self.fener.wavelength[e]**3
+                    log.dump('  component %d: %s' %(e+1, self.system.guest.names[e]))
+                    log.dump('    temperature = %7.3f   K' %(self.fener.temperature/kelvin))
+                    log.dump('    chem. pot.  = %7.3f kJ/mol' %(chempot[e]/kjmol))
+                    log.dump('    fugacity    = %7.3f bar' %(fugacity/bar))
+                    self.file_suffix += '_%7.5fkJmol' %(chempot[e]/kjmol)
+                
+                self.file_suffix += '_%7.5fK' %(self.fener.temperature/kelvin)
+
+            else:
+                fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
+                log.dump('  temperature = %7.3f   K' %(self.fener.temperature/kelvin))
+                log.dump('  chem. pot.  = %7.3f kJ/mol' %(chempot/kjmol))
+                log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
+
+                self.file_suffix = '_%7.5fkJmol_%7.5fK' %(chempot/kjmol,self.fener.temperature/kelvin) 
 
             if energy_tracking:
-                convergence_fn = os.path.join(self.workdir,  "convergence_%7.5fkJmol_%7.5fK.txt" %(chempot/kjmol,self.fener.temperature/kelvin))
+                convergence_fn = os.path.join(self.workdir,  "convergence%s.txt" %(self.file_suffix))
                 self.fener.init_tracking(convergence_fn)
 
-            self.file_suffix = '_%7.5fkJmol_%7.5fK' %(chempot/kjmol,self.fener.temperature/kelvin)
             self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.file_suffix))
             if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite and not continue_solving:
                 log.dump('  skipping because solution found in file %s' %(self.rho_fn))
                 return
+                
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
             rho_old = self.rho0.copy()
             N, rho, converged = self.solver.solve(chempot, rho_old, log_level)

@@ -51,6 +51,8 @@ class Solver(object):
         self.grid = program.grid
         self.fener = program.fener
         self.nsteps = nsteps
+        self.nspecies = self.fener.system.guest.nspecies
+        self.rho_shape = [self.nspecies] + list(self.grid.npoints)
 
         if isinstance(criterion, list):
             for crit in criterion:
@@ -63,13 +65,13 @@ class Solver(object):
                 self.threshold = [threshold]*len(criterion)
         else:
             assert criterion.lower() in ['riue', 'res', 'der'], 'Criterion must be either RIUE (relative integrated unsigned error), RES (Residual error) or DER (Derivative error)'
-            if self.criterion.lower() == 'der':
+            if criterion.lower() == 'der':
                 threshold = 1
             self.criterion = [criterion]
             self.threshold = [threshold]
 
 
-        self.mask = np.ones(self.grid.npoints, dtype=bool)
+        self.mask = np.ones(self.rho_shape, dtype=bool)
         for part in self.fener.parts:
             if 'ExtPot' in part.name:
                 self.mask = np.where(part.potential>50*boltzmann*self.fener.temperature, False, True)
@@ -91,6 +93,7 @@ class Solver(object):
         """
         Routine which is called before the solving starts to reset the solver if necessary.
         """
+        chempot = np.asarray(chempot)
         self.fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
         self.chempot = chempot
         self.curr_step = 0
@@ -103,13 +106,13 @@ class Solver(object):
     def _get_Omega(self, rho, krho):
         with log.section(self.name, self.log_level, timer='Omega'):
 
-            N = self.grid.integrate(rho)
+            N = np.asarray([self.grid.integrate(rho[e]) for e in range(self.nspecies)])
             rho_reg = self._clip_density(rho)
-            Fid = self.grid.integrate(rho_reg*(np.log(self.fener.wavelength**3*rho_reg)-1.0)).real/self.fener.beta
+            Fid = self.grid.integrate(rho_reg*(np.log((self.fener.wavelength**3)[:,None,None,None]*rho_reg)-1.0)).real/self.fener.beta
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(self.iphase ,self.curr_step, N, (-self.chempot*N), Fid)
-            G = Fid - self.chempot*N
+            G = Fid - np.sum(self.chempot*N)
             for part in self.fener.parts:
-                Fpart = part.value(krho)
+                Fpart = part.value(rho, krho)
                 G += Fpart
                 line += "\t% .6e" %(Fpart)
             line += "\t% .6e" %(G)
@@ -126,7 +129,7 @@ class Solver(object):
                 f.write(self.tracking_line + '\n')
 
     def get_new_rho(self, C1, fugacity):
-        return self.fener.beta*np.exp(-self.fener.beta*C1)*fugacity
+        return self.fener.beta*np.exp(-self.fener.beta*C1)*fugacity[:, None, None, None]
 
     def _get_dOmega(self, rho, C1):
         rho_reg = self._clip_density(rho)
@@ -138,13 +141,23 @@ class Solver(object):
         with log.section(self.name, self.log_level, timer='C1'):
             if krho is None:
                 krho = self.grid.fft(rho)
-            C1 = np.zeros(self.grid.npoints)
+            C1 = np.zeros(self.rho_shape)
             for part in self.fener.parts:
-                C1 += part.derive(krho)
+                c1 = part.derive(rho, krho)
+                print(part.name, c1.shape)
+                C1 += c1
             return C1
 
     def _clip_density(self, rho):
         rho = np.where(rho < self.lower_density, 1e-30, rho)
+        return rho
+    
+    def pack_rhos(self, rho_list):
+        """rho_list: list of arrays shape (nx,ny,nz) -> 1D vector"""
+        return rho_list.ravel()
+
+    def unpack_rhos(self, rho_packed):
+        rho = rho_packed.reshape(*self.rho_shape)
         return rho
 
     def _get_alpha_max(self, rho, krho, Grho, krho_new=None):
@@ -505,8 +518,8 @@ class Anderson(Picard):
         Reset the previous rhos and Grhos
         """
         super()._initiate_solving(chempot)
-        self.prev_rhos = np.zeros((self.m,np.prod(self.grid.npoints)))
-        self.prev_Grhos = np.zeros((self.m,np.prod(self.grid.npoints)))
+        self.prev_rhos = np.zeros((self.m,np.prod(self.rho_shape)))
+        self.prev_Grhos = np.zeros((self.m,np.prod(self.rho_shape)))
         self.And_true = False
         self.it_eps0 = np.nan
         self.f = 0
@@ -582,8 +595,8 @@ class Anderson(Picard):
         linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
         alphas = opt.minimize(sum_res, np.full(mk,1/mk), method='SLSQP', tol=1e-15, bounds=bds, constraints=linear_constraint).x
 
-        rho_result = np.einsum('i,ij->j', alphas, self.prev_rhos[-mk:]).reshape(self.grid.npoints)
-        Grho_result = np.einsum('i,ij->j', alphas, self.prev_Grhos[-mk:]).reshape(self.grid.npoints)
+        rho_result = np.einsum('i,ij->j', alphas, self.prev_rhos[-mk:]).reshape(self.rho_shape)
+        Grho_result = np.einsum('i,ij->j', alphas, self.prev_Grhos[-mk:]).reshape(self.rho_shape)
 
         if self.adaptive_damping: self._get_damping_coefficient()
 
@@ -644,7 +657,7 @@ class Fire(Solver):
         Routine which is called before the solving starts to reset the solver if necessary.
         """
         super()._initiate_solving(chempot)
-        self.V = np.zeros(self.grid.npoints)
+        self.V = np.zeros(self.rho_shape)
         self.dt = self.dt0
         self.alpha = self.alpha0
 
@@ -654,7 +667,7 @@ class Fire(Solver):
             F = -self.fener.beta*self._get_dOmega(rho, C1)
 
             if self.curr_step == 0:
-                self.V = np.zeros(self.grid.npoints)
+                self.V = np.zeros(self.rho_shape)
             else:
                 self.V[self.mask] += F[self.mask]*0.5*self.dt            
             P = np.sum(F[self.mask]*self.V[self.mask]) # dissipated power
@@ -715,7 +728,7 @@ class QuasiNewton(Picard):
             Additional keyword arguments passed to the superclass initializer.
         """
         super().__init__(program, nsteps, method=method, **kwargs)
-        self.shape = np.array(program.grid.npoints)
+        self.shape = np.array(program.rho_shape)
         self.n = np.prod(self.shape)
         self.m = m
 

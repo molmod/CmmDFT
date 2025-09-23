@@ -3,6 +3,8 @@
 import os, sys, numpy as np, matplotlib.pyplot as plt, copy, re
 from pathlib import Path
 import scipy.optimize as opt
+from scipy.special import logsumexp
+
 import getpass, datetime
 import json
 import itertools
@@ -623,24 +625,25 @@ class Calculator(object):
 
                 n_list = np.empty(cvs.shape[0]-1)
 
+                fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:3.0f}K.npy'
+                if not fn.is_file():
+                    fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
+                    assert os.path.isfile(fn), f'No density found for {fn}'
+                rho = np.load(fn).real
+                if supercell:
+                    rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
+
                 for e in range(len(cvs)-1):  # now calculating n and p for the different input collective variables
                     
                     q_min = cvs[e]
                     q_max = cvs[e+1]
                     step_dist = q_max - q_min
                     mask = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
-
-                    fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:3.0f}K.npy'
-                    if not fn.is_file():
-                        fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
-                        assert os.path.isfile(fn), f'No density found for {fn}'
-                    rho = np.load(fn).real
-                    if supercell:
-                        rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
                     if normalize:
                         n_list[e] =  self.grid.integrate(mask*rho)/step_dist
                     else:
                         n_list[e] =  self.grid.integrate(mask*rho)
+
                 q_list = (cvs[1:]+cvs[:-1])/2
                 if save:
                     data = np.array((q_list, n_list)).T
@@ -805,6 +808,10 @@ class Calculator(object):
                 int_chems = selection_sort(np.array(chempots))
                 i = bisect_left(int_chems, chempot)
                 chems = int_chems[:i+1]
+            assert chems.shape[0] > 0, f'No chemical potentials lower than {chempot/kjmol}kJ/mol found, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
+            assert np.isclose(chems[-1], chempot), f'The last chemical potential in the list must be equal to the input chemical potential, {chempot/kjmol}kJ/mol, but the last chemical potential in the list is {chems[-1]/kjmol}kJ/mol, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
+            assert (chems <= chempot).all(), f'All chemical potentials in the list must be lower than the input chemical potential, {chempot/kjmol}kJ/mol, but the last chemical potential in the list is {chems[-1]/kjmol}kJ/mol, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
+            
             #if the provided list is too long, it is shortened to the maximum number of chemical potentials
             if len(chems)>max_n_chems and max_n_chems != 0:
                 max_n_chems = int(max_n_chems)
@@ -813,60 +820,42 @@ class Calculator(object):
                 it_chems = np.concatenate((it_chems, chempot))
             else:
                 it_chems = chems
-            # preparing arrays for following iteration
-            n_dict = {}
-
+            # it_chems is a list of chemical potentials which are lower than the input chemical potential, and the input chemical potential itself
+            
+            # collect the projected densities for the different chemical potentials
+            n_proj_prev_mu_list = []
             for mu in it_chems:
                proj_fn = self.workdir / f'projected_density_{mu/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.csv'
-               q_list, n_dict[f'{mu:0.8f}'] = np.loadtxt(proj_fn, delimiter=',', skiprows=1).T
-            proj_fn = self.workdir / f'projected_density_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.csv'
-            n_list = np.loadtxt(proj_fn, delimiter=',', skiprows=1).T[1]
-            
+               q_list, n_proj = np.loadtxt(proj_fn, delimiter=',', skiprows=1).T
+               n_proj_prev_mu_list.append(n_proj)
+            n_proj_prev_mu_list = np.array(n_proj_prev_mu_list)
             q_len = q_list.shape[0]
             omega_list =  np.empty(q_len, dtype=np.float64)
             free_list =  np.empty(q_len, dtype=np.float64)
 
-            dens_omega_dict = {}
+            #collect the previous projected densities and grand potentials
+            dens_omega_fn = self.workdir / f'loading_grand_potential_{temp:#7.5f}K.csv'
+            assert dens_omega_fn.is_file(), f'No loading and grand potential found for {temp}K and {chempot/kjmol}kJ/mol, please run the save_loading_and_grand_potential function first'
+            dens_omega_list = np.atleast_2d(np.loadtxt(dens_omega_fn, delimiter=',', skiprows=1))
+            
+            #check if the chemical potentials are present in the previous densities and grand potentials file, then collect those densities and grand potentials
+            real_dens_omega_list = np.zeros((len(it_chems), 2))
+            list_mu_keys = [f'{key/kjmol:#0.8f}' for key in dens_omega_list[:, 0]]
+            for i, it_mu in enumerate(it_chems):
+                it_key = f'{it_mu/kjmol:#0.8f}'
+                assert it_key in list_mu_keys, f'No loading and grand potential found for {temp}K and {it_mu/kjmol}kJ/mol, please run the save_loading_and_grand_potential function first'
+                index = list_mu_keys.index(it_key)
+                real_dens_omega_list[i] = dens_omega_list[index, 1:]
 
-            if dens_omega_fn is not None:
-                with open(dens_omega_fn, 'r') as f:
-                    dens_omega_dict = json.load(f)
-            else:
-                try:
-                    for mu in it_chems:
-                        dens_omega_dict[f'{mu:0.8f}'] = [self.loading(temp, mu), self.grand_potential(temp, mu).real]
-                except AssertionError:
-                    dens_omega_fn = self.workdir / f'loading_grand_potential_{temp:#7.5f}K.json'
-                    with open(dens_omega_fn, 'r') as f:
-                        dens_omega_dict = json.load(f)
-                        
-            omega_shift = 0
-            for i, mu in enumerate(it_chems):
-                scaling = np.exp(-beta*(dens_omega_dict[f'{mu:0.8f}'][1] + omega_shift))
-                while np.isinf(scaling):
-                    omega_shift += 0.1
-                    scaling = np.exp(-beta*(dens_omega_dict[f'{mu:0.8f}'][1] + omega_shift))
-
-            for e in range(q_len):  # now calculating n and p for the different input collective variables
-                
-                integrand = np.zeros(len(it_chems))
-
-                for i, mu in enumerate(it_chems):
-                    n = n_dict[f'{mu:0.8f}'][e]
-                    scaling = np.exp(-beta*(dens_omega_dict[f'{mu:0.8f}'][1] + omega_shift)/8)
-                    integrand[i] = n*scaling
-                    if np.isinf(scaling):
-                        print(f'{mu/kjmol}, {i},{n}, {integrand[i]}, {scaling}')
-
-                op = beta*np.trapz(integrand, it_chems) 
-                if op == 0:
-                    omega_list[e] = np.nan
-                else:
-                    omega_list[e] = -np.log(op)/beta - omega_shift
-                free_list[e] = omega_list[e] + dens_omega_dict[f'{mu:0.8f}'][0]*chempot
+            # integrate over the chemical potentials
+            grand_potential_list = -beta * real_dens_omega_list[:, 1]
+            for e in range(q_len):
+                n_list_per_mu = n_proj_prev_mu_list[:, e]
+                omega_list[e] = -(logsumexp(grand_potential_list, b=n_list_per_mu, axis=0) + np.log(beta))/beta
+                free_list[e] = omega_list[e] + real_dens_omega_list[-1, 0]*chempot
 
             data = np.empty((4,q_len))
-            data[:] = q_list, n_list, omega_list, free_list
+            data[:] = q_list, n_proj_prev_mu_list[-1], omega_list, free_list
             if fn is None:
                 fn = self.workdir / f'free_energy_profile_{chempot/kjmol:#0.8f}kjmol_{temp:#0.3f}K.csv'
             else: 
@@ -874,8 +863,7 @@ class Calculator(object):
 
             log.dump(f'Calculated the free energy profile at {temp}K and {chempot/kjmol:#0.3f}kJ/mol save at {fn}')
             np.savetxt(fn, data.T, delimiter=',', header = 'cv,density,grand canonical potential,free energy')        
-            # return cvs_mat
-            return q_list, n_list, omega_list, free_list
+        
         
     def contribution_approximation(self, temp, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, pert_size=1e-5, symmetric=False, fn=None):
         '''This function calculates and saves projected contributions based on a perturbation of the density 

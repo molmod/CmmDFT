@@ -63,7 +63,7 @@ class Solver(object):
                 self.threshold = [threshold]*len(criterion)
         else:
             assert criterion.lower() in ['riue', 'res', 'der'], 'Criterion must be either RIUE (relative integrated unsigned error), RES (Residual error) or DER (Derivative error)'
-            if self.criterion.lower() == 'der':
+            if criterion.lower() == 'der':
                 threshold = 1
             self.criterion = [criterion]
             self.threshold = [threshold]
@@ -553,17 +553,21 @@ class Anderson(Picard):
             AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true
 
             if AND_condition:
-                rho_new, krho_new, C1_new = self.update_rho_Anderson()
-                Grho_new = self.get_new_rho(C1_new, self.fugacity)
-                self.And_true = True
-                if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
+                try:
+                    rho_new, krho_new, C1_new = self.update_rho_Anderson()
+                    Grho_new = self.get_new_rho(C1_new, self.fugacity)
+                    self.And_true = True
+                    if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
+                        # log.warning('The Anderson method failed, falling back to Picard')
+                        rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
+                    else:
+                        Omega_new = self._get_Omega(rho_new, krho_new)
+                        if Omega_new > prev_omega*(0.8):
+                            # log.warning('The Anderson method increased the grand potential, falling back to Picard')
+                            rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
+                except FloatingPointError:
                     # log.warning('The Anderson method failed, falling back to Picard')
                     rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
-                else:
-                    Omega_new = self._get_Omega(rho_new, krho_new)
-                    if Omega_new > prev_omega*(0.8):
-                        # log.warning('The Anderson method increased the grand potential, falling back to Picard')
-                        rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
 
             else:
                 rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)

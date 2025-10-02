@@ -108,8 +108,9 @@ class Solver(object):
 
             N = np.asarray([self.grid.integrate(rho[e]) for e in range(self.nspecies)])
             rho_reg = self._clip_density(rho)
-            Fid = self.grid.integrate(rho_reg*(np.log((self.fener.wavelength**3)[:,None,None,None]*rho_reg)-1.0)).real/self.fener.beta
-            line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(self.iphase ,self.curr_step, N, (-self.chempot*N), Fid)
+            rho_lam = np.asarray([self.fener.wavelength**3])[:,None,None,None] * rho_reg
+            Fid = self.grid.integrate(rho_reg*(np.log(rho_lam)-1.0)).real/self.fener.beta
+            line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(self.iphase ,self.curr_step, np.sum(N), np.sum(-self.chempot*N), Fid)
             G = Fid - np.sum(self.chempot*N)
             for part in self.fener.parts:
                 Fpart = part.value(rho, krho)
@@ -129,7 +130,7 @@ class Solver(object):
                 f.write(self.tracking_line + '\n')
 
     def get_new_rho(self, C1, fugacity):
-        return self.fener.beta*np.exp(-self.fener.beta*C1)*fugacity[:, None, None, None]
+        return self.fener.beta*np.exp(-self.fener.beta*C1)*np.asarray([fugacity])[:, None, None, None]
 
     def _get_dOmega(self, rho, C1):
         rho_reg = self._clip_density(rho)
@@ -140,11 +141,11 @@ class Solver(object):
     def _get_C1(self, rho, krho=None):
         with log.section(self.name, self.log_level, timer='C1'):
             if krho is None:
-                krho = self.grid.fft(rho)
+                krho = self.grid.fftn(rho)
             C1 = np.zeros(self.rho_shape)
             for part in self.fener.parts:
                 c1 = part.derive(rho, krho)
-                print(part.name, c1.shape)
+                # print('part', part.name, 'max C1', np.max(c1), 'min C1', np.min(c1))
                 C1 += c1
             return C1
 
@@ -162,7 +163,7 @@ class Solver(object):
 
     def _get_alpha_max(self, rho, krho, Grho, krho_new=None):
         if krho_new is None:
-            krho_new = self.grid.fft(Grho)
+            krho_new = self.grid.fftn(Grho)
 
         #calculating the weighted densities from the FMT to calculate the alpha max and check certain conditions
         if not hasattr(self, '_get_n3'):
@@ -247,7 +248,7 @@ class Solver(object):
 
             return CRIT_PASS
         
-    def _solve(self, chempot, rho, log_level):
+    def solve(self, chempot, rho, log_level):
         """
         Solve the density functional theory (DFT) problem for a given chemical potential.
         Parameters:
@@ -271,12 +272,18 @@ class Solver(object):
         """
         self.log_level = log_level
         converged = False
+
+        if hasattr(chempot, '__iter__'):
+            chempot_str = ', '.join([f'{mu/kjmol:7.3f}' for mu in chempot])
+        else:
+            chempot_str = f'{chempot/kjmol:7.3f}'
+
         with log.section('SOLVER', self.log_level, timer=self.name):
             self._initiate_solving(chempot)
             tstart_tot = time.perf_counter()
             tstart = tstart_tot
 
-            krho = self.grid.fft(rho)
+            krho = self.grid.fftn(rho)
             C1 = self._get_C1(rho, krho)
 
             self.omega0 = self._get_Omega(rho, krho)
@@ -320,15 +327,15 @@ class Solver(object):
 
 
             if istep==self.nsteps-1:
-                log.warning("Solution not converged after %d steps at temperature %5.3f and chemical potential %7.5f"%(self.nsteps, self.fener.temperature, chempot/kjmol), label_section='solve')
+                log.warning("Solution not converged after %d steps at temperature %5.3f and chemical potential %s"%(self.nsteps, self.fener.temperature, chempot_str), label_section='solve')
             
             tstop_tot = time.perf_counter()
             log.dump('#################################################################################')
-            log.dump(f'Calculated the density for a chemical potential of {round(chempot/kjmol,3)} kJ/mol in {round(tstop_tot-tstart_tot,2)} seconds')
+            log.dump(f'Calculated the density for a chemical potential of {chempot_str} kJ/mol in {round(tstop_tot-tstart_tot,2)} seconds')
             log.dump('#################################################################################')
             return N_new, rho_new, converged
 
-    def solve(self, chempot, rho, log_level):
+    def _solve(self, chempot, rho, log_level):
         """
             
             A function surrounding the general solver with an added failsafe of correction factors on the mixing parameter in case of floatingpoint errors.
@@ -345,6 +352,10 @@ class Solver(object):
         """
         self.log_level = log_level
         self.correction_factor = 1
+        if hasattr(chempot, '__iter__'):
+            chempot_str = ', '.join([f'{mu/kjmol:7.3f}' for mu in chempot])
+        else:
+            chempot_str = f'{chempot/kjmol:7.3f}'
         with log.section(self.name, self.log_level, timer=None):
             while self.correction_factor >= 1/4:
                 try:
@@ -352,11 +363,11 @@ class Solver(object):
                 except FloatingPointError:
                     self.correction_factor /= 2
                     self.iphase += 1
-                    log.warning('THE CALCULATION OF THE DENSITY at chemical potential %7.5f kJ/mol and temperature %5.3f K HAS FAILED DUE TO A ---FloatingPointError---'%(chempot/kjmol, self.fener.temperature), label_section='Solve')
+                    log.warning('THE CALCULATION OF THE DENSITY at chemical potential %s kJ/mol and temperature %5.3f K HAS FAILED DUE TO A ---FloatingPointError---'%(chempot_str, self.fener.temperature), label_section='Solve')
                     log.dump(f'Adding a cycle with a correction factor of {self.correction_factor}')
             log.dump('A density could not be calculated due to numerical errors')
             self.correction_factor = 1
-            raise NoSolutionError("Solution not converged after %d steps at temperature %5.3f and chemical potential %7.5f"%(self.nsteps, self.fener.temperature, chempot/kjmol))
+            raise NoSolutionError("Solution not converged after %d steps at temperature %5.3f and chemical potential %s"%(self.nsteps, self.fener.temperature, chempot_str))
 
 class Picard(Solver):
     """
@@ -409,7 +420,7 @@ class Picard(Solver):
             rho_new = (1.0-alpha_mix_cor)*rho+alpha_mix_cor*Grho
             rho_new[rho_new<1e-10/angstrom**3] = 0.0
 
-            krho_new = self.grid.fft(rho_new)
+            krho_new = self.grid.fftn(rho_new)
             C1_new = self._get_C1(rho_new, krho_new)
             return rho_new, krho_new, C1_new
 
@@ -426,7 +437,7 @@ class Picard(Solver):
             else:
                 alpha1 = 0.45*alpha_max
                 rho1 = (1-alpha1)*rho + alpha1*Grho
-                krho1 = self.grid.fft(rho1)
+                krho1 = self.grid.fftn(rho1)
                 omega1 = self._get_Omega(rho1, krho1)
                 #choose the third point for the quadratic approximation
                 if omega1 <= prev_omega:
@@ -434,7 +445,7 @@ class Picard(Solver):
                 else:
                     alpha2 = 0.225*alpha_max
                 rho2 = (1-alpha2)*rho + alpha2*Grho
-                krho2 = self.grid.fft(rho2)
+                krho2 = self.grid.fftn(rho2)
                 omega2 = self._get_Omega(rho2, krho2)
                 c, b, a = np.polyfit([0, alpha1, alpha2], [prev_omega, omega1, omega2], 2)
                 alphas = np.linspace(-max(alpha1,alpha2)/4, max(alpha1,alpha2), 10000)
@@ -450,7 +461,7 @@ class Picard(Solver):
                 tstart = time.time()
                 def calc_G_rho(alpha):
                     rho_temp = (1-alpha)*rho + alpha*Grho
-                    krho_temp = self.grid.fft(rho_temp)#*self.grid.dr
+                    krho_temp = self.grid.fftn(rho_temp)#*self.grid.dr
                     omega = self._get_Omega(rho_temp, krho_temp)
                     return omega
 
@@ -467,7 +478,7 @@ class Picard(Solver):
             rho_new = (1-alpha_opt*self.correction_factor)*rho + alpha_opt*self.correction_factor*Grho
             rho_new = self._clip_density(rho_new)
 
-            krho_new = self.grid.fft(rho_new)
+            krho_new = self.grid.fftn(rho_new)
             C1_new = self._get_C1(rho_new, krho_new)
             self._get_Omega(rho_new, krho_new) # saves the correct Omega as self.omega0, necessary for next line search
             return rho_new, krho_new, C1_new
@@ -602,7 +613,7 @@ class Anderson(Picard):
 
         rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
         rho_new = self._clip_density(rho_new)
-        krho_new = self.grid.fft(rho_new)
+        krho_new = self.grid.fftn(rho_new)
         C1_new = self._get_C1(rho_new, krho_new)
 
         return rho_new, krho_new, C1_new
@@ -701,7 +712,7 @@ class Fire(Solver):
 
             rho_new[self.mask] = np.exp(lnrho[self.mask])
             rho_new = self._clip_density(rho_new)
-            krho_new = self.grid.fft(rho_new)
+            krho_new = self.grid.fftn(rho_new)
             C1_new = self._get_C1(rho_new, krho_new)
             return rho_new, krho_new, C1_new
 
@@ -908,7 +919,7 @@ class QuasiNewton(Picard):
                     alpha *= tau
                     continue
 
-                krho_trial = self.grid.fft(rho_trial)
+                krho_trial = self.grid.fftn(rho_trial)
                 f_new = self._get_Omega(rho_trial, krho_trial)
 
                 gtp_eff = float(np.dot(grad, p_eff))

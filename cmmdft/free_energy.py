@@ -158,7 +158,7 @@ class FreeEnergy(object):
             Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0)).real/self.beta
             G = Fid - chempot*N
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, (-chempot*N/unit), Fid/unit)
-            krho = self.grid.fft(rho)#*self.grid.dr
+            krho = self.grid.fftn(rho)#*self.grid.dr
             for part in self.parts:
                 Fpart = part.value(rho, krho).real
                 G += Fpart

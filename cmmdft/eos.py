@@ -16,7 +16,7 @@ from .log import log
 
 
 __all__ = [
-    'SumOfEOS', 'VanderWaalsEOS', 'ModifiedBenedictWebbRubinEOS', 'CarnahanStarlingEOS', 'MFAEOS', 'EquationOfState', 'MFMT_MFA_EOS'
+    'SumOfEOS', 'VanderWaalsEOS', 'ModifiedBenedictWebbRubinEOS', 'CarnahanStarlingEOS', 'MFAEOS', 'EquationOfState', 'MFMT_MFA_EOS', 'PCSAFT_EOS', 'PCSAFT_MIX_EOS'
 ]
 
 class EquationOfState(object):
@@ -478,24 +478,17 @@ class CarnahanStarlingEOS(EquationOfState):
         Compressibility = eta*rho
     """
     
-    def __init__(self, mass, Rhs):
+    def __init__(self, mass, sigma, epsilon):
         EquationOfState.__init__(self, mass)
-        self.Rfun = None
-        self.R = None
-        self.eta = None
-        if callable(Rhs):
-            self.Rfun = Rhs
-        elif isinstance(Rhs, float):
-            self.R = Rhs
-            self.eta = 4*np.pi*Rhs**3/3
-        else:
-            raise TypeError('Rhs argument of CarnahanStarling constructor should be a float or a callable function computing the Rhs for a given temperature.')    
-        
+        self.sigma = sigma
+        self.epsilon = epsilon
+
     def set_temperature(self, temperature, **kwargs):
         EquationOfState.set_temperature(self, temperature)
-        if self.Rfun is not None:
-            self.R = self.Rfun(temperature, **kwargs)
-            self.eta = 4*np.pi*self.R**3/3
+        beta = 1/(boltzmann*temperature)
+        Tt = 1/beta/self.epsilon
+        self.R = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        self.eta = 4/3*np.pi*self.R**3
     
     def get_rough_density_grid(self, npoints):
         "Get a rough logarithmic grid in density in a range that is practically accessible"
@@ -605,16 +598,16 @@ class PCSAFT_EOS(EquationOfState):
         self.epsilon = epsilon
         self.m = m      
         self.m_mix = m
+        self.x = 1.0 #fraction of particles of this species in mixture
 
     def set_temperature(self, temperature):
         self.temperature = temperature
         self.m2_eps_sig3 = self.m**2*(self.epsilon/boltzmann/temperature)*self.sigma**3
         self.m2_eps2_sig3 = self.m**2*(self.epsilon/boltzmann/temperature)**2*self.sigma**3
         self.dhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))
-        self.wvl = planck/np.sqrt(2*np.pi*(self.mass/self.m)*boltzmann*temperature)
+        self.wvl = planck/np.sqrt(2*np.pi*(self.mass)*boltzmann*temperature)
     
     def _get_a_and_b(self, m):
-        Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
         ai = np.zeros(7)
         for i in range(7):
             ai[i] = a_constants[i,0] + a_constants[i,1]*(m - 1)/m + a_constants[i,2]*(m-1)*(m-2)/m**2
@@ -648,17 +641,25 @@ class PCSAFT_EOS(EquationOfState):
         return rho_dgammaii
     
     def _get_zeta(self, rho):
-        zeta0 = np.pi/6*self.m*self.dhs**0*rho
+        rho = np.clip(rho, 1e-20, None)
+        zeta0 = np.pi/6*self.m*rho
         zeta1 = np.pi/6*self.m*self.dhs**1*rho
         zeta2 = np.pi/6*self.m*self.dhs**2*rho
         zeta3 = np.pi/6*self.m*self.dhs**3*rho
         return zeta0, zeta1, zeta2, zeta3
 
     def _get_eta(self, rho):
-        return np.pi/6*rho*self.m*self.dhs**3
+        return np.pi/6*self.m*self.dhs**3*rho
+    
+    def get_rough_density_grid(self, npoints):
+        "Get a rough logarithmic grid in density in a range that is practically accessible"
+        log_start = -10
+        log_end = np.min(np.log(angstrom**3/(np.pi/6*self.m*self.dhs**3))/np.log(10)-0.01)
+        return np.logspace(log_start, log_end, npoints)/angstrom**3
 
     def _hard_sphere_contribution(self, zeta0, zeta1, zeta2, zeta3):
-        return (3*zeta1*zeta2/(1-zeta3) + zeta2**3/(zeta3**2)/zeta3/(1-zeta3)**2 + (zeta2**3/zeta3**2-zeta0)*np.log(1-zeta3))/zeta0
+        z3_1 = (1-zeta3)
+        return (3*zeta1*zeta2/z3_1 + zeta2**3/zeta3/z3_1**2 + (zeta2**3/zeta3**2-zeta0)*np.log(z3_1))/zeta0
     
     def _derivative_hard_sphere_contribution(self, rho, zeta0, zeta1, zeta2, zeta3):
         rho_dF_hs = -self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3) - np.log(1-zeta3) # dzeta0
@@ -685,7 +686,7 @@ class PCSAFT_EOS(EquationOfState):
         I1, I2, C1 = self._get_I1_I2_C1(eta, self.m_mix)
         a1 = -2*np.pi*rho*self.m2_eps_sig3*I1
         a2 = -np.pi*rho*self.m_mix*self.m2_eps2_sig3*C1*I2
-        return a1 + a2
+        return a1 + a2    
 
     def _derivative_dispersion_contribution(self, rho, eta):
         I1, I2, C1 = self._get_I1_I2_C1(eta, self.m_mix)
@@ -695,18 +696,19 @@ class PCSAFT_EOS(EquationOfState):
         for i in range(1,7):
             dI1deta += i*ai[i]*eta**(i-1)
             dI2deta += i*bi[i]*eta**(i-1)
-        dC1 = -C1**2*( self.m_mix*(8 + 20*eta - 4*eta**2)/(1-eta)**5 + 2*(1 - self.m_mix)*(20 - 24*eta + 6*eta**2 - eta**3)/((1-eta)*(2-eta))**3 )
-        deta_drho = np.pi/6*self.m_mix*self.dhs**3
+            
+        dC1 = -C1**2*( self.m_mix*(8 + 20*eta - 4*eta**2)/(1-eta)**5 + 2*(1 - self.m_mix)*(20 - 24*eta + 6*eta**2 + eta**3)/((1-eta)*(2-eta))**3 )
+        deta_drho = self._get_eta(1.0)
         rho_da1 = -2*np.pi*self.m2_eps_sig3*I1
         rho_da1 += -2*np.pi*rho*self.m2_eps_sig3*dI1deta*deta_drho
-        rho_da2 = -np.pi*self.mix*self.m2_eps2_sig3*C1*I2
-        rho_da2 += -np.pi*self.mix*rho*self.m2_eps2_sig3*(dI2deta*C1 + I2*dC1)*deta_drho
+        rho_da2 = -np.pi*self.m_mix*self.m2_eps2_sig3*C1*I2
+        rho_da2 += -np.pi*self.m_mix*rho*self.m2_eps2_sig3*(dI2deta*C1 + I2*dC1)*deta_drho
         return (rho_da1 + rho_da2)
     
     def excess_free_energy_particle(self, rho):
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        fhs = self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
+        fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
         fchain = self._chain_contribution(zeta2, zeta3)
         fdisp = self._dispersion_contribution(rho, eta)
         return boltzmann*self.temperature*(fhs + fchain + fdisp)
@@ -714,7 +716,7 @@ class PCSAFT_EOS(EquationOfState):
     def derivative_excess_free_energy_particle(self, rho):
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        dfhs = self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
+        dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
         dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
         dfdisp = self._derivative_dispersion_contribution(rho, eta)
         return boltzmann*self.temperature*(dfhs + dfchain + dfdisp)
@@ -728,7 +730,7 @@ class PCSAFT_EOS(EquationOfState):
 
 class PCSAFT_MIX_EOS(PCSAFT_EOS):
     def __init__(self, mass, sigma, epsilon, m, x, kij=None):
-        self.mass = np.array(mass) # particle masses
+        self.mass = np.array(mass) # molecule masses
         self.sigma = np.array(sigma)
         self.epsilon = np.array(epsilon)
         self.m = np.array(m) # segment numbers
@@ -746,8 +748,19 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS):
     def set_temperature(self, temperature):
         self.temperature = temperature
         self.dhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))
-        self.wvl = planck/np.sqrt(2*np.pi*(self.mass/self.m)*boltzmann*temperature)
+        self.wvl = planck/np.sqrt(2*np.pi*(self.mass)*boltzmann*temperature)
         self._get_mixture_parameters(temperature)
+        
+    def compute_chempot(self, rho, x=None):
+        kT = boltzmann*self.temperature
+
+        if x is not None:
+            assert len(x) == self.ncomp, 'x should be a list/array with length equal to number of components'
+            self.x = np.array(x)
+            self._get_mixture_parameters(self.temperature)
+        
+        rhox = rho*self.x
+        return kT*np.log(self.wvl**3*rhox) + self.derivative_excess_free_energy_volume(rho)
     
     def _get_mixture_parameters(self, temperature):
         x = self.x
@@ -781,15 +794,27 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS):
         return np.pi/6*rho*np.sum(self.x*self.m*self.dhs**3)
     
     def _chain_contribution(self, zeta2, zeta3):
-        fch = 0.0
+        fch = np.zeros_like(zeta2)
         for i in range(self.ncomp):
             gammaii = self._get_gammaii(zeta2, zeta3, self.dhs[i])
             fch += self.x[i]*(self.m[i]-1)*np.log(gammaii)
         return -fch    
+
+    def _derivative_chain_contribution(self, rho, zeta2, zeta3):
+        dhs = self.dhs
+        m = self.m
+        rho_dF_chain = np.zeros_like(rho)
+        for i in range(self.ncomp):
+            gammaii = self._get_gammaii(zeta2, zeta3, dhs[i])
+            rho_dgammaii = self._get_rho_dgammaii(zeta2, zeta3, dhs[i])
+            rho_dF_chain += -self.x[i]*(m[i]-1)/gammaii*rho_dgammaii/rho
+        return rho_dF_chain
+
     
-    def _dispersion_contribution(self, rho, eta):
-        I1, I2, C1 = self._get_I1_I2_C1(eta, self.m_mix)
-        a1 = -2*np.pi*rho*self.m2_eps_sig3*I1
-        a2 = -np.pi*rho*self.m_mix*self.m2_eps2_sig3*C1*I2
-        return a1 + a2
-    
+    def derivative_excess_free_energy_particle(self, rho):
+        zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
+        eta = self._get_eta(rho)
+        dfhs = self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
+        dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
+        dfdisp = self._derivative_dispersion_contribution(rho, eta)
+        return boltzmann*self.temperature*(dfhs + dfchain + dfdisp)

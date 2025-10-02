@@ -110,7 +110,7 @@ class Calculator(object):
         self.guest.compute_hardsphere_radius(temp)
         Rhs = self.guest.Rhs
         WDA = WDAVFunctional(Rhs, self.grid, mwbr)
-        wrho = WDA._get_weighted_density(self.grid.fft(rho))#*self.grid.dr)
+        wrho = WDA._get_weighted_density(self.grid.fftn(rho))#*self.grid.dr)
         mask_MBWR = (wrho*mwbr.sigma**3)>1.2
 
         rho_MBWR = np.copy(rho)
@@ -383,7 +383,7 @@ class Calculator(object):
             # assert np.isclose(np.array(rho.shape), np.array(self.grid.npoints)), f'The shape of the density {rho.shape} does not match the grid shape {self.grid.npoints}'
 
         if over_loading: N = self.grid.integrate(rho)
-        krho = self.grid.fft(rho)#*self.grid.dr
+        krho = self.grid.fftn(rho)#*self.grid.dr
         if partname.lower() in ["fid", "fideal"]:
             prefactor = boltzmann*temp
             rho_reg = rho.copy()
@@ -1108,7 +1108,7 @@ class Calculator(object):
             if weighted_density:
                 wda = WDAVFunctional((T1+T2)/2, self.grid, D=self.system.guest.Rhs, eos=None)
                 wda._init_weight_function()
-                rho = wda._get_weighted_density(self.grid.fft(rho)).real
+                rho = wda._get_weighted_density(self.grid.fftn(rho)).real
                 fn = self.workdir / f'wrho_{file_suff}.npy'
                 np.save(fn, rho)
 
@@ -1172,7 +1172,7 @@ class Calculator(object):
             rho_mask = np.isclose(rho*self.fener.wavelength**3, 0, atol=1e-200)
 
             dF = 0
-            krho = self.grid.fft(rho)#*self.grid.dr
+            krho = self.grid.fftn(rho)#*self.grid.dr
             for part in self.fener.parts:
                 if part.name in ['ExtPot', 'EffExtPot']:
                     continue
@@ -1180,7 +1180,7 @@ class Calculator(object):
                     # print(part.name)
                     dF += part.derive(rho, krho)
             
-            # dF = self.grid.ifft(dF).real
+            # dF = self.grid.ifftn(dF).real
             ext_pot[~rho_mask] = -boltzmann*temperature*np.log(rho[~rho_mask]*self.fener.wavelength**3) - dF[~rho_mask] + chempot
             ext_pot[rho_mask] = limit_potential
             # print(chempot/kjmol)

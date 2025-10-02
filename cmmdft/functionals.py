@@ -559,7 +559,7 @@ class HardSphereFunctional(Functional):
 
             self.tensor_weight_functions = [kwxx, kwxy, kwxz, kwyy, kwyz, kwzz]
 
-    def _get_density_functions(self, krho, xi_max=1):
+    def _get_density_functions(self, krho):
         """
         Compute the density functions, which are convolutions of the weight
         functions and the density. These are computed by making use of the
@@ -642,7 +642,7 @@ class HardSphereFunctional(Functional):
         if 't' in self.version:
             self.nt = self._get_tensor_density_functions(krho)
 
-    def derive(self, krho, xi_max):
+    def derive(self, krho):
         """
         Functional derivative with respect to the density
 

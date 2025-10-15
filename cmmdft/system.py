@@ -206,9 +206,9 @@ class NonSphericalGuest(Guest):
 
 
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
-    def __init__(self, name, mass, sigma, epsilon, chk, par):
-        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon)
+    def __init__(self, name, mass, sigma, epsilon, chk, par, m=1):
         NonSphericalGuest.__init__(self, name, chk, par)
+        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, m=m)
 
     def copy(self):
         return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.chk, self.par)

@@ -272,8 +272,9 @@ class Program(object):
                             self.rho0 = np.full(rho_shape, Ninit)  
                     elif isinstance(Ninit, np.ndarray):
                         if Ninit.ndim == 1:
-                            assert len(Ninit) == self.system.guest.ncomponents, 'Ninit must have the same length as the number of components'
-                            Ninit = np.array([Ninit[i]*np.ones(self.grid.npoints) for i in range(self.system.guest.ncomponents)])
+                            assert len(Ninit) == self.system.guest.nspecies, 'Ninit must have the same length as the number of components'
+                            Ninit = np.array([Ninit[i]*np.ones(self.grid.npoints) for i in range(self.system.guest.nspecies)])
+                            self.rho0 = Ninit
                         else:
                             assert Ninit.shape == tuple(rho_shape), 'Ninit must have the same shape as the grid'
                             log.dump('Setting initial guess for density from array')

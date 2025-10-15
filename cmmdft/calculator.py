@@ -401,8 +401,8 @@ class Calculator(object):
                 if part.name == partname:
                     if partname in ['MFMT', 'FMT', 'WDA-V', 'WDA-N', 'CORR']:
                         if self.fener.temperature != temp: self.fener.set_temperature(temp)
-                    if over_loading: return part.value(krho, local)/N
-                    else: return part.value(krho, local)
+                    if over_loading: return part.value(rho, krho)/N
+                    else: return part.value(rho, krho)
 
     def free_energy(self, temp, chempot, local=False):
         '''This function calculates the total free energy of a system at a given temperature and chemical

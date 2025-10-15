@@ -304,6 +304,7 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
     def __init__(self, mass, sigma, epsilon, logging = False):
         EquationOfState.__init__(self, mass)
         self.sigma = sigma
+        self.sigma_3 = sigma**3
         self.epsilon = epsilon
         self._init_regression_parameters()
         self.logging = logging
@@ -350,27 +351,32 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
     
     def _set_coefficients(self):
         Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
+    
+        Tr_1 = Tr**(-1)
+        Tr_2 = Tr_1 * Tr_1
+        Tr_3 = Tr_1 * Tr_2
+        Tr_4 = Tr_2 * Tr_2
         #a coefficients
-        a1 = self.x1*Tr  + self.x2*np.sqrt(Tr)  + self.x3  + self.x4/Tr  + self.x5/Tr**2
-        a2 = self.x6*Tr                         + self.x7  + self.x8/Tr  + self.x9/Tr**2
-        a3 = self.x10*Tr                        + self.x11 + self.x12/Tr
+        a1 = self.x1*Tr  + self.x2*np.sqrt(Tr)  + self.x3  + self.x4*Tr_1  + self.x5*Tr_2
+        a2 = self.x6*Tr                         + self.x7  + self.x8*Tr_1  + self.x9*Tr_2
+        a3 = self.x10*Tr                        + self.x11 + self.x12*Tr_1
         a4 =                                      self.x13
-        a5 =                                                 self.x14/Tr + self.x15/Tr**2
-        a6 =                                                 self.x16/Tr
-        a7 =                                                 self.x17/Tr + self.x18/Tr**2
-        a8 =                                                               self.x19/Tr**2
+        a5 =                                                 self.x14*Tr_1 + self.x15*Tr_2
+        a6 =                                                 self.x16*Tr_1
+        a7 =                                                 self.x17*Tr_1 + self.x18*Tr_2
+        a8 =                                                               self.x19*Tr_2
         self.a = [a1, a2, a3, a4, a5, a6, a7, a8]
         #b coeffcients
-        b1 = self.x20/Tr**2 + self.x21/Tr**3
-        b2 = self.x22/Tr**2 + self.x23/Tr**4
-        b3 = self.x24/Tr**2 + self.x25/Tr**3
-        b4 = self.x26/Tr**2 + self.x27/Tr**4
-        b5 = self.x28/Tr**2 + self.x29/Tr**3
-        b6 = self.x30/Tr**2 + self.x31/Tr**3 + self.x32/Tr**4
+        b1 = self.x20*Tr_2 + self.x21*Tr_3
+        b2 = self.x22*Tr_2 + self.x23*Tr_4
+        b3 = self.x24*Tr_2 + self.x25*Tr_3
+        b4 = self.x26*Tr_2 + self.x27*Tr_4
+        b5 = self.x28*Tr_2 + self.x29*Tr_3
+        b6 = self.x30*Tr_2 + self.x31*Tr_3 + self.x32*Tr_4
         self.b = [b1, b2, b3, b4, b5, b6]
     
     def _get_G_functionals(self, rho):
-        rhor = rho*self.sigma**3 #reduced density
+        rhor = rho*self.sigma_3 #reduced density
         F = np.exp(-self.gamma*rhor**2)
         ig = 1.0/(2*self.gamma)
         G1 = ig*(1-F)
@@ -383,20 +389,21 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
     
     def _get_dG_functionals(self,rho):
         ig = 1.0/(2*self.gamma)
-        rhor = rho*self.sigma**3 #reduced density
+        rhor = rho*self.sigma_3 #reduced density
         F = np.exp(-self.gamma*rhor**2)
-        dF = -2*self.gamma*self.sigma**3*rhor*F
+        dF = -2*self.gamma*self.sigma_3*rhor*F
         dG1 = ig*(-dF)
-        dG2 = -ig*(dF*rhor**2 + 2*F*rhor*self.sigma**3 - 2*dG1)
-        dG3 = -ig*(dF*rhor**4 + 4*self.sigma**3*rhor**3*F - 4*dG2)
-        dG4 = -ig*(dF*rhor**6 + 6*self.sigma**3*rhor**5*F - 6*dG3)
-        dG5 = -ig*(dF*rhor**8 + 8*self.sigma**3*rhor**7*F - 8*dG4)
-        dG6 = -ig*(dF*rhor**10 + 10*self.sigma**3*rhor**9*F - 10*dG5)
+        dG2 = -ig*(dF*rhor**2 + 2*F*rhor*self.sigma_3 - 2*dG1)
+        dG3 = -ig*(dF*rhor**4 + 4*self.sigma_3*rhor**3*F - 4*dG2)
+        dG4 = -ig*(dF*rhor**6 + 6*self.sigma_3*rhor**5*F - 6*dG3)
+        dG5 = -ig*(dF*rhor**8 + 8*self.sigma_3*rhor**7*F - 8*dG4)
+        dG6 = -ig*(dF*rhor**10 + 10*self.sigma_3*rhor**9*F - 10*dG5)
         return [dG1, dG2, dG3, dG4, dG5, dG6]
         
     def excess_free_energy_particle(self, rho):
         Ar = 0.0 #reduced excess free energy per particle
-        rhor = rho*self.sigma**3 #reduced density
+        rhor = rho*self.sigma_3 #reduced density
+        print('rhor', rhor)
         if np.amax(rhor)>1.2 and self.logging:
             with log.section('MBWR', 2, timer='MBWR'):
                 log.dump('Density exceeds the range of accuracy for MBWR: rhor=%4.2f'%(np.amax(rhor.real)))
@@ -412,20 +419,20 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
     
     def derivative_excess_free_energy_particle(self, rho):    
         dAr = 0.0
-        rhor = rho*self.sigma**3 #reduced density
+        rhor = rho*self.sigma_3 #reduced density
         if np.amax(rhor)>1.2 and self.logging:
             with log.section('MBWR', 2, timer='MBWR'):
                 log.dump('Density exceeds the range of accuracy for MBWR: rhor=%4.2f'%(np.amax(rhor.real)))
         for i, ai in enumerate(self.a):
-            dAr += ai*rhor**(i)*self.sigma**3
+            dAr += ai*rhor**(i)*self.sigma_3
         F = np.exp(-self.gamma*rhor**2)    
         for t,bi in enumerate(self.b):
-            dAr += bi*self.sigma**3*rhor**(2*t+1)*F       
+            dAr += bi*self.sigma_3*rhor**(2*t+1)*F       
         return dAr*self.epsilon
     
     def derivative2_excess_free_energy_particle(self, rho):      
         ddAr = 0.0
-        rhor = rho*self.sigma**3 #reduced density    
+        rhor = rho*self.sigma_3 #reduced density    
         for i, ai in enumerate(self.a[1:]):
             ddAr += ai*(i+1)*rhor**(i)*self.sigma**6
         F = np.exp(-self.gamma*rhor**2)    
@@ -435,7 +442,7 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
     
     def derivative3_excess_free_energy_particle(self, rho):
         dddAr = 0.0
-        rhor = rho*self.sigma**3 #reduced density    
+        rhor = rho*self.sigma_3 #reduced density    
         for i, ai in enumerate(self.a[2:]):
             dddAr += ai*(i+2)*(i+1)*rhor**(i)*self.sigma**9
         F = np.exp(-self.gamma*rhor**2)    
@@ -448,7 +455,7 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
 
     def get_rough_density_grid(self, npoints):
         "Define rough density grid (for use in solve_densities) based on reduced units and knowledge of the MBWR EOS"
-        return np.logspace(-10,0,npoints)*1.5/self.sigma**3
+        return np.logspace(-10,0,npoints)*1.5/self.sigma_3
 
     def find_critical_point(self):
         """
@@ -462,11 +469,171 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
             *_red_upper             determine the upper limit for the reduced critical properties, i.e. if temp or density is above its allowed value, no 
                                     critical point will be returned
         """
-        rho_scale, T_scale, p_scale = 1./self.sigma**3, self.epsilon/boltzmann, self.epsilon/self.sigma**3
+        rho_scale, T_scale, p_scale = 1./self.sigma_3, self.epsilon/boltzmann, self.epsilon/self.sigma_3
         rho_red_init, T_red_init = 0.3, 1.3
         rho_red_upper, T_red_upper = 1.0, 2.0
         return EquationOfState.find_critical_point(self, rho_scale=rho_scale, T_scale=T_scale, p_scale=p_scale, rho_red_init=rho_red_init, T_red_init=T_red_init, rho_red_upper=rho_red_upper, T_red_upper=T_red_upper)
 
+class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS):
+
+    def __init__(self, mass, sigma, epsilon, homogenous=True, homogenous_fraction=None, logging = False):
+        EquationOfState.__init__(self, np.array(mass))
+        self.sigma_list = np.array(sigma)
+        self.epsilon_list = np.array(epsilon)
+        self.homogenous = homogenous
+        if homogenous_fraction is None:
+            self.homogenous_fraction = np.ones(len(sigma))/len(sigma)
+        else:
+            assert len(homogenous_fraction) == len(sigma), 'homogenous_fraction and sigma must have the same length'
+            self.homogenous_fraction = homogenous_fraction/np.sum(homogenous_fraction)
+        self.ncomp = len(sigma)
+        self._init_regression_parameters()
+        self.logging = logging
+
+    def _get_fractional_coefficients(self, rho):
+        if self.homogenous:
+            rho_sum = np.array(rho)
+            if isinstance(rho, list):
+                rho = np.array(rho)
+            if isinstance(rho, np.ndarray):
+                rho = np.ones((self.ncomp,) + rho.shape)*rho_sum
+            else:
+                rho = np.ones(self.ncomp)*rho_sum
+            print(rho)
+            rho = self.homogenous_fraction[:,None]*rho
+            print(rho)
+            x = np.zeros((self.ncomp,) + rho_sum.shape)
+
+            x = np.full_like(rho.T, self.homogenous_fraction).T
+        else:
+            assert rho.shape[0]==self.ncomp, 'For a mixture, rho should be an array with shape (ncomp, ...)'
+            rho_sum = np.sum(rho, axis=0)
+            x = rho/rho_sum
+        return rho, rho_sum, x
+
+    def set_temperature(self, temperature, rho=None):
+        if self.homogenous:
+            self._set_mixture_parameters(self.homogenous_fraction, temperature)
+        else:
+            assert rho is not None, 'For an inhomogenous mixture, the density rho should be provided when setting the temperature'
+            rho, rho_sum, x = self._get_fractional_coefficients(rho)
+            self._set_mixture_parameters(x, temperature)
+
+    def _set_mixture_parameters(self, x, temperature):
+        self.x = x/np.sum(x, axis=0)
+        sigma = self.sigma_list
+        epsilon = self.epsilon_list
+        #compute mixture parameters
+        self.sigma_mix = np.zeros((self.ncomp,self.ncomp))
+        self.epsilon_mix = np.zeros((self.ncomp,self.ncomp))
+        if self.homogenous:
+            self.sigma_3 = 0
+            self.epsilon = 0
+        else:
+            self.sigma_3 = np.zeros(x.shape[1:])
+            self.epsilon = np.zeros(x.shape[1:])
+
+        for i in range(self.ncomp):
+            for j in range(self.ncomp):
+                print('xi', x[i])
+                sig_ij = 0.5*(sigma[i]+sigma[j])
+                eps_ij = np.sqrt(epsilon[i]*epsilon[j])
+                self.sigma_mix[i,j] = sig_ij
+                self.epsilon_mix[i,j] = eps_ij
+                self.sigma_3 += x[i]*x[j]*sig_ij**3
+                self.epsilon += x[i]*x[j]*eps_ij*sig_ij**3
+        self.epsilon /= self.sigma_3
+
+        super().set_temperature(temperature)
+        
+    def _set_mixing_derivatives(self, rho_sum, x):
+        d_sigma3 = np.zeros_like(x)
+        d_epsilon = np.zeros_like(x)
+
+        for i in range(self.ncomp):
+            for j in range(self.ncomp):
+                sig_ij = self.sigma_mix[i,j]
+                eps_ij = self.epsilon_mix[i,j]
+                d_sigma3[i] += self.x[j]*sig_ij**3
+                d_epsilon[i] += 2*self.x[j]*eps_ij*sig_ij**3
+            d_epsilon[i] *= self.sigma_3**(-1)
+            d_epsilon[i] += -self.epsilon
+        
+        d_sigma3 += -self.sigma_3
+        d_sigma3 *= 2/rho_sum
+
+        d_epsilon *= 2/rho_sum
+        d_epsilon += -self.epsilon/self.sigma_3*d_sigma3
+        
+        return d_sigma3, d_epsilon
+
+    def _get_derivative_coefficients(self):
+        Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
+        Tr_1 = Tr**(-1)
+        Tr_2 = Tr_1 * Tr_1
+        Tr_3 = Tr_1 * Tr_2
+        Tr_4 = Tr_2 * Tr_2
+        Tr_5 = Tr_3 * Tr_2
+
+        #a coefficients
+        da1 = self.x1  + 1/2*self.x2*Tr**(-3/2)  - self.x4*Tr_2  - 2*self.x5*Tr_3
+        da2 = self.x6                         - self.x8*Tr_2  - 2*self.x9*Tr_3
+        da3 = self.x10                        - self.x12*Tr_2
+        da4 = 0
+        da5 =                        - self.x14*Tr_2 - 2*self.x15*Tr_3
+        da6 =                        - self.x16*Tr_2
+        da7 =                        - self.x17*Tr_2 - 2*self.x18*Tr_3
+        da8 =                                      - 2*self.x19*Tr_3
+        da_dTr = [da1, da2, da3, da4, da5, da6, da7, da8]
+        #b coeffcients
+        db1 = -2*self.x20*Tr_3 - 3*self.x21*Tr_4
+        db2 = -2*self.x22*Tr_3 - 4*self.x23*Tr_5
+        db3 = -2*self.x24*Tr_3 - 3*self.x25*Tr_4
+        db4 = -2*self.x26*Tr_3 - 4*self.x27*Tr_5
+        db5 = -2*self.x28*Tr_3 - 3*self.x29*Tr_4
+        db6 = -2*self.x30*Tr_3 - 3*self.x31*Tr_4 - 4*self.x32*Tr_5
+        db_dTr = [db1, db2, db3, db4, db5, db6]
+        return da_dTr, db_dTr
+
+    def dAr_drhoi(self, rho_sum, x, d_sigma3, d_epsilon):
+        rhor = self.sigma_3*rho_sum #reduced density
+        da_dTr, db_dTr = self._get_derivative_coefficients()
+        
+        dA = np.zeros_like(rho_sum)
+        dAdTr = np.zeros_like(rho_sum)
+        G = self._get_G_functionals(rho_sum)
+        for j, daj in enumerate(da_dTr):
+            dAdTr[i] += daj/(j+1)* (rhor)**(j+1)
+        for dbj, Gj in zip(db_dTr, G):
+            dAdTr += dbj*Gj
+
+        dAdrho = super().derivative_excess_free_energy_particle(rho_sum)
+        for i in range(self.ncomp):
+            dA[i] += dAdrho*(1 + rho_sum*d_sigma3[i]/self.sigma_3) 
+            dA[i] += -dAdTr*d_epsilon[i]
+        return dA
+        
+    def derivative_excess_free_energy_particle(self, rho):
+        rho, rho_sum, x = self._get_fractional_coefficients(rho)
+        self._set_mixture_parameters(x, self.temperature)
+        d_sigma3, d_epsilon = self._set_mixing_derivatives(rho_sum, x)
+
+        dA = self.dAr_drhoi(rho_sum, x, d_sigma3, d_epsilon)*self.epsilon[None,...]
+        A_rho = super().excess_free_energy_particle(rho_sum)[None,...]*d_epsilon
+        
+        return A_rho + dA
+
+    def excess_free_energy_particle(self, rho):
+        rho, rho_sum, x = self._get_fractional_coefficients(rho)
+        print(rho, rho_sum, x)
+        self._set_mixture_parameters(x, self.temperature)
+        return super().excess_free_energy_particle(rho_sum)
+    
+    def derivative2_excess_free_energy_particle(self, rho):
+        raise NotImplementedError('Second derivative of MBWR mixture EOS not implemented')
+    
+    def derivative3_excess_free_energy_particle(self, rho):
+        raise NotImplementedError('Third derivative of MBWR mixture EOS not implemented')
 
 class CarnahanStarlingEOS(EquationOfState):
     
@@ -478,17 +645,18 @@ class CarnahanStarlingEOS(EquationOfState):
         Compressibility = eta*rho
     """
     
-    def __init__(self, mass, sigma, epsilon):
+    def __init__(self, mass, sigma, epsilon, m=1):
         EquationOfState.__init__(self, mass)
         self.sigma = sigma
         self.epsilon = epsilon
+        self.m = m
 
     def set_temperature(self, temperature, **kwargs):
         EquationOfState.set_temperature(self, temperature)
         beta = 1/(boltzmann*temperature)
         Tt = 1/beta/self.epsilon
         self.R = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
-        self.eta = 4/3*np.pi*self.R**3
+        self.eta = self.m*4/3*np.pi*self.R**3
     
     def get_rough_density_grid(self, npoints):
         "Get a rough logarithmic grid in density in a range that is practically accessible"
@@ -513,6 +681,36 @@ class CarnahanStarlingEOS(EquationOfState):
         return 12*kT*self.eta**3*(3-self.eta*rho)/(1-self.eta*rho)**5
     
     
+class CarnahanStarlingMixEOS(CarnahanStarlingEOS):
+    
+    name = 'CSMIX'
+    """
+        R
+            The radius of the hard sphere particles
+            
+        Compressibility = eta*rho
+    """
+    
+    def __init__(self, mass, sigma, epsilon, x, m=None):
+        EquationOfState.__init__(self, mass)
+        self.sigma = sigma
+        self.epsilon = epsilon
+        if m is None:
+            m = np.ones(len(sigma))
+        self.m = m
+        assert len(sigma)==len(m), 'sigma and m should have the same length'
+        assert len(epsilon)==len(m), 'epsilon and m should have the same length'
+        assert len(x)==len(m), 'x and m should have the same length'
+        self.x = x/np.sum(x)
+
+
+    def set_temperature(self, temperature, **kwargs):
+        EquationOfState.set_temperature(self, temperature)
+        beta = 1/(boltzmann*temperature)
+        Tt = 1/beta/self.epsilon
+        self.R = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        self.eta = np.sum(self.x*self.m*4/3*np.pi*self.R**3)
+
 class MFAEOS(EquationOfState):
     
     name = 'MFA'
@@ -599,6 +797,7 @@ class PCSAFT_EOS(EquationOfState):
         self.m = m      
         self.m_mix = m
         self.x = 1.0 #fraction of particles of this species in mixture
+        self.CS = CarnahanStarlingEOS(mass, sigma, epsilon, m)
 
     def set_temperature(self, temperature):
         self.temperature = temperature
@@ -606,6 +805,7 @@ class PCSAFT_EOS(EquationOfState):
         self.m2_eps2_sig3 = self.m**2*(self.epsilon/boltzmann/temperature)**2*self.sigma**3
         self.dhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))
         self.wvl = planck/np.sqrt(2*np.pi*(self.mass)*boltzmann*temperature)
+        self.CS.set_temperature(temperature)
     
     def _get_a_and_b(self, m):
         ai = np.zeros(7)
@@ -708,7 +908,8 @@ class PCSAFT_EOS(EquationOfState):
     def excess_free_energy_particle(self, rho):
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
+        fhs = self.m_mix*self.CS.excess_free_energy_particle(rho)/boltzmann/self.temperature
+        # fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
         fchain = self._chain_contribution(zeta2, zeta3)
         fdisp = self._dispersion_contribution(rho, eta)
         return boltzmann*self.temperature*(fhs + fchain + fdisp)
@@ -716,7 +917,8 @@ class PCSAFT_EOS(EquationOfState):
     def derivative_excess_free_energy_particle(self, rho):
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
+        # dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
+        dfhs = self.m_mix*self.CS.derivative_excess_free_energy_particle(rho)/boltzmann/self.temperature
         dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
         dfdisp = self._derivative_dispersion_contribution(rho, eta)
         return boltzmann*self.temperature*(dfhs + dfchain + dfdisp)
@@ -744,13 +946,16 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS):
         assert self.epsilon.shape == (self.ncomp,), 'epsilon should be a list/array with length equal to number of components'
         assert self.m.shape == (self.ncomp,), 'm should be a list/array with length equal to number of components'
         assert self.kij.shape == (self.ncomp,self.ncomp), 'kij should be a square matrix with size equal to number of components'
-        
+        self.CS = CarnahanStarlingMixEOS(mass, sigma, epsilon, x, m)
+
+
     def set_temperature(self, temperature):
         self.temperature = temperature
         self.dhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))
         self.wvl = planck/np.sqrt(2*np.pi*(self.mass)*boltzmann*temperature)
         self._get_mixture_parameters(temperature)
-        
+        self.CS.set_temperature(temperature)
+
     def compute_chempot(self, rho, x=None):
         kT = boltzmann*self.temperature
 

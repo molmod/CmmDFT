@@ -288,7 +288,10 @@ class FreeEnergy(object):
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
-            HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, version=version)
+            m = self.system.guest.m
+            if not hasattr(m, '__iter__'):
+                m = [m]
+            HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, m=np.array(m), version=version)
             self.add_part(HardSphere)
     
     def add_mean_field(self, tailcorrections=False, **kwargs):
@@ -365,11 +368,11 @@ class FreeEnergy(object):
 
             self.add_part(corr)
 
-    def add_PCSAFT(self, **kwargs):
+    def add_PCSAFT(self, sigma_smooth=0, **kwargs):
         """
             Adds a PC-SAFT functional for attractive and repulsive interaction contributions
         """
         with log.section('FREEENER', 2, timer='Initializing'):
             log.dump('Initializing PC-SAFT functional for attractive and repulsive interaction contribution')
-            PCSAFT = PCSAFTFunctional(self.grid, self.system.guest)
+            PCSAFT = PCSAFTFunctional(self.grid, self.system.guest, sigma_smooth=sigma_smooth)
             self.add_part(PCSAFT)

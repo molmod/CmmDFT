@@ -256,7 +256,7 @@ class Calculator(object):
             fn = Path(fn)
         np.savetxt(fn, data.T, delimiter=',', header=header, comments='')
         
-    def save_loadings_AIF(self, temp, chempots, eos, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
+    def save_loadings_AIF(self, temp, chempots, eos, input_fn=None, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
         """
         Save the adsorption loadings to an AIF (Adsorption Information File) format.
         Parameters:
@@ -281,34 +281,40 @@ class Calculator(object):
         d.add_new_block('CmmDFT2aif')
 
         block = d.sole_block()
+        # general information
         block.set_pair('_audit_aif_version', '6acf6ef')
-
-        #label metadata
-
-        block.set_pair('_exptl_operator',  getpass.getuser())
-        block.set_pair('_simltn_date', datetime.datetime.now().isoformat())
-        block.set_pair('_simltn_code', 'CmmDFT')
-
-        block.set_pair('_exptl_method', 'cDFT')
+        block.set_pair('_adsnt_material_id', self.host.name)
+        block.set_pair('_exptl_adsorptive', self.guest.name)
+        block.set_pair('_exptl_temperature', f'{temp:0.3f}K')
+        block.set_pair('_exptl_method', 'simulation')
         adsorption_type = 'excess' if excess else 'absolute'
         block.set_pair('_exptl_isotherm_type', adsorption_type)
 
-        block.set_pair('_exptl_adsorptive', self.guest.name)
-        block.set_pair('_exptl_temperature', f'{temp:0.3f}K')
+        # simulation metadata
+        block.set_pair('_simltn_code', f'CmmDFT-{self.program.version}')
+        block.set_pair('_simltn_sampling', 'cDFT')
+        input_file_list = []
+        if input_fn is not None:
+            input_file_list.append(str(input_fn))
+        if hasattr(self.host, 'chk') and self.host.chk is not None:
+            input_file_list.append(str(self.host.chk))
+        if hasattr(self.host, 'par') and self.host.par is not None:
+            input_file_list.append(str(self.host.par))
+        if hasattr(self.guest, 'chk') and self.guest.chk is not None:
+            input_file_list.append(str(self.guest.chk))
+        if hasattr(self.guest, 'par') and self.guest.par is not None:
+            input_file_list.append(str(self.guest.par))
+        block.set_pair('_simltn_input_files', input_file_list)
 
-        block.set_pair('_adsnt_material_id', self.host.name)
-        #record mass to infer simulation size
         if isinstance(self.host, NanoporousHost):
-            block.set_pair('_adsnt_sample_mass', '%.5E' % np.sum(self.host.mol.masses/amu))
-
             ffs = self.program.name_dict['ff_suffix'].split('_')
             block.set_pair('_simltn_forcefield_adsorptive', ffs[0])
             block.set_pair('_simltn_forcefield_adsorbent', ffs[1])
         else:
             block.set_pair('_simltn_forcefield_adsorbent', self.program.name_dict['ff_suffix'])
 
-        block.set_pair('_simltn_excess_functionals', self.program.name_dict['funct_suffix'])
 
+        # record mass to infer simulation size
         block.set_pair('_units_temperature', 'K')
         block.set_pair('_units_energy', 'kJ/mol')
         block.set_pair('_units_loading', loading_unit)
@@ -320,7 +326,9 @@ class Calculator(object):
         #get the pressures from the chemical potentials and the provided eos
         pressures = np.array([eos.calculate_pressure(temp, chem) for chem in chempots])
         fugacities = np.exp(self.fener.beta*chempots)/self.fener.beta/self.fener.wavelength**3
-        uptake = self.return_loading(temp, chempots, excess=excess, eos=eos, He_frac=He_frac)
+        uptake_absolute = self.return_loading(temp, chempots, excess=False)
+        if excess:
+            uptake_excess = self.return_loading(temp, chempots, excess=True, eos=eos, He_frac=He_frac)
 
         #get the uptake and convert to the desired units
         cv_units = convert_units(self.guest.mass, np.sum(self.host.mol.masses), self.host.cell.volume)
@@ -331,12 +339,12 @@ class Calculator(object):
         pressures_bar = pressures/bar
         fugacities_bar = fugacities/bar
         mus_kjmol = chempots/kjmol
-        loop_ads = block.init_loop('_adsorp_', ['pressure', 'fugacity', 'chemicalpotential', 'amount'])
+        loop_ads = block.init_loop('_adsorp_', ['pressure', 'fugacity', 'chemicalpotential', 'amount_absolute'])
         loop_ads.set_all_values([
             ['%.5E' % item for item in pressures_bar],
             ['%.5E' % item for item in fugacities_bar],
             ['%.5E' % item for item in mus_kjmol],
-            ['%.5E' % item for item in uptake]
+            ['%.5E' % item for item in uptake_absolute]
         ])
 
         if fn is None:

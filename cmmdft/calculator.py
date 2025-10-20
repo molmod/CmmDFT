@@ -18,7 +18,7 @@ from .program import Program
 from .functionals import FreeEnergy, WDAVFunctional, ExternalPotential
 from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
-from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff
+from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff, Document
 #log.set_level('silent')
 
 
@@ -277,7 +277,7 @@ class Calculator(object):
             Helium fraction used in the calculation of excess adsorption, if not provided the Helium void fraction is calculated with the function get_Helium_fraction.
         """
 
-        d = cif.Document()
+        d = Document()
         d.add_new_block('CmmDFT2aif')
 
         block = d.sole_block()

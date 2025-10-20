@@ -23,8 +23,9 @@ __all__ = [
     'effective_potential_QU', 'effective_potential_Leb', 'effective_potential_MC', 'effective_potential_precalc',
     'spherical_potential_boltz', 'spherical_potential_semi_boltz', 'spherical_potential_ave', 'spherical_potential_eff',
     'generate_rotation_matrix', 'find_local_maxima', 'find_neighbours'
-    'potantial_from_mfa', 'make_supercell',
-    'TricubicInterpolator', 'convert_units'
+    'potential_from_mfa', 'make_supercell',
+    'TricubicInterpolator', 'convert_units',
+    'Document'
 ]
 
 
@@ -1147,3 +1148,57 @@ class TricubicInterpolator:
             return result
         else:
             return result[0]
+
+class Document(object):
+    def __init__(self):
+        self.blocks = []
+
+    def add_new_block(self, block_name):
+        block = Block(block_name)
+        self.blocks.append(block)
+        return block
+    
+    def sole_block(self):
+        if not self.blocks:
+            self.add_new_block('default')
+        return self.blocks[0]
+    
+    def write_file(self, filepath):
+        with open(filepath, 'w') as f:
+            for block in self.blocks:
+                f.write(f'data_{block.name}\n')
+                for key, value in block.pairs.items():
+                    f.write(f'{key} {value}\n')
+                for loop in block.loops:
+                    f.write(f'\nloop_\n')
+                    for key in loop.keys:
+                        f.write(f'{loop.prefix}{key}\n')
+                    num_rows = len(loop.data[loop.keys[0]])
+                    for i in range(num_rows):
+                        row = ''.join(loop.data[key][i] + ' ' for key in loop.keys)
+                        f.write(f'{row}\n')
+
+
+class Block(object):
+    def __init__(self, name):
+        self.name = name
+        self.pairs = {}
+        self.loops = []
+
+    def set_pair(self, key, value):
+        self.pairs[key] = value
+
+    def init_loop(self, prefix, keys):
+        loop = Loop(prefix, keys)
+        self.loops.append(loop)
+        return loop
+
+class Loop(object):
+    def __init__(self, prefix, keys):
+        self.prefix = prefix
+        self.keys = keys
+        self.data = {key: [] for key in keys}
+
+    def set_all_values(self, columns):
+        for key, column in zip(self.keys, columns):
+            self.data[key] = column            

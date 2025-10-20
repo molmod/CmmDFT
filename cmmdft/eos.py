@@ -498,10 +498,8 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS):
             if isinstance(rho, np.ndarray):
                 rho = np.ones((self.ncomp,) + rho.shape)*rho_sum
             else:
-                rho = np.ones(self.ncomp)*rho_sum
-            print(rho)
+                rho = np.ones((self.ncomp,1))*rho_sum
             rho = self.homogenous_fraction[:,None]*rho
-            print(rho)
             x = np.zeros((self.ncomp,) + rho_sum.shape)
 
             x = np.full_like(rho.T, self.homogenous_fraction).T
@@ -515,7 +513,7 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS):
         if self.homogenous:
             self._set_mixture_parameters(self.homogenous_fraction, temperature)
         else:
-            assert rho is not None, 'For an inhomogenous mixture, the density rho should be provided when setting the temperature'
+            assert rho is not None, 'For an inhomogenous mixture, the density rho should be provided when setting the temperature to determine mixture parameters'
             rho, rho_sum, x = self._get_fractional_coefficients(rho)
             self._set_mixture_parameters(x, temperature)
 
@@ -535,7 +533,6 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS):
 
         for i in range(self.ncomp):
             for j in range(self.ncomp):
-                print('xi', x[i])
                 sig_ij = 0.5*(sigma[i]+sigma[j])
                 eps_ij = np.sqrt(epsilon[i]*epsilon[j])
                 self.sigma_mix[i,j] = sig_ij
@@ -555,7 +552,7 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS):
                 sig_ij = self.sigma_mix[i,j]
                 eps_ij = self.epsilon_mix[i,j]
                 d_sigma3[i] += self.x[j]*sig_ij**3
-                d_epsilon[i] += 2*self.x[j]*eps_ij*sig_ij**3
+                d_epsilon[i] += self.x[j]*eps_ij*sig_ij**3
             d_epsilon[i] *= self.sigma_3**(-1)
             d_epsilon[i] += -self.epsilon
         
@@ -564,10 +561,12 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS):
 
         d_epsilon *= 2/rho_sum
         d_epsilon += -self.epsilon/self.sigma_3*d_sigma3
-        
         return d_sigma3, d_epsilon
 
     def _get_derivative_coefficients(self):
+        """
+        Coefficients derived towards the reduced temperature
+        """
         Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
         Tr_1 = Tr**(-1)
         Tr_2 = Tr_1 * Tr_1
@@ -599,15 +598,15 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS):
         rhor = self.sigma_3*rho_sum #reduced density
         da_dTr, db_dTr = self._get_derivative_coefficients()
         
-        dA = np.zeros_like(rho_sum)
         dAdTr = np.zeros_like(rho_sum)
         G = self._get_G_functionals(rho_sum)
         for j, daj in enumerate(da_dTr):
-            dAdTr[i] += daj/(j+1)* (rhor)**(j+1)
+            dAdTr += daj/(j+1)* (rhor)**(j+1)
         for dbj, Gj in zip(db_dTr, G):
             dAdTr += dbj*Gj
-
-        dAdrho = super().derivative_excess_free_energy_particle(rho_sum)
+        dAdTr *= boltzmann*self.temperature/self.epsilon#/self.epsilon
+        dA = np.zeros((self.ncomp,) + rho_sum.shape)
+        dAdrho = super().derivative_excess_free_energy_particle(rho_sum)#/self.epsilon
         for i in range(self.ncomp):
             dA[i] += dAdrho*(1 + rho_sum*d_sigma3[i]/self.sigma_3) 
             dA[i] += -dAdTr*d_epsilon[i]
@@ -618,10 +617,10 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS):
         self._set_mixture_parameters(x, self.temperature)
         d_sigma3, d_epsilon = self._set_mixing_derivatives(rho_sum, x)
 
-        dA = self.dAr_drhoi(rho_sum, x, d_sigma3, d_epsilon)*self.epsilon[None,...]
-        A_rho = super().excess_free_energy_particle(rho_sum)[None,...]*d_epsilon
+        dA = self.dAr_drhoi(rho_sum, x, d_sigma3, d_epsilon)#*self.epsilon[None,...]
+        A_eps = (super().excess_free_energy_particle(rho_sum)/self.epsilon)[None,...]*d_epsilon
         
-        return A_rho + dA
+        return A_eps + dA
 
     def excess_free_energy_particle(self, rho):
         rho, rho_sum, x = self._get_fractional_coefficients(rho)
@@ -736,7 +735,13 @@ class MFAEOS(EquationOfState):
     def derivative3_excess_free_energy_particle(self, rho):
         return 0
     
-    
+class MFAMIXEOS(MFAEOS):
+
+    name = 'MFAMIX'
+
+    def __init__(self, mass, sigma, epsilon, homogenous=True, homogenous_fraction=None):
+        pass
+
 class MFMT_MFA_EOS(EquationOfState):
     
     def __init__(self, mass, sigma, epsilon, a_fact = None):
@@ -932,6 +937,10 @@ class PCSAFT_EOS(EquationOfState):
 
 class PCSAFT_MIX_EOS(PCSAFT_EOS):
     def __init__(self, mass, sigma, epsilon, m, x, kij=None):
+        """
+        PC-SAFT EOS, consisting of hard-chain, dispersion and hard sphere
+        Extended for homogoneous mixtures
+        """
         self.mass = np.array(mass) # molecule masses
         self.sigma = np.array(sigma)
         self.epsilon = np.array(epsilon)
@@ -946,7 +955,7 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS):
         assert self.epsilon.shape == (self.ncomp,), 'epsilon should be a list/array with length equal to number of components'
         assert self.m.shape == (self.ncomp,), 'm should be a list/array with length equal to number of components'
         assert self.kij.shape == (self.ncomp,self.ncomp), 'kij should be a square matrix with size equal to number of components'
-        self.CS = CarnahanStarlingMixEOS(mass, sigma, epsilon, x, m)
+        self.CS = CarnahanStarlingMixEOS(self.mass, self.sigma, self.epsilon, x, m)
 
 
     def set_temperature(self, temperature):

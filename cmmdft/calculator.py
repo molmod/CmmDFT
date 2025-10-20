@@ -20,7 +20,7 @@ from .free_energy import FreeEnergy
 from .functionals import WDAVFunctional, ExternalPotential
 from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
-from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff, get_file_suffix
+from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff, get_file_suffix, Document
 
 #log.set_level('silent')
 
@@ -269,7 +269,7 @@ class Calculator(object):
             Helium fraction used in the calculation of excess adsorption, if not provided the Helium void fraction is calculated with the function get_Helium_fraction.
         """
 
-        d = cif.Document()
+        d = Document()
         d.add_new_block('CmmDFT2aif')
 
         block = d.sole_block()
@@ -278,10 +278,10 @@ class Calculator(object):
         #label metadata
 
         block.set_pair('_exptl_operator',  getpass.getuser())
+        block.set_pair('_exptl_method', 'cDFT')
+
         block.set_pair('_simltn_date', datetime.datetime.now().isoformat())
         block.set_pair('_simltn_code', 'CmmDFT')
-
-        block.set_pair('_exptl_method', 'cDFT')
         adsorption_type = 'excess' if excess else 'absolute'
         block.set_pair('_exptl_isotherm_type', adsorption_type)
 
@@ -305,7 +305,7 @@ class Calculator(object):
         block.set_pair('_units_energy', 'kJ/mol')
         block.set_pair('_units_loading', loading_unit)
         block.set_pair('_units_pressure','bar')
-        block.set_pair('_units_mass','amu')
+        # block.set_pair('_units_mass','amu')
 
         #prepare data
 
@@ -332,7 +332,7 @@ class Calculator(object):
         ])
 
         if fn is None:
-            fn = self.workdir / f'adsorption_{temp:0.2f}K.aif'
+            fn = self.workdir / f'adsorption_isotherm_{temp:0.2f}K.aif'
         else: 
             fn = Path(fn)
         d.write_file(str(fn))

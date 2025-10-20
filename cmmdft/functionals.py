@@ -1265,7 +1265,7 @@ class MFAFunctionalMixture(MFAFunctional):
                 of the LJ potential, i.e. rmin=sigma
         """        
         def lj_potential(sigma, epsilon):
-            if rmin is None: rmin = sigma
+            rmin = sigma
             potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
             mask = self.grid.points[:,:,:,3]>rmin
 

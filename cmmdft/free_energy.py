@@ -10,7 +10,7 @@ from yaff import ForceField
 
 from .tools import get_ff, merge_ffpar_files, write_LJ_pars_chk
 from .log import log
-from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost
+from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
 
 from .functionals import *
 from .eos import *
@@ -294,7 +294,7 @@ class FreeEnergy(object):
             HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, m=np.array(m), version=version)
             self.add_part(HardSphere)
     
-    def add_mean_field(self, tailcorrections=False, **kwargs):
+    def add_mean_field(self, tailcorrections=False, cutoff=None, **kwargs):
         """
             This function adds a mean field approximation (MFA) functional for guest molecules described by 
             spherical symmetrical lennard jones parameters as defined in self.system.guest
@@ -317,7 +317,7 @@ class FreeEnergy(object):
             if not os.path.isfile(fn) or self.overwrite or kwargs.get('rewrite', False):
                 if isinstance(self.system.guest, SphericalLJGuest) or isinstance(self.system.guest, DualModelGuest):
                     log.dump('computing LJ interaction potential with LJ params from given guest %s' %(self.system.guest.name))
-                    mfa.generate_potential_lj(self.system.guest.sigma, self.system.guest.epsilon, **kwargs)
+                    mfa.generate_potential_lj(self.system.guest.sigma, self.system.guest.epsilon, cutoff=cutoff, **kwargs)
                 else:
                     log.dump('computing interaction potential with forcefield from given guest %s' %(self.system.guest.name))
                     mfa.generate_potential(self.system.guest.mol, self.system.guest.par, self.system.guest.Rzero, self.temperature, **kwargs)
@@ -328,7 +328,7 @@ class FreeEnergy(object):
                 mfa.load_potential(fn)
         self.add_part(mfa)
 
-    def add_correlation_wda_lj(self, **kwargs):
+    def add_correlation_wda_lj(self, a=None, **kwargs):
         '''The function adds a WDA contribution to correct for correlation effect in a molecular simulation
             system. The various contributions in this WDA require LJ epsilon and sigma parameters are taken
             from self.system.guest
@@ -360,10 +360,30 @@ class FreeEnergy(object):
             sigma = self.system.guest.sigma
             epsilon = self.system.guest.epsilon
 
-            MBWR = ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon)
-            CS = CarnahanStarlingEOS(mass, sigma, epsilon)
-            MFA = MFAEOS(mass, sigma, epsilon)
-            SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
+            if isinstance(self.system.guest, GuestMixture):
+                MBWR = ModifiedBenedictWebbRubinMixEOS(mass, sigma, epsilon, homogenous=False)
+                CS = CarnahanStarlingMixEOS(mass, sigma, epsilon, homogenous=False)
+                if 'MFAMIX' in self.part_names:
+                    mfa_part = self.part_dict['MFAMIX']
+                    a = mfa_part.compute_vdw_a()
+                if a is not None:
+                    MFA = MFAMixEOS(mass, aij=a, homogenous=False)
+                else:
+                    MFA = MFAMixEOS(mass, sigma, epsilon, homogenous=False)
+                SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
+
+            else:
+                MBWR = ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon)
+                CS = CarnahanStarlingEOS(mass, sigma, epsilon)
+                if 'MFA' in self.part_names:
+                    mfa_part = self.part_dict['MFA']
+                    a = mfa_part.compute_vdw_a()
+                if a is not None:
+                    MFA = MFAEOS(mass, a=a)
+                else:
+                    MFA = MFAEOS(mass, sigma, epsilon)
+                SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
+
             corr = WDAVFunctional(self.grid, self.system.guest.Rhs, SUM)
 
             self.add_part(corr)

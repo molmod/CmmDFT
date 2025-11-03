@@ -837,34 +837,40 @@ def calculate_along_diffusion(ff, grid, ring_indices, natom, step_dist, cvs_limi
     return cvss, potentials
 
 def potential_from_mfa(points, potential):
-    '''The function takes mfa potential( as calculated in functionals.py) and gridpoints and returns the 
-    distances and potential values in order, so that they may be easily plotted.
-    
+    """
+    Extracts unique, sorted distances and corresponding potential values 
+    from an MFA potential grid.
+
     Parameters
     ----------
-    points
-        It is a 4-dimensional numpy array containing the x, y, z coordinates of points in space. see the
-    grid instance in system.py
-    potential
-        The potential parameter is a numpy array that contains the potential values at each point in a 3D
-    space. The potential values are calculated using the MFA (Mean Field Approximation) method, 
-    see functionals.py.
-    
+    points : np.ndarray
+        4D array containing the x, y, z coordinates and distances of points in space.
+        (e.g., from a grid instance in system.py)
+    potential : np.ndarray
+        3D array containing potential values at each spatial point, as calculated using MFA.
+
     Returns
     -------
-        two arrays: distances and poten_in_ord. The distances array contains unique and sorted distances
-    from the last dimension of the input points array. The poten_in_ord array contains potential values
-    corresponding to the indices of the points array, sorted in the same order as the distances array.
+    distances : np.ndarray
+        Sorted 1D array of unique distance values (rounded to 7 decimals).
+    poten_in_ord : np.ndarray
+        1D array of potential values corresponding to each unique distance.
+    """
+    # Extract and flatten the last coordinate (distance dimension)
+    distances_flat = points[..., -1].ravel()
+    potential_flat = potential.ravel()
     
-    '''
-    distances = np.unique(np.sort(points[:,:,:,-1].reshape(-1,1),0).round(decimals=7))
-    indices = []
-    for dist in distances:
-        indices.append(np.array(np.where(np.isclose(points[:,:,:,-1],dist)))[:,0])    
-    poten_in_ord = []
-    for indc in indices:
-        poten_in_ord.append(potential[tuple(indc)])    
-    return distances, np.array(poten_in_ord)
+    # Round and find unique sorted distances
+    distances = np.unique(distances_flat.round(7))
+    
+    # Create a mapping from distance to potential using vectorized operations
+    # For each distance, find the mean potential value of all matching points
+    poten_in_ord = np.array([
+        potential_flat[np.isclose(distances_flat, d)].mean() for d in distances
+    ])
+
+    return distances, poten_in_ord
+
 
 def find_local_maxima(density, points):
     '''The function finds the local maxima in a 3D density array at given points.

@@ -116,7 +116,7 @@ class Solver(object):
             for part in self.fener.parts:
                 Fpart = part.value(rho, krho)
                 G += Fpart
-                print(part.name, 'F', Fpart/kjmol, 'kJ/mol')
+                # print(part.name, 'F', Fpart/kjmol, 'kJ/mol')
                 line += "\t% .6e" %(Fpart)
             line += "\t% .6e" %(G)
             self.tracking_line = line
@@ -143,7 +143,7 @@ class Solver(object):
 
     def _get_C1(self, rho, krho=None):
         with log.section(self.name, self.log_level, timer='C1'):
-            print('rho', np.min(rho), np.max(rho))
+            # print('rho', np.min(rho), np.max(rho))
             if krho is None:
                 krho = self.grid.fftn(rho)
             C1 = np.zeros(self.rho_shape)
@@ -180,7 +180,7 @@ class Solver(object):
         
         n3_max = np.max(self._get_n3(krho)).real
         n3_max_new = np.max(self._get_n3(krho_new)).real
-        return np.min([abs((1-n3_max)/(n3_max_new - n3_max)), 1])
+        return np.min([abs((1-n3_max)/((n3_max_new - n3_max)+1e-16)), 1])
 
     def _check_convergence(self, rho_new, krho_new, C1_new, rho, N_new):
         """
@@ -581,7 +581,6 @@ class Anderson(Picard):
             krho_new = self.grid.fftn(rho_new)
             n3_new = self._get_n3(krho_new)
 
-        print('Damping coefficient: %5.3f'%(self.damping))
         return rho_new, krho_new
     
     def update_rho(self, rho, krho, C1):
@@ -605,26 +604,20 @@ class Anderson(Picard):
                 rho_new, krho_new, C1_new = self.update_rho_Anderson()
                 Grho_new = self.get_new_rho(C1_new, self.fugacity)
                 self.And_true = True
-                print('new_res', np.linalg.norm(Grho_new - rho_new), 'old_res', np.linalg.norm(Grho - rho))
+
                 if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
-                    # log.warning('The Anderson method failed, falling back to Picard')
                     rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
-                    # rho_new, krho_new, C1_new = self.update_rho_static(rho, krho, C1)
+
                 elif np.linalg.norm(Grho_new - rho_new) > np.linalg.norm(Grho - rho)*5:
-                    log.warning('The Anderson method diverged, falling back to Picard')
                     self.damping = self.damping_min
                     rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
-                    # rho_new, krho_new, C1_new = self.update_rho_static(rho, krho, C1)
                 else:
                     Omega_new = self._get_Omega(rho_new, krho_new)
                     if Omega_new > prev_omega*(0.8):
-                        # log.warning('The Anderson method increased the grand potential, falling back to Picard')
-                        # rho_new, krho_new, C1_new = self.update_rho_static(rho, krho, C1)
                         rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
 
             else:
                 rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
-                # rho_new, krho_new, C1_new = self.update_rho_static(rho, krho, C1)
 
             return rho_new, krho_new, C1_new
 

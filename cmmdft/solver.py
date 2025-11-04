@@ -324,7 +324,6 @@ class Solver(object):
                 if self._check_convergence(rho_new, krho_new, C1_new, rho, N_new):
                     converged = True
                     break
-                np.save('rho_debug.npy', rho_new)
                 rho = rho_new.copy()
                 C1 = C1_new.copy()
                 krho = krho_new.copy()
@@ -767,8 +766,7 @@ class QuasiNewton(Picard):
             Additional keyword arguments passed to the superclass initializer.
         """
         super().__init__(program, nsteps, method=method, **kwargs)
-        self.shape = np.array(program.rho_shape)
-        self.n = np.prod(self.shape)
+        self.n = np.prod(self.rho_shape)
         self.m = m
 
         self.QN_method = method.lower()
@@ -813,7 +811,7 @@ class QuasiNewton(Picard):
         numpy.ndarray
             Reshaped array with the original dimensions.
         """
-        return x.reshape(self.shape)
+        return x.reshape(self.rho_shape)
 
     def _initiate_solving(self, chempot):
         super()._initiate_solving(chempot)

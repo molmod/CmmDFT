@@ -545,11 +545,10 @@ class PCSAFTFunctional(Functional):
         self.beta = None
         self.grid = grid
         self.guest = guest
-        self.m = guest.m
+        self.m = np.atleast_1d(guest.m)
         self.fractions = guest.fractions
-        if not isinstance(self.m, np.ndarray):
+        if len(self.m) == 1:
             self.n_components = 1
-            self.m = np.array([self.m])
             self.fractions = np.array([1.0])
             self.epsilon = np.atleast_1d(self.guest.epsilon)
             self.sigma = np.atleast_1d(self.guest.sigma)
@@ -586,7 +585,7 @@ class PCSAFTFunctional(Functional):
         self.beta = 1/(boltzmann*temperature)
         self.dhs = np.zeros(len(self.m))    
         for i in range(len(self.m)):
-            self.dhs[i] = self.sigma[i,i]*(1-0.12*np.exp(-3*self.epsilon_mix[i,i]/boltzmann/temperature))
+            self.dhs[i] = self.sigma_mix[i,i]*(1-0.12*np.exp(-3*self.epsilon_mix[i,i]/boltzmann/temperature))
         # self.dhs[:] = np.array(self.guest._calculate_hardsphere_radius(temperature)[0])*2
         self.sigma_smooth = self.sigma_smooth_factor*np.min(self.dhs)
         self._init_weight_functions()
@@ -638,7 +637,6 @@ class PCSAFTFunctional(Functional):
         for i in range(7):
             self.a_prefact[i] =  (a_constants[i,0] + (self.m_avg - 1)/self.m_avg*a_constants[i,1] + (self.m_avg - 1)/self.m_avg*(self.m_avg - 2)/self.m_avg*a_constants[i,2])
             self.b_prefact[i] =  (b_constants[i,0] + (self.m_avg - 1)/self.m_avg*b_constants[i,1] + (self.m_avg - 1)/self.m_avg*(self.m_avg - 2)/self.m_avg*b_constants[i,2])
-
 
         eta_disp = np.pi/6*np.sum(self.m[:,None,None,None]*(self.dhs**3)[:,None,None,None]*wrho_disp, axis=0)
         eta_disp = np.clip(eta_disp, 0, 0.99)
@@ -692,8 +690,8 @@ class PCSAFTFunctional(Functional):
 
         for i in range(len(self.m)):
             for j in range(len(self.m)):
-                fij = -2*np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon[i,j])*self.sigma[i,j]**3*I1
-                fij += -np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon[i,j])**2*self.sigma[i,j]**3*m_I2_C1
+                fij = -2*np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])*self.sigma_mix[i,j]**3*I1
+                fij += -np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])**2*self.sigma_mix[i,j]**3*m_I2_C1
                 integrand += wrho_disp[i]*wrho_disp[j]*fij
 
             wrho_disp[i] = np.clip(wrho_disp[i], 1e-30, None)
@@ -726,7 +724,7 @@ class PCSAFTFunctional(Functional):
                 z2di = di*zeta2
                 dyidnk = np.pi/6*self.m[k]*dk**2*(3/2*di*z3_2 + di**2*zeta2*z3_2*z3_1)
                 dyidnk += np.pi/6*self.m[k]*dk**3*z3_2*(1+3*di*zeta2*z3_1 + 3/2*di**2*zeta2**2*z3_2)
-                rho_dyik_yii += (1 - self.m[i]) * (rho[i]*(dyidnk/np.clip(yii[i], eps, None)))
+                rho_dyik_yii += ((1 - self.m[i]) * (rho[i]*(dyidnk/np.clip(yii[i], eps, None))))
 
             krho_dyik_yii = self.grid.fftn(rho_dyik_yii)
 
@@ -807,14 +805,14 @@ class PCSAFTFunctional(Functional):
         for k in range(len(self.m)):
             dphidk = np.zeros(self.grid.npoints, dtype=np.float64)
             for i in range(len(self.m)):
-                fki = -2*np.pi*self.m[i]*self.m[k]*(self.beta*self.epsilon[i,k])*self.sigma[i,k]**3*I1
-                fki += -np.pi*self.m[i]*self.m[k]*(self.beta*self.epsilon[i,k])**2*self.sigma[i,k]**3*m_I2_C1
+                fki = -2*np.pi*self.m[i]*self.m[k]*(self.beta*self.epsilon_mix[i,k])*self.sigma_mix[i,k]**3*I1
+                fki += -np.pi*self.m[i]*self.m[k]*(self.beta*self.epsilon_mix[i,k])**2*self.sigma_mix[i,k]**3*m_I2_C1
 
                 dphiijdk = np.zeros(self.grid.npoints, dtype=np.float64)
                 dphiijdk += 2*fki
                 for j in range(len(self.m)):
-                    pre1 = -2*np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon[i,j])*self.sigma[i,j]**3
-                    pre2 = -np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon[i,j])**2*self.sigma[i,j]**3
+                    pre1 = -2*np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])*self.sigma_mix[i,j]**3
+                    pre2 = -np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])**2*self.sigma_mix[i,j]**3
                     dphiijdk += wrho_disp[j]*(pre1*da1[k] + pre2*da2[k])
                 dphidk += dphiijdk*wrho_disp[i]
                 
@@ -835,13 +833,7 @@ class PCSAFTFunctional(Functional):
         with log.section('PC-SAFT', 3, timer='PC-SAFT derive'):
             lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(rho, krho)
             dphi_chain = self.derive_chain(rho, krho, lambda_chain, zeta2, zeta3)
-            print('rho min/max', rho.min(), rho.max())
-            print(wrho_disp.min(), wrho_disp.max())
-            print(eta_disp.min(), eta_disp.max())
-            print(krho.min(), krho.max())
-            dphi_disp = self.derive_disp2(rho, krho, wrho_disp, eta_disp)
-            print('chain min/max', dphi_chain.min(), dphi_chain.max())
-            print('disp min/max', dphi_disp.min(), dphi_disp.max())
+            dphi_disp = self.derive_disp(rho, krho, wrho_disp, eta_disp)
             return dphi_chain + dphi_disp
     
     def value(self, rho, krho):

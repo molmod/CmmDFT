@@ -386,8 +386,10 @@ class Program(object):
             self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.file_suffix))
             if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite and not continue_solving:
                 log.dump('  skipping because solution found in file %s' %(self.rho_fn))
-                return
-                
+                rho = np.load(self.rho_fn)
+                N = self.grid.integrate(rho)
+                return N, rho, True
+
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
             rho_old = self.rho0.copy()
             N, rho, converged = self.solver.solve(chempot, rho_old, log_level)

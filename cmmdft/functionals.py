@@ -547,7 +547,6 @@ class PCSAFTFunctional(Functional):
         self.guest = guest
         self.m = np.atleast_1d(guest.m)
         self.fractions = guest.fractions
-        print(self.m)
         if len(self.m) == 1:
             self.n_components = 1
             self.fractions = np.array([1.0])

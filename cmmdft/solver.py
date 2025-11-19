@@ -149,7 +149,6 @@ class Solver(object):
             C1 = np.zeros(self.rho_shape)
             for part in self.fener.parts:
                 c1 = part.derive(rho, krho)
-                print('part', part.name, 'max C1', np.max(c1), 'min C1', np.min(c1))
                 C1 += c1
             return C1
 
@@ -571,8 +570,8 @@ class Anderson(Picard):
         krho_new = self.grid.fftn(rho_new)
         n3_new = self._get_n3(krho_new)
 
-        while np.max(n3_new) > 0.99:
-            self.damping = max(self.damping*self.damping_factors[1], self.damping_min)
+        while np.max(n3_new) > 0.99 and self.damping > (self.damping_min*0.1)*1.01:
+            self.damping = max(self.damping*self.damping_factors[1], self.damping_min*0.1)
             log.dump('Max(n3) = %5.3f > 0.99, reducing damping factor to %5.3f'%(np.max(n3_new), self.damping))
 
             rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result

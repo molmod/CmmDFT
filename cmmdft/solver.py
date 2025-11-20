@@ -143,13 +143,12 @@ class Solver(object):
 
     def _get_C1(self, rho, krho=None):
         with log.section(self.name, self.log_level, timer='C1'):
-            # print('rho', np.min(rho), np.max(rho))
             if krho is None:
                 krho = self.grid.fftn(rho)
             C1 = np.zeros(self.rho_shape)
             for part in self.fener.parts:
                 c1 = part.derive(rho, krho)
-                print('part', part.name, 'max C1', np.max(c1), 'min C1', np.min(c1))
+                # print('part', part.name, 'max C1', np.max(c1), 'min C1', np.min(c1))
                 C1 += c1
             return C1
 

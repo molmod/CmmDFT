@@ -250,7 +250,7 @@ class GuestMixture(object):
         self.sigma_mix = np.array([( (gi.sigma + gj.sigma)/2 ) for gi in guests for gj in guests]).reshape((self.nspecies, self.nspecies))
 
     def copy(self):
-        return type(self)([g.copy() for g in self.guests], list(self.fractions))
+        return type(self)(self.names, [g.copy() for g in self.guests], list(self.fractions), k_inter=self.k_inter)
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         Rhs_sigma = [g._calculate_hardsphere_radius(temperature, **kwargs) for g in self.guests]
@@ -382,6 +382,23 @@ class Grid(object):
     def integrate(self, data):
         return np.sum(data)*self.dr
     
+    def integrate_n(self, data):
+        """
+        integrate along the 3 spatial axes (matching self.npoints)
+        Supports fields with arbitrary leading/trailing dimensions
+        """
+        shape = data.shape
+        npoints = tuple(self.npoints)
+
+        # Find where the spatial block (Nx, Ny, Nz) lives
+        for start in range(len(shape) - 2):
+            if tuple(shape[start:start+3]) == npoints:
+                axes = tuple(range(start, start+3))
+                break
+        else:
+            raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
+        return np.sum(data, axis=axes)*self.dr
+
     def fft(self, rdata):
         return fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
     

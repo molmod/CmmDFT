@@ -570,14 +570,14 @@ class PCSAFTFunctional(Functional):
                         self.epsilon_mix[i,j] = (self.guest.epsilon[i]*self.guest.epsilon[j])**0.5*(1 - self.guest.k_inter[i,j])
                         self.sigma_mix[i,j] = (self.guest.sigma[i] + self.guest.sigma[j])/2.0
 
-        if sigma_smooth is None:
-            sigma_smooth = 0
-        self.sigma_smooth_factor = sigma_smooth
+        # if sigma_smooth is None:
+        #     sigma_smooth = 0
+        # self.sigma_smooth_factor = sigma_smooth
         self.psi = 1.3862
         self.debug = debug
 
     def copy(self, grid=None):
-        pcsaft = type(self)(self.grid, self.guest, self.sigma_smooth_factor)
+        pcsaft = type(self)(self.grid, self.guest)
         return pcsaft
 
     def set_temperature(self, temperature, **kwargs):
@@ -587,7 +587,7 @@ class PCSAFTFunctional(Functional):
         for i in range(len(self.m)):
             self.dhs[i] = self.sigma_mix[i,i]*(1-0.12*np.exp(-3*self.epsilon_mix[i,i]/boltzmann/temperature))
         # self.dhs[:] = np.array(self.guest._calculate_hardsphere_radius(temperature)[0])*2
-        self.sigma_smooth = self.sigma_smooth_factor*np.min(self.dhs)
+        # self.sigma_smooth = self.sigma_smooth_factor*np.min(self.dhs)
         self._init_weight_functions()
 
     def _init_weight_functions(self):

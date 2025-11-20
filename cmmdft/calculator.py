@@ -39,6 +39,7 @@ class Calculator(object):
         self.fener = program.fener.copy(self.grid)
         self.host = program.system.host
         self.guest = program.system.guest
+        self.ncomp = program.system.guest.nspecies
         self.label = label
 
     def density_statistics(self, temp, chempot, mask=None):
@@ -88,11 +89,16 @@ class Calculator(object):
         rho = np.load(fn)
            
         if mask is None:
-            return self.grid.integrate(rho).real
+            return self.grid.integrate_n(rho).real
         else:
+            if rho.shape != mask.shape:
+                if mask.shape == tuple(self.grid.npoints):
+                    mask = np.full((self.ncomp, *mask.shape), mask)
+                else:
+                    raise ValueError(f'The shape of the mask {mask.shape} does not match the shape of the density {rho.shape} or the grid {self.grid.npoints}')
             rho_mask = np.copy(rho)
             rho_mask[~mask] = 0
-            return self.grid.integrate(rho_mask).real
+            return self.grid.integrate_n(rho_mask).real
     
     def loading_MWBR_unreliable(self, temp, chempot, mwbr):
         """
@@ -116,13 +122,13 @@ class Calculator(object):
         rho_MBWR = np.copy(rho)
         rho_MBWR[~mask_MBWR] = 0
 
-        return self.grid.integrate(rho_MBWR).real     
+        return self.grid.integrate_n(rho_MBWR).real     
 
     def return_loading(self, temp, chempots, excess=False, eos=None, He_frac=None):
         """
         Returns an array of loadings for a list of chemical potentials.
         """
-        loading_list = np.zeros(len(chempots))
+        loading_list = np.zeros((len(chempots), self.ncomp))
         for i,mu in enumerate(chempots):
             try:
                 loading_list[i] = self.loading(temp, mu)
@@ -156,11 +162,11 @@ class Calculator(object):
         Returns a dictionary containing all the chemical potentials for which the density is calculated for a given temperature
         """
 
-        numeric_const_pattern = '[-+]? (?: (?: \d* \. \d+ ) | (?: \d+ \.? ) )(?: [Ee] [+-]? \d+ ) ?'
+        numeric_const_pattern = '([-+]?\d*\.?\d+)(?=kJmol)'
         rx = re.compile(numeric_const_pattern, re.VERBOSE)
 
         dens_list = [f.name for f in self.workdir.iterdir() if f.name.startswith('rho') and f.name.endswith(f'{temperature:#7.5f}K.npy')]
-        chempots = np.array([float(rx.findall(f)[0]) for f in dens_list])*kjmol
+        chempots = np.array([np.array(rx.findall(f), dtype=float) for f in dens_list])*kjmol
         return selection_sort(chempots)
 
     def get_helium_fraction(self, temperature):
@@ -268,7 +274,7 @@ class Calculator(object):
         He_frac : float, optional
             Helium fraction used in the calculation of excess adsorption, if not provided the Helium void fraction is calculated with the function get_Helium_fraction.
         """
-
+        assert self.ncomp == 1, 'AIF output is (currently) only supported for single component adsorption'
         d = Document()
         d.add_new_block('CmmDFT2aif')
 
@@ -626,7 +632,15 @@ class Calculator(object):
                 return q_list, n_list
 
             else:
-                header = 'cv,'
+
+                n_list = np.empty((self.ncomp, cvs.shape[0]-1))
+
+                header = 'cv'
+                if self.ncomp == 1:
+                    header += f', density {self.guest.name}'
+                else:
+                    for c in range(self.ncomp):
+                        header += f', density {self.guest.species_names[c]}'
 
                 fn = self.workdir / f'rho_{file_suff}.npy'
                 assert os.path.isfile(fn), f'No density found for {fn}'
@@ -653,8 +667,7 @@ class Calculator(object):
                     q_list = (cvs[1:]+cvs[:-1])/2
 
                 if save:
-
-                    data = np.vstack((q_list, n_list)).T
+                    data = np.vstack((q_list[np.newaxis,...], n_list)).T
                     fn = self.workdir / f'projected_density_{file_suff}.csv'
                     np.savetxt(fn, data, delimiter=',', header = header)
                     log.dump(f'Calculated the projected density at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')
@@ -780,7 +793,22 @@ class Calculator(object):
         with log.section('CALCULATOR', 2, timer=None):
             n = self.loading(temp, chempot)
             omega = self.grand_potential(temp, chempot)
-            chempot_key = f'{chempot:#0.8f}'
+            if hasattr(chempot, '__iter__'):
+                chempot_key = ''
+                for mu in chempot:
+                    chempot_key += f'{mu:#0.8f}_'
+            else:
+                chempot_key = f'{chempot:#0.8f}'
+
+            if self.ncomp > 1:
+                header = ''
+                for c in range(self.ncomp):
+                    header += f'chempot {self.guest.names[c]} [kJ/mol], '
+                for c in range(self.ncomp):
+                    header += f'loading {self.guest.names[c]} [molecules/uc], '
+                header += 'grand potential [Eh/uc]'
+            else:
+                header = 'chempot [kJ/mol], loading [molecules/uc], grand potential [Eh/uc]'
             if fn is None:
                 fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.csv'
             if os.path.isfile(fn):
@@ -794,7 +822,7 @@ class Calculator(object):
                     data[2][index] = omega.real
                 else: 
                     mu_sorted = selection_sort(np.array(data[0]))
-                    if chempot > mu_sorted[-1]:
+                    if chempot[0] > mu_sorted[-1]:
                         new_col = np.array([[chempot], [n], [omega.real]])
                         data = np.hstack((data, new_col))
                     else:

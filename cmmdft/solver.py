@@ -143,7 +143,6 @@ class Solver(object):
 
     def _get_C1(self, rho, krho=None):
         with log.section(self.name, self.log_level, timer='C1'):
-            # print('rho', np.min(rho), np.max(rho))
             if krho is None:
                 krho = self.grid.fftn(rho)
             C1 = np.zeros(self.rho_shape)

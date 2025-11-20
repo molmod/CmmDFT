@@ -32,7 +32,8 @@ class EquationOfState(object):
         self.temperature = None
         self.ncomp = 1
     
-    def from_guest(self, guest):
+    @classmethod
+    def from_guest(cls, guest):
         raise NotImplementedError
     
     def set_temperature(self, temperature):
@@ -386,11 +387,12 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         self._init_regression_parameters()
         self.logging = logging
 
-    def from_guest(self, guest, **kwargs):
+    @classmethod
+    def from_guest(cls, guest, **kwargs):
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
-        return ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon, **kwargs)
+        return cls(mass, sigma, epsilon, **kwargs)
     
     def _init_regression_parameters(self):
         "Values taken from Table 10 in http://dx.doi.org/10.1080/00268979300100411"
@@ -568,12 +570,13 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
         self.sigma_list = sigma
         self.epsilon_list = epsilon
 
-    def from_guest(self, guest, **kwargs):
+    @classmethod
+    def from_guest(cls, guest, **kwargs):
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
         x = guest.fractions
-        return ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon, x=x, **kwargs)
+        return cls(mass, sigma, epsilon, x=x, **kwargs)
 
     def set_temperature(self, temperature, rho=None):
         self.temperature = temperature
@@ -737,12 +740,13 @@ class CarnahanStarlingEOS(EquationOfState):
         self.m = m
         self.m_mix = m
 
-    def from_guest(self, guest, **kwargs):
+    @classmethod
+    def from_guest(cls, guest, **kwargs):
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
-        m = guest.m if hasattr(guest, 'm') else 1
-        return CarnahanStarlingEOS(mass, sigma, epsilon, m=m, **kwargs)
+        m = getattr(guest, 'm', 1)
+        return cls(mass, sigma, epsilon, m=m, **kwargs)
 
     def set_temperature(self, temperature, **kwargs):
         super().set_temperature(temperature)
@@ -795,13 +799,14 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
             assert len(epsilon)==len(m), 'epsilon and m should have the same length'
         self.m = np.array(m)
 
-    def from_guest(self, guest, **kwargs):
+    @classmethod
+    def from_guest(cls, guest, **kwargs):
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
-        m = guest.m if hasattr(guest, 'm') else np.ones(len(sigma))
-        x = guest.fractions if hasattr(guest, 'fractions') else None
-        return CarnahanStarlingMixEOS(mass, sigma, epsilon, m=m, homogenous_fraction=x, **kwargs)
+        m = getattr(guest, 'm', np.ones(len(sigma)))
+        x = getattr(guest, 'fractions', None)
+        return cls(mass, sigma, epsilon, m=m, homogenous_fraction=x, **kwargs)
     
     def set_temperature(self, temperature, **kwargs):
         EquationOfState.set_temperature(self, temperature)
@@ -861,12 +866,13 @@ class MFAEOS(EquationOfState):
         else:
             raise IOError('Either argument a should be defined or BOTH epsilon and sigma!')
 
-    def from_guest(self, guest, **kwargs):
+    @classmethod
+    def from_guest(cls, guest, **kwargs):
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
-        return MFAEOS(mass, sigma=sigma, epsilon=epsilon, **kwargs)
-
+        return cls(mass, sigma=sigma, epsilon=epsilon, **kwargs)
+    
     def excess_free_energy_particle(self, rho):
         return self.a*rho
     
@@ -908,14 +914,15 @@ class MFAMixEOS(MFAEOS, EOS_MIX):
                     sig_ij = 0.5*(sigma[i]+sigma[j])
                     self.aij[i,j] = -16/9*np.pi*eps_ij*sig_ij**3
 
-    def from_guest(self, guest, **kwargs):
+    @classmethod
+    def from_guest(cls, guest, **kwargs):
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
-        m = guest.m if hasattr(guest, 'm') else np.ones(len(sigma))
-        x = guest.fractions if hasattr(guest, 'fractions') else None
-        kij = guest.kij if hasattr(guest, 'kij') else None
-        return CarnahanStarlingMixEOS(mass, sigma, epsilon, m=m, homogenous_fraction=x, kij=kij, **kwargs)
+        m = getattr(guest, 'm', np.ones(len(sigma)))
+        x = getattr(guest, 'fractions', None)
+        kij = getattr(guest, 'kij', None)
+        return cls(mass, sigma, epsilon, m=m, homogenous_fraction=x, kij=kij, **kwargs)
 
     def _set_mixture_parameters(self, x):
         self.x = x/np.sum(x, axis=0)
@@ -1006,12 +1013,13 @@ class PCSAFT_EOS(EquationOfState):
         self.x = 1.0 #fraction of particles of this species in mixture
         self.CS = CarnahanStarlingEOS(mass, sigma, epsilon, m)
 
-    def from_guest(self, guest):
+    @classmethod
+    def from_guest(cls, guest):
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
-        m = guest.m if hasattr(guest, 'm') else 1
-        return PCSAFT_EOS(mass, sigma, epsilon, m=m)
+        m = getattr(guest, 'm', 1)
+        return cls(mass, sigma, epsilon, m=m)
 
     def set_temperature(self, temperature):
         self.temperature = temperature
@@ -1179,15 +1187,16 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         assert self.epsilon.shape == (self.ncomp,), 'epsilon should be a list/array with length equal to number of components'
         assert self.m.shape == (self.ncomp,), 'm should be a list/array with length equal to number of components'
         self.CS = CarnahanStarlingMixEOS(self.mass, self.sigma, self.epsilon, x, m)
-
-    def from_guest(self, guest):
+    
+    @classmethod
+    def from_guest(cls, guest):
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
-        m = guest.m if hasattr(guest, 'm') else 1
-        x = guest.fractions if hasattr(guest, 'fractions') else None
-        kij = guest.k_inter if hasattr(guest, 'k_inter') else None
-        return PCSAFT_MIX_EOS(mass, sigma, epsilon, m=m, x=x, kij=kij)
+        m = getattr(guest, 'm', 1)
+        x = getattr(guest, 'fractions', None)
+        kij = getattr(guest, 'k_inter', None)
+        return cls(mass, sigma, epsilon, m=m, x=x, kij=kij)
 
     def set_temperature(self, temperature):
         self.temperature = temperature

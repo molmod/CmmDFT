@@ -39,18 +39,89 @@ class EquationOfState(object):
     def set_temperature(self, temperature):
         self.temperature = temperature
         self.wvl = planck/np.sqrt(2*np.pi*self.mass*boltzmann*temperature)
+    
+    def set_reference_state(self, P_ref=1*bar):
+        self.P_ref = P_ref
+        self.T_ref = self.temperature
+        self.rho_ref = self.solve_densities_from_pressures([P_ref])[0][0]
+        self.mu_ref = self.compute_chempot(self.rho_ref)        
+
+    def compute_chempot(self, rho=None, temperature=None, pressure=None):
         
-    def compute_chempot(self, rho):
+        if temperature is not None:
+            s_temp = getattr(self, 'temperature', None)
+            if s_temp != temperature:
+                self.set_temperature(temperature)
+
+        if rho is not None:    
+            kT = boltzmann*self.temperature
+            return kT*np.log(self.wvl**3*rho) + self.derivative_excess_free_energy_volume(rho)
+        elif pressure is not None:
+            rho = self.solve_densities_from_pressures(pressure)
+            rho = np.nanmin(rho, axis=1)
+            return self.compute_chempot(rho=rho, temperature=self.temperature)
+        else:
+            raise ValueError('Either rho or pressure must be provided')
+    
+    
+    def compute_excess_chempot(self, rho=None, temperature=None, pressure=None):
+        
+        if temperature is not None:
+            s_temp = getattr(self, 'temperature', None)
+            if s_temp != temperature:
+                self.set_temperature(temperature)
+
+        if rho is not None:    
+            kT = boltzmann*self.temperature
+            return self.derivative_excess_free_energy_volume(rho)
+        elif pressure is not None:
+            rho = self.solve_densities_from_pressures(pressure)
+            rho = np.nanmin(rho, axis=1)
+            return self.compute_excess_chempot(rho=rho, temperature=self.temperature)
+        else:
+            raise ValueError('Either rho or pressure must be provided')
+    
+    def compute_pressure(self, rho=None, temperature=None, chempot=None):
+        
+        if temperature is not None:
+            s_temp = getattr(self, 'temperature', None)
+            if s_temp != temperature:
+                self.set_temperature(temperature)
+
+        if rho is not None:    
+            kT = boltzmann*self.temperature
+            return kT*rho + rho**2*self.derivative_excess_free_energy_particle(rho)
+        elif chempot is not None:
+            rho = self.solve_densities_from_chempots(chempot)
+            rho = np.nanmin(rho, axis=1)
+            return self.compute_pressure(rho=rho, temperature=self.temperature)
+        else:
+            raise ValueError('Either rho or chemical potential must be provided')
+
+    def compute_fugacity(self, rho=None, chempot=None, pressure=None, **kwargs):
         kT = boltzmann*self.temperature
-        return kT*np.log(self.wvl**3*rho) + self.derivative_excess_free_energy_volume(rho)
-    
-    def compute_excess_chempot(self, rho):
-        return self.derivative_excess_free_energy_volume(rho)
-    
-    def compute_pressure(self, rho):
-        kT = boltzmann*self.temperature
-        return kT*rho + rho**2*self.derivative_excess_free_energy_particle(rho)
-    
+        if rho is not None:
+            mu = self.compute_chempot(rho)
+            
+            if not hasattr(self, 'P_ref'):
+                self.set_reference_state(**kwargs)
+
+            return self.P_ref * np.exp((mu-self.mu_ref)/(kT))
+        elif chempot is not None:
+            if not hasattr(self, 'P_ref'):
+                self.set_reference_state(**kwargs)
+
+            return self.P_ref * np.exp((chempot-self.mu_ref)/(kT))
+        elif pressure is not None:
+            rho = self.solve_densities_from_pressures(pressure)
+            rho = np.nanmin(rho, axis=1)
+            mu = self.compute_chempot(rho)
+            
+            if not hasattr(self, 'P_ref'):
+                self.set_reference_state(**kwargs)
+
+            return self.P_ref * np.exp((mu-self.mu_ref)/(kT))
+
     def excess_free_energy_particle(self, rho):
         "Returns the excess free energy per particle"
         raise NotImplementedError
@@ -109,10 +180,12 @@ class EquationOfState(object):
         kT = boltzmann*self.temperature
         rough_chempot_grid = kT*np.log(self.wvl**3*rough_density_grid) + self.excess_free_energy_particle(rough_density_grid) + rough_density_grid*self.derivative_excess_free_energy_particle(rough_density_grid)
         #determine in which interval in rough_chempot_grid the given chempots lies and
+        chempots = np.atleast_1d(chempots)
         density_intervals = [None,]*len(chempots)
+
         for i,mu in enumerate(chempots):
             for j in range(1,n_rough_gridpoints):
-                if rough_chempot_grid[j-1]<=mu<=rough_chempot_grid[j]:
+                if np.all(rough_chempot_grid[j-1]<=mu) and np.all(mu<=rough_chempot_grid[j]):
                     interval = [rough_density_grid[j-1],rough_density_grid[j]]
                     if density_intervals[i] is None:
                         density_intervals[i] = [interval]
@@ -144,7 +217,8 @@ class EquationOfState(object):
         rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
         #compute the pressure on this rough grid
         kT = boltzmann*self.temperature
-        rough_pressure_grid = kT*rough_density_grid + rough_density_grid**2*self.derivative_excess_free_energy_particle(rough_density_grid)
+        rough_pressure_grid = self.compute_pressure(rho=rough_density_grid)
+        pressures = np.atleast_1d(pressures)
         #determine in which interval in rough_pressure_grid the given pressure lies 
         density_intervals = [None,]*len(pressures)
         for i,p in enumerate(pressures):
@@ -210,31 +284,7 @@ class EquationOfState(object):
                 self.temperature = None
                 self.wavelength = None
             return rho_crit, T_crit, p_crit 
-        
-    def calculate_pressure(self, temp, chempot):
-        """
-            Calculate the pressure from the chemical potential and temperature
-        """
-        self.set_temperature(temp)
-        rho = self.solve_densities_from_chempots([chempot])[0][0]
-        return self.compute_pressure(rho)
-    
-    def calculate_mu(self, temp, pressure):
-        """
-            Calculate the chemical potential from the pressure and temperature
-        """
-        self.set_temperature(temp)
-        rho = self.solve_densities_from_pressures([pressure])[0][0]
-        return self.compute_chempot(rho).reshape(self.ncomp)
-    
-    def calculate_excess_mu(self, temp, pressure):
-        """
-            Calculate the excess chemical potential from the pressure and temperature
-        """
-        self.set_temperature(temp)
-        rho = self.solve_densities_from_pressures([pressure])[0][0]
-        return self.compute_excess_chempot(rho).reshape(self.ncomp)
-        
+
 class EOS_MIX(EquationOfState):
     def __init__(self, ncomp, homogenous=True, homogenous_fraction=None):
         self.ncomp = ncomp
@@ -267,26 +317,59 @@ class EOS_MIX(EquationOfState):
     def _drhoi_excess_free_energy_particle(self, rho):
         raise NotImplementedError
 
-    def compute_chempot(self, rho):
+    def compute_chempot(self, rho=None, temperature=None, pressure=None):
+        assert self.homogenous, 'Chemical potential calculation only supported for homogenous mixtures'        
+
+        if temperature is not None:
+            s_temp = getattr(self, 'temperature', None)
+            if s_temp != temperature:
+                self.set_temperature(temperature)
+
+        if rho is not None:
+            kT = boltzmann*self.temperature
+            excess_mu = self.compute_excess_chempot(rho)
+            rho, rho_sum, x = self._get_fractional_coefficients(rho)
+            ideal = kT*np.log(np.einsum('i,ij->ij', self.wvl**3, rho))
+            return ideal.T + excess_mu
+        elif pressure is not None:
+            rho = self.solve_densities_from_pressures(pressure)
+            rho = np.nanmin(rho, axis=1)
+            return self.compute_chempot(rho=rho, temperature=self.temperature)
+        else:
+            raise ValueError('Either rho or pressure must be provided')
+        
+    def compute_excess_chempot(self, rho=None, temperature=None, pressure=None):
         assert self.homogenous, 'Chemical potential calculation only supported for homogenous mixtures'
-        kT = boltzmann*self.temperature
-        excess_mu = self.compute_excess_chempot(rho)
-        rho, rho_sum, x = self._get_fractional_coefficients(rho)
-        ideal = kT*np.log(np.einsum('i,ij->ij', self.wvl**3, rho))
-        return ideal + excess_mu
+        if temperature is not None:
+            s_temp = getattr(self, 'temperature', None)
+            if s_temp != temperature:
+                self.set_temperature(temperature)
+        if rho is not None:    
+            rho, rho_sum, x = self._get_fractional_coefficients(rho)
+            a = self.excess_free_energy_particle(rho_sum)
+            da_drhoi = self._drhoi_excess_free_energy_particle(rho_sum)
+            return (a + rho_sum*da_drhoi).T
+        elif pressure is not None:
+            rho = self.solve_densities_from_pressures(pressure)
+            rho = np.nanmin(rho, axis=1)
+            return self.compute_excess_chempot(rho=rho, temperature=self.temperature)
     
-    def compute_excess_chempot(self, rho):
-        assert self.homogenous, 'Chemical potential calculation only supported for homogenous mixtures'
-        rho, rho_sum, x = self._get_fractional_coefficients(rho)
-        a = self.excess_free_energy_particle(rho_sum)
-        da_drhoi = self._drhoi_excess_free_energy_particle(rho_sum)
-        return a + rho_sum*da_drhoi
-    
-    def compute_pressure(self, rho):
+    def compute_pressure(self, rho=None, temperature=None, chempot=None):
         assert self.homogenous, 'Pressure calculation only supported for homogenous mixtures'
+        
+        if temperature is not None:
+            s_temp = getattr(self, 'temperature', None)
+            if s_temp != temperature:
+                self.set_temperature(temperature)
+
         kT = boltzmann*self.temperature
-        rho, rho_sum, x = self._get_fractional_coefficients(rho)
-        return kT*rho_sum + rho_sum**2*self.derivative_excess_free_energy_particle(rho_sum)
+        if rho is not None:    
+            rho, rho_sum, x = self._get_fractional_coefficients(rho)
+            return kT*rho_sum + rho_sum**2*self.derivative_excess_free_energy_particle(rho_sum)
+        elif chempot is not None:
+            rho = self.solve_densities_from_chempots(chempot)
+            rho = np.nanmin(rho, axis=1)
+            return self.compute_pressure(rho=rho, temperature=self.temperature)
     
     def compute_partial_pressure(self, rho):
         assert self.homogenous, 'Partial pressure calculation only supported for homogenous mixtures'
@@ -297,6 +380,55 @@ class EOS_MIX(EquationOfState):
         rho, rho_sum, x = self._get_fractional_coefficients(rho_orig)
         return x * P * np.exp(mu_res/(kT))
     
+    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000, excess_only=False):
+        """
+            Solve EOS for density as function of chemical potential at fixed (given) temperature in a given density interval. For this we need to solve the following equation for rho
+
+            ..math:: \mu = k_B T\ln(\rho\Lambda^3) + f^N_{ex}(\rho,T) + \rho\frac{\partial f^N_{ex}}{\partial \rho}(\rho,T)
+        
+            This is done by first defining a rough grid of densities for which the corresponding chemical potential is computed according to the above equation. This rough grid is used to bracket possible solutions who are then fed into the brentq routine of scipy.optimize to find all solutions.
+        """
+        #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
+        rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
+        rho, rho_sum, x = self._get_fractional_coefficients(rough_density_grid)
+        #compute the chemical potential on this rough grid
+        kT = boltzmann*self.temperature
+        if excess_only:
+            rough_chempot_grid = self.compute_excess_chempot(rho=rho_sum)
+        else:
+            rough_chempot_grid = self.compute_chempot(rho=rho_sum)
+
+        #determine in which interval in rough_chempot_grid the given chempots lies and
+        chempots = np.atleast_1d(chempots)
+
+        density_intervals = [None,]*len(chempots)
+        for i,mu in enumerate(chempots):
+            for j in range(1,n_rough_gridpoints):
+                if np.all(rough_chempot_grid[j-1]<=mu) and np.all(mu<=rough_chempot_grid[j]):
+                    interval = [rough_density_grid[j-1],rough_density_grid[j]]
+                    if density_intervals[i] is None:
+                        density_intervals[i] = [interval]
+                    else:
+                        density_intervals[i].append(interval)
+        #for each chemical potential, find a solution in each proposed interval using the brentq method
+        densities = np.zeros([len(chempots), 2])*np.nan
+        for i,mu in enumerate(chempots):
+            solutions = []
+            if excess_only:
+                def fun(rho):
+                    return np.sum((self.compute_excess_chempot(rho=rho) - mu))
+            else:
+                def fun(rho):
+                    return np.sum((self.compute_chempot(rho=rho) - mu))
+                
+            if density_intervals[i] is not None:
+                for interval in density_intervals[i]:
+                    sol = brentq(fun, interval[0], interval[1])
+                    solutions.append(sol)
+            if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            densities[i,:len(solutions)] = np.array(sorted(solutions))
+        return densities
+
 class SumOfEOS(EquationOfState):
     """
     Class representing the sum of multiple equations of state.
@@ -1261,7 +1393,7 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         derivatives of I1, I2 and C1 with respect to xi
         """
         dai_dx, dbi_dx = self._get_da_db_dx()
-        deta_dx = np.pi/6*rho*self.m*self.dhs**3
+        deta_dx = np.pi/6*np.einsum('i,j->ji', rho, self.m*self.dhs**3)
 
         dI1dx = np.zeros((self.ncomp, ) + eta.shape)
         dI2dx = np.zeros((self.ncomp, ) + eta.shape)
@@ -1272,7 +1404,7 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
                 dI1dx[k] += dai_dx[k,i]*eta**i
                 dI2dx[k] += dbi_dx[k,i]*eta**i
 
-        dC1dx = np.zeros(self.ncomp)
+        dC1dx = np.zeros((self.ncomp, ) + eta.shape)
         for k in range(self.ncomp):
             dC1dx[k] = - C1**2*( self.m[k]*(8*eta - 2*eta**2)/(1-eta)**4 - self.m[k]*(20*eta - 27*eta**2 + 12*eta**3 - 2*eta**4)/((1-eta)*(2-eta))**2 )
             dC1dx[k] += dC1deta*deta_dx[k]
@@ -1369,6 +1501,7 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         rho_da2 += -np.pi*self.m_mix*rho*self.m2_eps2_sig3*(dI2deta*C1 + I2*dC1)*deta_drho
         ddisp_drho = (rho_da1 + rho_da2)
 
+
         #1/rho * sum(xj ddisp/dxj)
         ddisp_dx = np.zeros((self.ncomp,) + rho.shape)
         for j in range(self.ncomp):
@@ -1377,8 +1510,8 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
             ddisp_dxj += -np.pi*(self.m[j]*self.m2_eps2_sig3 + self.m_mix*dm2_eps2_sig3_dx[j])*C1*I2
             ddisp_dxj += -np.pi*self.m_mix*self.m2_eps2_sig3*(dI2dx[j]*C1 + I2*dC1dx[j])
             ddisp_dx[j] = ddisp_dxj
+        ddisp_dx_sum = np.dot(self.x, ddisp_dx)
 
-        ddisp_dx_sum = np.sum(np.dot(self.x, ddisp_dx), axis=0)
 
         #ddisp/dxi
         drhoi_ddisp = np.zeros((self.ncomp,) + rho.shape)

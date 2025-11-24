@@ -154,33 +154,37 @@ __all__ = ['Interpolator', 'effective_potential', 'effective_potential_vectorize
            'generate_rotation_matrix', 'generate_effective_potential', 'get_external_potential', 'get_external_potential_derivatives',
            'get_interpolator_dict', 'get_external_potential_dict', 'get_system_data']
 
-def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
+def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):    
     """ Lennard-Jones potential """
-    r6 = (sigma / r) ** 6
+    r = np.asarray(r)
+    
+    # mask for inside cutoff
+    inside = r < cutoff
+    V = np.zeros_like(r)
+    
+    # Compute only for r < cutoff
+    r6 = (sigma / r[inside])**6
     r12 = r6 * r6
 
-    if cutoff is not None:
-        dist_mask = r > cutoff
-        r[dist_mask] = cutoff
+    # Precompute cutoff shift
+    rc6 = (sigma / cutoff)**6
+    V_shift = 4 * epsilon * (rc6**2 - rc6)
 
-        rc6 = (sigma / cutoff) ** 6
-        V_shift = 4 * epsilon * (rc6 * rc6 - rc6)
-    
-    else:
-        V_shift = 0.0
-
+    V[inside] = 4 * epsilon * (r12 - r6) - V_shift
 
     if derivative:
-        V = 4 * epsilon * (r12 - r6) - V_shift
-        dV = 24 * epsilon * (r6 - 2 * r12) / r**2
-        ddV = 96 * epsilon * (7 * r12 - 2 * r6) / r**4
-        dddV = 384 * epsilon * (5 * r6 - 28 * r12) / r**6
+        dV = np.zeros_like(r)
+        ddV = np.zeros_like(r)
+        dddV = np.zeros_like(r)
+        dV[inside] = 24 * epsilon * (r6 - 2 * r12) / r[inside]**2
+        ddV[inside] = 96 * epsilon * (7 * r12 - 2 * r6) / r[inside]**4
+        dddV[inside] = 384 * epsilon * (5 * r6 - 28 * r12) / r[inside]**6
         return V, dV, ddV, dddV
     else:
-        return 4 * epsilon * (r12 - r6) - V_shift
+        return V
 
 
-def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_data, cutoff=12*angstrom):
+def get_external_potential(points, host_data, FF_dict, sigmaff, epsilonff, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones potential.
 
@@ -197,7 +201,8 @@ def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_data, cutof
     """
     host_pos = host_data[0]
     ffatype_ids = host_data[3]
-    rvecs = host_data[5]
+    rvecs = host_data[-1]
+
     Vext = np.zeros(points.shape[:-1])
     X, Y, Z = points.T
     L = np.linalg.norm(rvecs, axis=1)
@@ -223,7 +228,7 @@ def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_data, cutof
         
     return Vext
 
-def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host_data, spacings, cutoff=12*angstrom):
+def get_external_potential_derivatives(points, host_data, FF_dict, sigmaff, epsilonff, spacings):
     """
     Calculate the external potential using Lennard-Jones potential.
 
@@ -240,8 +245,7 @@ def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host
     """
     host_pos = host_data[0]
     ffatype_ids = host_data[3]
-    rvecs = host_data[5]
-
+    rvecs = host_data[-1]
 
     Vext = np.zeros(len(points))
     dVdx = np.zeros(len(points))
@@ -774,7 +778,7 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, chk_g
         sigmaff, epsilonff = FF_dict_guest[i]
         if mic:
             key = guest_ffatypes[i]
-            external_potential_dict[key] = partial(get_external_potential, FF_dict=FF_dict_host, sigmaff=sigmaff, epsilonff=epsilonff, host_data=host_data, cutoff=cutoff)
+            external_potential_dict[key] = partial(get_external_potential, host_data=host_data, FF_dict=FF_dict_host, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
         else:
             raise NotImplementedError("Non-MIC external potentials are not implemented yet.")
             # external_potential_dict[key] = partial(compute_batch_insertion_energy_typed, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst)

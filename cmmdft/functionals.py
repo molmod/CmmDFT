@@ -26,7 +26,7 @@ from .extpot_calculator import get_system_data, get_external_potential_dict, get
 
 __all__ = [
     'Functional', 'HardSphereFunctional', 'PCSAFTFunctional',
-    'MFAFunctional', 'CoarsenedFunctional',
+    'MFAFunctional', 'MFAFunctionalMixture', 'CoarsenedFunctional',
     'ExternalPotential', 'LDAFunctional',
     'WDAVFunctional', 
 ]
@@ -743,7 +743,6 @@ class PCSAFTFunctional(Functional):
             # rho_lambda = (rho[k]/np.clip(lambda_chain[k], eps, None))
             k_rho_lambda = self.grid.fftn(rho_lambda)
             dphi_rho_lambda = (1-self.m[k])*self.grid.ifftn(k_rho_lambda*self.kwlambda[k])
-
             dphi_chain[k] += dphi_ch + dphi_rho_lambda
 
             dphi_chain[k] += (1 - self.m[k]) * (np.log(np.clip(yii[k]*ratio, 1e-20, None)) - 1) # direct part
@@ -1007,7 +1006,7 @@ class MFAFunctionalMixture(MFAFunctional):
     
     name = 'MIXMFA'
         
-    def __init__(self, grid, tailcorrections=False, repetitions=[2,2,2]):
+    def __init__(self, grid, ncomp, tailcorrections=False, repetitions=[2,2,2]):
         """
         **Arguments:**
         
@@ -1017,6 +1016,7 @@ class MFAFunctionalMixture(MFAFunctional):
         """
         self.tailcorrections = tailcorrections
         self.repetitions = repetitions #only used if tailcorrections are on
+        self.ncomp = ncomp
         if tailcorrections:
             self.small_grid = grid
             self.grid = grid.supercell(repetitions)
@@ -1024,6 +1024,12 @@ class MFAFunctionalMixture(MFAFunctional):
             self.grid = grid
         self.potential = None
         self.kpotential = None
+
+    def load_potential(self, fn):
+        self.potential = np.load(fn)
+        mfa_shape = (self.ncomp, self.ncomp) + self.grid.points.shape[:3]
+        assert self.potential.shape == mfa_shape
+        self.kpotential = self.grid.fftn(self.potential)
 
     def compute_vdw_a(self):
         """
@@ -1059,6 +1065,7 @@ class MFAFunctionalMixture(MFAFunctional):
             return potential
 
         assert sigmas.shape == epsilons.shape
+        assert sigmas.shape == (self.ncomp, self.ncomp)
         self.potential = np.zeros((len(sigmas),len(sigmas)) + self.grid.points.shape[:3], dtype=np.float64)
         for i in range(len(sigmas)):
             for j in range(len(sigmas)):
@@ -1186,7 +1193,6 @@ class ExternalPotential(Functional):
                 self.potential[0] = np.load(fn)
             else:
                 self.potential = np.load(fn)
-                print(self.potential.shape)
                 assert self.potential.shape[0]==self.nspecies, f'Number of species in potential ({self.potential.shape[0]}) does not match number of species in system ({self.nspecies})'
                 assert self.grid.points.shape[:3]==self.potential.shape[1:]
         self.potential = np.clip(self.potential, None, self.limit_potential)
@@ -1196,7 +1202,6 @@ class ExternalPotential(Functional):
         if isinstance(self.guest, GuestMixture):
             new_potential = np.zeros((self.nspecies,) + tuple(self.grid.npoints), dtype='float64')
             epot_fn = self.epot_dr / f'eff_epot_{temperature:#3.2f}K.npy'
-            print(epot_fn)
             if not epot_fn.exists():
                 for e, g in enumerate(self.guest.guests):
                     if isinstance(g, NonSphericalGuest):
@@ -1373,14 +1378,17 @@ class WDAVFunctional(LDAFunctional):
         """
         with log.section('WDA', 3, timer='WDA derive'):
             self.set_density(krho)
-            dphi = self.eos.derivative_excess_free_energy_volume(self.wrho)
+            wrho_reg = np.clip(self.wrho, 1e-30, None)
+            dphi = self.eos.derivative_excess_free_energy_volume(wrho_reg)
             dF = self.grid.ifftn(self.grid.fftn(dphi)*self.kw)
             return dF
 
     def value(self, rho, krho, local=False):
         with log.section('WDA', 3, timer='WDA value'):
             self.set_density(krho)
-            phi = self.eos.excess_free_energy_volume(self.wrho)
+            wrho_reg = np.clip(self.wrho, 1e-30, None)
+
+            phi = self.eos.excess_free_energy_volume(wrho_reg)
             if local:
                 return phi
             else:

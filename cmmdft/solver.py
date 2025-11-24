@@ -106,17 +106,20 @@ class Solver(object):
     def _get_Omega(self, rho, krho):
         with log.section(self.name, self.log_level, timer='Omega'):
 
-            N = np.asarray([self.grid.integrate(rho[e]) for e in range(self.nspecies)])
+            N = np.asarray([self.grid.integrate_n(rho[e]) for e in range(self.nspecies)])
+            print('N:', N)
             rho_reg = self._clip_density(rho)
+            print('rho_reg min/max:', np.min(rho_reg), np.max(rho_reg))
             wvl3 = np.atleast_1d(self.fener.wavelength)**3
             rho_lam = np.einsum('i,ijkl->ijkl', wvl3, rho_reg)
             Fid = self.grid.integrate(rho_reg*(np.log(rho_lam)-1.0)).real/self.fener.beta
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(self.iphase ,self.curr_step, np.sum(N), np.sum(-self.chempot*N), Fid)
+            print('mu_N', self.chempot*N/kjmol)
             G = Fid - np.sum(self.chempot*N)
             for part in self.fener.parts:
                 Fpart = part.value(rho, krho)
                 G += Fpart
-                # print(part.name, 'F', Fpart/kjmol, 'kJ/mol')
+                print(part.name, 'F', Fpart/kjmol, 'kJ/mol')
                 line += "\t% .6e" %(Fpart)
             line += "\t% .6e" %(G)
             self.tracking_line = line

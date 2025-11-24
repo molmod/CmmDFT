@@ -265,7 +265,7 @@ class Calculator(object):
             fn = self.workdir / f'{prefix}loads_{temperature:#3.0f}K{suffix}.csv'
         else:
             fn = Path(fn)
-        np.savetxt(fn, data.T, delimiter=',', header=header, comments='')
+        np.savetxt(fn, data, delimiter=',', header=header, comments='')
         
     def save_loadings_AIF(self, temp, chempots=None, pressures=None, eos=None, input_fn=None, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
         """

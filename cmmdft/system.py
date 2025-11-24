@@ -250,7 +250,7 @@ class GuestMixture(object):
         self.sigma_mix = np.array([( (gi.sigma + gj.sigma)/2 ) for gi in guests for gj in guests]).reshape((self.nspecies, self.nspecies))
 
     def copy(self):
-        return type(self)(self.names, [g.copy() for g in self.guests], list(self.fractions), k_inter=self.k_inter)
+        return type(self)([g.copy() for g in self.guests], list(self.fractions), k_inter=self.k_inter)
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         Rhs_sigma = [g._calculate_hardsphere_radius(temperature, **kwargs) for g in self.guests]

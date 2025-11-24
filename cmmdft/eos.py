@@ -715,6 +715,7 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
 
     def _set_mixture_parameters(self, x, temperature):
         self.x = x/np.sum(x, axis=0)
+        print('x', np.min(x), np.max(x))
         sigma = self.sigma_list
         epsilon = self.epsilon_list
         #compute mixture parameters

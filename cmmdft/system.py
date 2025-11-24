@@ -218,12 +218,12 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
 
 
 class GuestMixture(object):
-    def __init__(self, names, guests, fractions, k_inter=None):
-        self.names = names
+    def __init__(self, guests, fractions, k_inter=None):
+        self.names = [guest.name for guest in guests]
         self.guests = guests
         self.fractions = fractions
 
-        assert len(guests) == len(fractions) == len(names)
+        assert len(guests) == len(fractions)
         # assert all(isinstance(g, Guest) for g in guests)
         assert all(f >= 0 for f in fractions)
         self.fractions = np.array(fractions)/np.sum(fractions)
@@ -250,7 +250,7 @@ class GuestMixture(object):
         self.sigma_mix = np.array([( (gi.sigma + gj.sigma)/2 ) for gi in guests for gj in guests]).reshape((self.nspecies, self.nspecies))
 
     def copy(self):
-        return type(self)(self.names, [g.copy() for g in self.guests], list(self.fractions), k_inter=self.k_inter)
+        return type(self)([g.copy() for g in self.guests], list(self.fractions), k_inter=self.k_inter)
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         Rhs_sigma = [g._calculate_hardsphere_radius(temperature, **kwargs) for g in self.guests]

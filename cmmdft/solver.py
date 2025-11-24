@@ -148,6 +148,7 @@ class Solver(object):
             C1 = np.zeros(self.rho_shape)
             for part in self.fener.parts:
                 c1 = part.derive(rho, krho)
+                # print(part.name, 'C1', np.max(c1), np.min(c1))
                 C1 += c1
             return C1
 

@@ -233,19 +233,32 @@ class Calculator(object):
          
         if chempots is None:
             chempots = self.get_chemical_potential(temperature)
+
+        loadings = self.return_loading(temperature, chempots, excess=excess, eos=eos)
         
-        data = np.zeros((2, len(chempots)))
         if pressure:
-            header = 'pressures [Eh/a0**3], loadings [molecules/uc]'
-            data[0] = np.array([eos.calculate_pressure(temperature, chem) for chem in chempots])
+            data0 = eos.compute_pressure(temperature=temperature, chempot=chempots)
+            header = 'pressures [Eh/a0**3]'
+            if self.ncomp > 1:
+                for i in range(self.ncomp):
+                    header += f'loading_comp{i+1} [molecules/uc],'
+            else:
+                header += 'loadings [molecules/uc]'
             # if eos is not None:
             #     data[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, temperature)) for chem in chempots])
             # else:
             #     raise ValueError('Must provide an equation of state object, with the function calculate_mu')
         else:
-            header = 'chempot [Eh], loadings [molecules/uc]'
-            data[0] = chempots
-        data[1] = self.return_loading(temperature, chempots, excess=excess, eos=eos)
+            if self.ncomp > 1:
+                header = ''
+                for i in range(self.ncomp):
+                    header += f'chempot_comp{i+1} [Eh], '
+                for i in range(self.ncomp):
+                    header += f'loading_comp{i+1} [molecules/uc]'
+            else:
+                header = 'chempot [Eh], loadings [molecules/uc]'
+            data0 = chempots
+        data = np.vstack((data0, loadings))
         if fn is None:
             suffix = '_vs_P' if pressure else ''
             prefix = 'excess_' if excess else ''

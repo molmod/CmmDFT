@@ -734,16 +734,18 @@ class PCSAFTFunctional(Functional):
             dphi_ch = self.grid.ifftn(kdphi_chain)
             
             # Lambda contribution (indirect):
-            rho_lambda = np.zeros(self.grid.npoints, dtype=np.complex_)
-            rho_lambda = (rho[k]/np.clip(lambda_chain[k], eps, None))
+            rho_ref = np.mean(rho[rho > 1e-10])
+            eps = 1e-2
+            ratio = (lambda_chain[k] + eps*rho_ref) / (rho[k] + eps*rho_ref)
+
+            rho_lambda = 1/ratio
+            # rho_lambda = np.zeros(self.grid.npoints, dtype=np.complex_)
+            # rho_lambda = (rho[k]/np.clip(lambda_chain[k], eps, None))
             k_rho_lambda = self.grid.fftn(rho_lambda)
             dphi_rho_lambda = (1-self.m[k])*self.grid.ifftn(k_rho_lambda*self.kwlambda[k])
 
             dphi_chain[k] += dphi_ch + dphi_rho_lambda
 
-            rho_ref = np.mean(rho[rho > 1e-10])
-            eps = 1e-2
-            ratio = (lambda_chain[k] + eps*rho_ref) / (rho[k] + eps*rho_ref)
             dphi_chain[k] += (1 - self.m[k]) * (np.log(np.clip(yii[k]*ratio, 1e-20, None)) - 1) # direct part
 
         return dphi_chain/self.beta

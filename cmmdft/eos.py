@@ -141,9 +141,7 @@ class EquationOfState(object):
     def derivative_excess_free_energy_volume(self, rho):
         "Returns the density derivative of the excess free energy per volume"
         value  = rho*self.derivative_excess_free_energy_particle(rho)
-        # print('rho_value, ', value/kjmol)
         value += self.excess_free_energy_particle(rho)
-        # print('der, ', value/kjmol)
         return value
 
     def derivative2_excess_free_energy_particle(self, rho):
@@ -715,7 +713,6 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
 
     def _set_mixture_parameters(self, x, temperature):
         self.x = x/np.sum(x, axis=0)
-        print('x', np.min(x), np.max(x))
         sigma = self.sigma_list
         epsilon = self.epsilon_list
         #compute mixture parameters
@@ -814,10 +811,10 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
         self._set_mixture_parameters(x, self.temperature)
         return super().excess_free_energy_particle(rho_sum)     
        
-    def derivative_excess_free_energy_particle(self, rho, homogenous=True):
+    def derivative_excess_free_energy_particle(self, rho):
         rho, rho_sum, x = self._get_fractional_coefficients(rho)
         self._set_mixture_parameters(x, self.temperature)
-        if self.homogenous or homogenous:
+        if self.homogenous:
             return super().derivative_excess_free_energy_particle(rho_sum)
         else:
             d_sigma3, d_epsilon = self._set_mixing_derivatives(rho_sum, x)
@@ -945,7 +942,8 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
         EquationOfState.set_temperature(self, temperature)
         beta = 1/(boltzmann*temperature)
         Tt = 1/beta/self.epsilon
-        self.R = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        # self.R = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        self.R = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))/2
     
     def _set_mixture_parameters(self, x):
         factor = self.m*4/3*np.pi*self.R**3
@@ -959,7 +957,10 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
             for i in range(self.ncomp):
                 deta[k] +=  - self.m[i]*self.R[i]**3*x[i]
         deta *= 4*np.pi/3/rho_sum
-        return deta
+        dm_drhoi = np.zeros_like(x)
+        for k in range(self.ncomp):
+            dm_drhoi[k] = (self.m[k] - self.m_mix)/rho_sum
+        return deta, dm_drhoi
     
     def excess_free_energy_particle(self, rho):
         rho, rho_sum, x = self._get_fractional_coefficients(rho)
@@ -968,12 +969,18 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
     
     def _drhoi_excess_free_energy_particle(self, rho):
         assert self.homogenous, 'Only homogenous mixtures are supported for derivative calculation' 
-        da_deta = super().derivative_excess_free_energy_particle(rho)/self.eta
-        
-        da_drhoi = np.zeros((self.ncomp,) + rho.shape)
+        rho, rho_sum, x = self._get_fractional_coefficients(rho)
+        self._set_mixture_parameters(x)
+        da_deta = super().derivative_excess_free_energy_particle(rho_sum)/self.eta
+        dm_drhoi = np.zeros((self.ncomp,) + rho_sum.shape)
         for i in range(self.ncomp):
-            da_drhoi[i] = (4*np.pi*self.m[i]*self.R[i]**3)*da_deta
-        return da_drhoi
+            dm_drhoi[i] = (self.m[i] - self.m_mix)/rho_sum
+
+        ahs = super().excess_free_energy_particle(rho_sum)
+        da_drhoi = np.zeros((self.ncomp,) + rho_sum.shape)
+        for i in range(self.ncomp):
+            da_drhoi[i] = (4*np.pi/3*self.m[i]*self.R[i]**3)*da_deta
+        return da_drhoi + ahs/self.m_mix*dm_drhoi
     
     def derivative_excess_free_energy_particle(self, rho):
         rho, rho_sum, x = self._get_fractional_coefficients(rho)
@@ -983,8 +990,10 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
         if self.homogenous:
             return dF
         else:
-            deta = self._set_mixing_derivatives(rho_sum, x)
-            return (deta*rho_sum/self.eta + 1)*dF
+            deta, dm_drhoi = self._set_mixing_derivatives(rho_sum, x)
+            ahs = super().excess_free_energy_particle(rho_sum)
+            
+            return (deta*rho_sum/self.eta + 1)*dF + ahs/self.m_mix*dm_drhoi
 
 class MFAEOS(EquationOfState):
     
@@ -1271,22 +1280,20 @@ class PCSAFT_EOS(EquationOfState):
         return (rho_da1 + rho_da2)
     
     def excess_free_energy_particle(self, rho):
+        kT = boltzmann*self.temperature
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        # fhs = self.CS.excess_free_energy_particle(rho)/boltzmann/self.temperature
-        fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
+        fhs = self.CS.excess_free_energy_particle(rho)/boltzmann/self.temperature
+        # fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
         fchain = self._chain_contribution(zeta2, zeta3)
         fdisp = self._dispersion_contribution(rho, eta)
-        # print('fhs:', fhs*boltzmann*self.temperature/kjmol*1e3, 
-        #       'fchain:', fchain*boltzmann*self.temperature/kjmol*1e3, 
-        #       'fdisp:', fdisp*boltzmann*self.temperature/kjmol*1e3)
         return boltzmann*self.temperature*(fhs + fchain + fdisp)
     
     def derivative_excess_free_energy_particle(self, rho):
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
-        # dfhs = self.CS.derivative_excess_free_energy_particle(rho)/boltzmann/self.temperature
+        # dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
+        dfhs = self.CS.derivative_excess_free_energy_particle(rho)/boltzmann/self.temperature
         dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
         dfdisp = self._derivative_dispersion_contribution(rho, eta)
         return boltzmann*self.temperature*(dfhs + dfchain + dfdisp)
@@ -1319,7 +1326,7 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         assert self.sigma.shape == (self.ncomp,), 'sigma should be a list/array with length equal to number of components'
         assert self.epsilon.shape == (self.ncomp,), 'epsilon should be a list/array with length equal to number of components'
         assert self.m.shape == (self.ncomp,), 'm should be a list/array with length equal to number of components'
-        self.CS = CarnahanStarlingMixEOS(self.mass, self.sigma, self.epsilon, x, m)
+        self.CS = CarnahanStarlingMixEOS(self.mass, self.sigma, self.epsilon, m=m, homogenous=True, homogenous_fraction=self.x)
     
     @classmethod
     def from_guest(cls, guest):
@@ -1523,22 +1530,23 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
 
     def _drhoi_excess_free_energy_particle(self, rho):
         """ da/drhoi"""
+        kT = boltzmann*self.temperature
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        drhoi_dhs = self._drhoi_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
-        # drhoi_dhs = self.CS._drhoi_excess_free_energy_particle(rho)/boltzmann/self.temperature
+        # drhoi_dhs = self._drhoi_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
+        drhoi_dhs = self.CS._drhoi_excess_free_energy_particle(rho)/boltzmann/self.temperature
         drhoi_dch = self._drhoi_chain_contribution(rho, zeta2, zeta3)
         drhoi_ddisp = self._drhoi_dispersion_contribution(rho, eta)
-        return boltzmann*self.temperature*(drhoi_dhs + drhoi_dch + drhoi_ddisp)
+        return kT*(drhoi_dhs + drhoi_dch + drhoi_ddisp)
 
     def derivative_excess_free_energy_particle(self, rho):
+        kT = boltzmann*self.temperature
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        # print(eta)
-        dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
-        # dfhs = self.CS.derivative_excess_free_energy_particle(rho)/boltzmann/self.temperature
+        
+        # dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
+        dfhs = self.CS.derivative_excess_free_energy_particle(rho)/kT
         dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
         dfdisp = self._derivative_dispersion_contribution(rho, eta)
-        # print(dfhs*boltzmann*self.temperature, dfchain*boltzmann*self.temperature, dfdisp*boltzmann*self.temperature)
-        return boltzmann*self.temperature*(dfhs + dfchain + dfdisp)
+        return kT*(dfhs + dfchain + dfdisp)
     

@@ -107,19 +107,15 @@ class Solver(object):
         with log.section(self.name, self.log_level, timer='Omega'):
 
             N = np.asarray([self.grid.integrate_n(rho[e]) for e in range(self.nspecies)])
-            # print('N:', N)
             rho_reg = self._clip_density(rho)
-            # print('rho_reg min/max:', np.min(rho_reg), np.max(rho_reg))
             wvl3 = np.atleast_1d(self.fener.wavelength)**3
             rho_lam = np.einsum('i,ijkl->ijkl', wvl3, rho_reg)
             Fid = self.grid.integrate(rho_reg*(np.log(rho_lam)-1.0)).real/self.fener.beta
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(self.iphase ,self.curr_step, np.sum(N), np.sum(-self.chempot*N), Fid)
-            # print('mu_N', self.chempot*N/kjmol)
             G = Fid - np.sum(self.chempot*N)
             for part in self.fener.parts:
                 Fpart = part.value(rho, krho)
                 G += Fpart
-                # print(part.name, 'F', Fpart/kjmol, 'kJ/mol')
                 line += "\t% .6e" %(Fpart)
             line += "\t% .6e" %(G)
             self.tracking_line = line
@@ -459,10 +455,11 @@ class Picard(Solver):
 
                 min_pot = np.min(omegas)/kjmol
                 max_pot = np.max(omegas)/kjmol    
+            log.dump('original alpha_opt: %5.5e'%alpha_opt)
+            print('Gpot min/max (kJ/mol):', min_pot, max_pot, max_pot-min_pot)
 
             # check if the quadratic approximation is valid and if the SLSQP solver should be used
             if alpha_opt <= 0 and max_pot-min_pot>self.thresh:
-                # log.dump('original alpha_opt: %5.5e'%alpha_opt)
                 tstart = time.time()
                 def calc_G_rho(alpha):
                     rho_temp = (1-alpha)*rho + alpha*Grho
@@ -474,11 +471,11 @@ class Picard(Solver):
                 alpha_opt_new = opt.minimize(calc_G_rho, [self.alpha_mix*alpha_max], bounds=bounds, method='SLSQP', options= {'ftol':1e-8}).x
                 tstop = time.time() 
                 alpha_opt = alpha_opt_new
-                # log.dump('SLSQP alpha opt: %5.5e in %5.5fs'%(alpha_opt, tstop-tstart))
+                log.dump('SLSQP alpha opt: %5.5e in %5.5fs'%(alpha_opt, tstop-tstart))
 
             if alpha_opt <= 0 or np.isclose(alpha_opt,0):
                 alpha_opt = self.alpha_mix*alpha_max
-                # log.dump(f'Manually set the value of alpha_mix to: {alpha_opt*self.correction_factor}')
+                log.dump(f'Manually set the value of alpha_mix to: {alpha_opt*self.correction_factor}')
                 
             rho_new = (1-alpha_opt*self.correction_factor)*rho + alpha_opt*self.correction_factor*Grho
             rho_new = self._clip_density(rho_new)
@@ -922,7 +919,7 @@ class QuasiNewton(Picard):
             tau_very_aggressive = 0.01
             tau_gentle = 0.6
             alpha_min = 1e-8
-            step_floor = 1e-12
+            step_floor = 1e-20
             max_allowed_drop = 1e+3*kjmol
 
             # Flatten inputs
@@ -944,6 +941,7 @@ class QuasiNewton(Picard):
                 p_eff = self.flatten(rho_trial - rho)
                 step_norm = np.linalg.norm(p_eff)
                 if step_norm < step_floor:
+                    log.dump('Step size below floor, reducing alpha')
                     alpha *= tau
                     continue
 
@@ -952,9 +950,9 @@ class QuasiNewton(Picard):
 
                 gtp_eff = float(np.dot(grad, p_eff))
                 # if self.verbose:
-                    # print(f"[Proj-LS] alpha={alpha:.3e}  f_new={f_new:.6e}  "
-                    #     f"Armijo RHS={f0 + self.c1 * gtp_eff:.6e}  "
-                    #     f"||p_eff||={step_norm:.3e}")
+                print(f"[Proj-LS] alpha={alpha:.3e}  f_new={f_new:.6e}  "
+                    f"Armijo RHS={f0 + self.c1 * gtp_eff:.6e}  "
+                    f"||p_eff||={step_norm:.3e}")
 
                 # sanity check for unphysical minima
                 if f0-f_new > max_allowed_drop:
@@ -1023,12 +1021,14 @@ class QuasiNewton(Picard):
 
             if self.k_picard < self.picard_iteration_thresh:
                 # Use Picard method for the first few iterations
+                log.dump(f'Using Picard iteration {self.k_picard+1}/{self.picard_iteration_thresh}')
                 rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
                 self.k_picard += 1
             elif self.k_QN < self.QN_iteration_thresh:
                 # Use Quasi-Newton method for the next few iterations
                 try:
                     rho_new, krho_new, C1_new, Omega_new = self._update_rho_QN(rho, krho, C1)
+                    log.dump(f'QN iteration {self.k_QN+1}, line search success rate: {self.line_search_success}/{self.line_search_counter}')
                     if Omega_new > prev_omega*(0.8):
                         raise SwitchToPicardError('Quasi-Newton increased the grand potential, switching to Picard')
                     self.k_QN += 1

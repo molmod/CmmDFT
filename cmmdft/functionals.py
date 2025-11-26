@@ -319,7 +319,7 @@ class HardSphereFunctional(Functional):
     def value(self, rho, krho, local=False):
         with log.section('(M)FMT', 3, timer='(M)FMT value'):
             self.set_density(krho)  
-            phi = self.m[:,None,None,None]*get_phi(*self.weighted_densities, nt=self.nt, version=self.version)
+            phi = get_phi(*self.weighted_densities, nt=self.nt, version=self.version)
             if local:
                 return phi/self.beta
             else:
@@ -765,8 +765,8 @@ class PCSAFTFunctional(Functional):
             I1 += self.a_prefact[i]*eta_i
             I2 += self.b_prefact[i]*eta_i
 
-            daidm = m_2*((-2*self.m_avg + 1)*a_constants[i,1] + (3*self.m_avg - 4)/self.m_avg*a_constants[i,2])
-            dbidm = m_2*((-2*self.m_avg + 1)*b_constants[i,1] + (3*self.m_avg - 4)/self.m_avg*b_constants[i,2])
+            daidm = m_2*(a_constants[i,1] + (3*self.m_avg - 4)/self.m_avg*a_constants[i,2])
+            dbidm = m_2*(b_constants[i,1] + (3*self.m_avg - 4)/self.m_avg*b_constants[i,2])
             dI1dm += daidm*eta_i
             dI2dm += dbidm*eta_i
             if i < 6:
@@ -779,9 +779,10 @@ class PCSAFTFunctional(Functional):
         eta_3 = eta_2*eta_disp
         eta_4 = eta_2**2
     
-        C1 = (1 + self.m_avg*(8*eta_disp - 2*eta_2)*eta_1_4+ (1 - self.m_avg)*(20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_4)/((1-eta_disp)*(2-eta_disp))**2)**(-1)
-        dC1deta = -C1**2*( self.m_avg*(8 + 20*eta_disp - 4*eta_2)*eta_1*eta_1_4 + 2*(1 - self.m_avg)*(20 - 24*eta_disp + 6*eta_2 - eta_3)/((1-eta_disp)*(2-eta_disp))**3 )
+        C1 = (1 + self.m_avg*(8*eta_disp - 2*eta_2)*eta_1_4 + (1 - self.m_avg)*(20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_4)/((1-eta_disp)*(2-eta_disp))**2)**(-1)
+        dC1deta = -C1**2*( self.m_avg*(8 + 20*eta_disp - 4*eta_2)*eta_1*eta_1_4 + 2*(1 - self.m_avg)*(20 - 24*eta_disp + 6*eta_2 + eta_3)/((1-eta_disp)*(2-eta_disp))**3 )
         dC1dm = -C1**2*( (8*eta_disp - 2*eta_2)*eta_1_4 - (20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_4)/((1-eta_disp)*(2-eta_disp))**2 )
+
         I2_C1 = I2*C1
         m_I2_C1 = self.m_avg*I2_C1
 
@@ -842,7 +843,7 @@ class PCSAFTFunctional(Functional):
             lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(rho, krho)
             val_chain = self.value_chain(rho, lambda_chain, zeta2, zeta3)
             val_disp = self.value_disp(rho, wrho_disp, eta_disp)
-            return val_chain + val_disp     
+            return val_chain + val_disp
 
 class MFAFunctional(Functional):
     """

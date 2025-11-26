@@ -107,19 +107,19 @@ class Solver(object):
         with log.section(self.name, self.log_level, timer='Omega'):
 
             N = np.asarray([self.grid.integrate_n(rho[e]) for e in range(self.nspecies)])
-            print('N:', N)
+            # print('N:', N)
             rho_reg = self._clip_density(rho)
-            print('rho_reg min/max:', np.min(rho_reg), np.max(rho_reg))
+            # print('rho_reg min/max:', np.min(rho_reg), np.max(rho_reg))
             wvl3 = np.atleast_1d(self.fener.wavelength)**3
             rho_lam = np.einsum('i,ijkl->ijkl', wvl3, rho_reg)
             Fid = self.grid.integrate(rho_reg*(np.log(rho_lam)-1.0)).real/self.fener.beta
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(self.iphase ,self.curr_step, np.sum(N), np.sum(-self.chempot*N), Fid)
-            print('mu_N', self.chempot*N/kjmol)
+            # print('mu_N', self.chempot*N/kjmol)
             G = Fid - np.sum(self.chempot*N)
             for part in self.fener.parts:
                 Fpart = part.value(rho, krho)
                 G += Fpart
-                print(part.name, 'F', Fpart/kjmol, 'kJ/mol')
+                # print(part.name, 'F', Fpart/kjmol, 'kJ/mol')
                 line += "\t% .6e" %(Fpart)
             line += "\t% .6e" %(G)
             self.tracking_line = line
@@ -140,8 +140,8 @@ class Solver(object):
 
     def _get_dOmega(self, rho, C1):
         rho_reg = self._clip_density(rho)
-        lnrho = np.log(self.fener.wavelength**3*rho_reg, dtype='float64') / self.fener.beta # Avoid log(0)
-        dO = lnrho + C1 - self.chempot
+        lnrho = np.log(np.einsum('i,ijkl->ijkl',self.fener.wavelength**3,rho_reg), dtype='float64') / self.fener.beta # Avoid log(0)
+        dO = lnrho + C1 - self.chempot[:, np.newaxis, np.newaxis, np.newaxis]
         return dO
 
     def _get_C1(self, rho, krho=None):
@@ -599,7 +599,7 @@ class Anderson(Picard):
                 if self.curr_step < 3:
                     self.it_eps0 = self.it_eps
 
-            AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true
+            AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true or self.curr_step > 10
 
             if AND_condition:
                 rho_new, krho_new, C1_new = self.update_rho_Anderson()

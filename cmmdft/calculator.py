@@ -238,10 +238,10 @@ class Calculator(object):
         
         if pressure:
             data0 = np.atleast_2d(eos.compute_pressure(temperature=temperature, chempot=chempots)).T
-            header = 'pressures [Eh/a0**3]'
+            header = 'pressures [au]'
             if self.ncomp > 1:
                 for i in range(self.ncomp):
-                    header += f'loading_comp{i+1} [molecules/uc],'
+                    header += f',loading_comp{i+1} [molecules/uc]'
             else:
                 header += 'loadings [molecules/uc]'
             # if eos is not None:
@@ -252,15 +252,13 @@ class Calculator(object):
             if self.ncomp > 1:
                 header = '' 
                 for i in range(self.ncomp):
-                    header += f'chempot_comp{i+1} [Eh], '
+                    header += f',chempot_comp{i+1} [Eh] '
                 for i in range(self.ncomp):
-                    header += f'loading_comp{i+1} [molecules/uc]'
+                    header += f',loading_comp{i+1} [molecules/uc]'
             else:
                 header = 'chempot [Eh], loadings [molecules/uc]'
             data0 = chempots
-        print(data0.shape, loadings.shape)
         data = np.hstack((data0, loadings))
-        print(data.shape)
         if fn is None:
             suffix = '_vs_P' if pressure else ''
             prefix = 'excess_' if excess else ''

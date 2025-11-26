@@ -179,7 +179,8 @@ class SphericalLJGuest(Guest):
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         beta = 1/(boltzmann*temperature)
         Tt = 1/beta/self.epsilon
-        Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        # Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        Rhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))/2
         return Rhs, self.sigma
 
 

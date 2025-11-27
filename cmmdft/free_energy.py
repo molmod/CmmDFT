@@ -63,7 +63,7 @@ class FreeEnergy(object):
             #set temperature and directly related properties
             self.temperature = temperature
             self.beta = 1.0/(boltzmann*temperature)
-            self.wavelength = np.asarray(self.system.guest.wavelength(self.temperature))
+            self.wavelength = np.atleast_1d(self.system.guest.wavelength(self.temperature))
             self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #set temperature for each part in the free energy functional
             for part in self.parts:

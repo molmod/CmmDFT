@@ -93,7 +93,7 @@ class Solver(object):
         """
         Routine which is called before the solving starts to reset the solver if necessary.
         """
-        chempot = np.asarray(chempot)
+        chempot = np.atleast_1d(chempot)
         self.fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
         self.chempot = chempot
         self.curr_step = 0
@@ -455,11 +455,10 @@ class Picard(Solver):
 
                 min_pot = np.min(omegas)/kjmol
                 max_pot = np.max(omegas)/kjmol    
-            log.dump('original alpha_opt: %5.5e'%alpha_opt)
-            print('Gpot min/max (kJ/mol):', min_pot, max_pot, max_pot-min_pot)
 
             # check if the quadratic approximation is valid and if the SLSQP solver should be used
             if alpha_opt <= 0 and max_pot-min_pot>self.thresh:
+                log.dump('original alpha_opt: %5.5e'%alpha_opt)
                 tstart = time.time()
                 def calc_G_rho(alpha):
                     rho_temp = (1-alpha)*rho + alpha*Grho

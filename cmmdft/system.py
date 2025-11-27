@@ -381,27 +381,32 @@ class Grid(object):
         return Grid(self.cell, npoints=self.npoints)
     
     def integrate(self, data):
-        return np.sum(data)*self.dr
+        with log.section('GRID', 2, timer='Integrating'):
+            return np.sum(data)*self.dr
     
     def integrate_n(self, data):
         """
         integrate along the 3 spatial axes (matching self.npoints)
         Supports fields with arbitrary leading/trailing dimensions
         """
-        shape = data.shape
-        npoints = tuple(self.npoints)
+        
+        with log.section('GRID', 2, timer='Integrating'):
+            shape = data.shape
+            npoints = tuple(self.npoints)
 
-        # Find where the spatial block (Nx, Ny, Nz) lives
-        for start in range(len(shape) - 2):
-            if tuple(shape[start:start+3]) == npoints:
-                axes = tuple(range(start, start+3))
-                break
-        else:
-            raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
-        return np.sum(data, axis=axes)*self.dr
+            # Find where the spatial block (Nx, Ny, Nz) lives
+            for start in range(len(shape) - 2):
+                if tuple(shape[start:start+3]) == npoints:
+                    axes = tuple(range(start, start+3))
+                    break
+            else:
+                raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
+            return np.sum(data, axis=axes)*self.dr
 
     def fft(self, rdata):
-        return fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
+        with log.section('GRID', 2, timer='fft'):
+
+            return fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
     
     def fftn(self, rdata):
         """
@@ -409,33 +414,35 @@ class Grid(object):
         Supports fields with arbitrary leading/trailing dimensions, e.g.:
         (N,N,N), (N,N,N,M), (M,N,N,N), (M1,N,N,N,M2), etc.
         """
-        shape = rdata.shape
-        npoints = tuple(self.npoints)
+        with log.section('GRID', 2, timer='fft'):
+            shape = rdata.shape
+            npoints = tuple(self.npoints)
 
-        # Find where the spatial block (Nx, Ny, Nz) lives
-        for start in range(len(shape) - 2):
-            if tuple(shape[start:start+3]) == npoints:
-                axes = tuple(range(start, start+3))
-                break
-        else:
-            raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
+            # Find where the spatial block (Nx, Ny, Nz) lives
+            for start in range(len(shape) - 2):
+                if tuple(shape[start:start+3]) == npoints:
+                    axes = tuple(range(start, start+3))
+                    break
+            else:
+                raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
 
-        # Perform FFT on the spatial axes
-        F = fftn(rdata, axes=axes, norm=None)
+            # Perform FFT on the spatial axes
+            F = fftn(rdata, axes=axes, norm=None)
 
-        # Compute scaling factor
-        factor = np.exp(1j*np.pi*self.scalprod) / np.prod(npoints)
+            # Compute scaling factor
+            factor = np.exp(1j*np.pi*self.scalprod) / np.prod(npoints)
 
-        # Reshape/broadcast factor to match the right axes
-        # Expand dimensions around the spatial block
-        expand_shape = [1] * len(shape)
-        expand_shape[axes[0]:axes[0]+3] = factor.shape
-        factor = factor.reshape(expand_shape)
+            # Reshape/broadcast factor to match the right axes
+            # Expand dimensions around the spatial block
+            expand_shape = [1] * len(shape)
+            expand_shape[axes[0]:axes[0]+3] = factor.shape
+            factor = factor.reshape(expand_shape)
 
-        return F * factor
+            return F * factor
     
     def ifft(self, fdata):
-        return ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None).real*np.prod(self.npoints)
+        with log.section('GRID', 2, timer='ifft'):
+            return ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None).real*np.prod(self.npoints)
     
     
     def ifftn(self, fdata):
@@ -444,26 +451,27 @@ class Grid(object):
         Supports arbitrary leading/trailing dims, e.g.
         (N,N,N), (N,N,N,M), (M,N,N,N), (M1,N,N,N,M2), etc.
         """
-        shape = fdata.shape
-        npoints = tuple(self.npoints)
+        with log.section('GRID', 2, timer='ifft'):
+            shape = fdata.shape
+            npoints = tuple(self.npoints)
 
-        # Locate spatial block
-        for start in range(len(shape) - 2):
-            if tuple(shape[start:start+3]) == npoints:
-                axes = tuple(range(start, start+3))
-                break
-        else:
-            raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
+            # Locate spatial block
+            for start in range(len(shape) - 2):
+                if tuple(shape[start:start+3]) == npoints:
+                    axes = tuple(range(start, start+3))
+                    break
+            else:
+                raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
 
-        # Conjugate phase factor
-        factor = np.exp(-1j*np.pi*self.scalprod)
+            # Conjugate phase factor
+            factor = np.exp(-1j*np.pi*self.scalprod)
 
-        # Broadcast factor
-        expand_shape = [1] * len(shape)
-        expand_shape[axes[0]:axes[0]+3] = factor.shape
-        factor = factor.reshape(expand_shape)
+            # Broadcast factor
+            expand_shape = [1] * len(shape)
+            expand_shape[axes[0]:axes[0]+3] = factor.shape
+            factor = factor.reshape(expand_shape)
 
-        ifft_input = fdata * factor
-        F = ifftn(ifft_input, axes=axes, norm=None)
+            ifft_input = fdata * factor
+            F = ifftn(ifft_input, axes=axes, norm=None)
 
-        return F.real * np.prod(npoints)
+            return F.real * np.prod(npoints)

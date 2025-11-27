@@ -236,33 +236,35 @@ class Calculator(object):
 
         loadings = self.return_loading(temperature, chempots, excess=excess, eos=eos)
         
+        # prepare data if saving vs pressure
         if pressure:
-            data0 = np.atleast_2d(eos.compute_pressure(temperature=temperature, chempot=chempots)).T
             header = 'pressures [au]'
             if self.ncomp > 1:
+                data0 = np.atleast_2d(eos.compute_pressure(temperature=temperature, chempot=chempots)).T
                 for i in range(self.ncomp):
                     header += f',loading_comp{i+1} [molecules/uc]'
             else:
-                header += 'loadings [molecules/uc]'
-            # if eos is not None:
-            #     data[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, temperature)) for chem in chempots])
-            # else:
-            #     raise ValueError('Must provide an equation of state object, with the function calculate_mu')
+                data0 = np.atleast_2d(eos.compute_pressure(temperature=temperature, chempot=chempots)).T
+                header += ',loading [molecules/uc]'
+        # prepare data if saving vs chemical potential
         else:
             if self.ncomp > 1:
                 header = '' 
                 for i in range(self.ncomp):
-                    header += f',chempot_comp{i+1} [Eh] '
+                    header += f'chempot_comp{i+1} [Eh],'
                 for i in range(self.ncomp):
-                    header += f',loading_comp{i+1} [molecules/uc]'
+                    header += f'loading_comp{i+1} [molecules/uc],'
+                header = header[:-1]
+                data0 = np.atleast_2d(chempots)
             else:
-                header = 'chempot [Eh], loadings [molecules/uc]'
-            data0 = chempots
+                header = 'chempot [Eh],loading [molecules/uc]'
+                data0 = np.atleast_2d(chempots).T
+                
         data = np.hstack((data0, loadings))
         if fn is None:
             suffix = '_vs_P' if pressure else ''
             prefix = 'excess_' if excess else ''
-            fn = self.workdir / f'{prefix}loads_{temperature:#3.0f}K{suffix}.csv'
+            fn = self.workdir / f'{prefix}loading_{temperature:#3.0f}K{suffix}.csv'
         else:
             fn = Path(fn)
         np.savetxt(fn, data, delimiter=',', header=header, comments='')

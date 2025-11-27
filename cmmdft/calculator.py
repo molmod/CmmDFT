@@ -5,10 +5,7 @@ from pathlib import Path
 import scipy.optimize as opt
 from scipy.special import logsumexp
 import getpass, datetime
-import json
-import zipfile
-import itertools
-# from gemmi import cif
+import json, zipfile, itertools
 
 from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom, amu
 from molmod.constants import boltzmann, avogadro
@@ -22,7 +19,7 @@ from .functionals import WDAVFunctional, ExternalPotential
 from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
 from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff, get_file_suffix, Document
-
+from .extpot_calculator import get_external_potential, get_system_data
 #log.set_level('silent')
 
 
@@ -144,17 +141,13 @@ class Calculator(object):
             if isinstance(eos, EquationOfState):
                 eos.set_temperature(temp)
                 dens_bulk = eos.solve_densities_from_chempots(chempots)
-                final_dens_bulk = np.zeros(len(chempots))
-                for e,dens in enumerate(dens_bulk):
-                    if not np.isnan(dens[0]):
-                        final_dens_bulk[e] = dens[0]
-                    elif not np.isnan(dens[1]):
-                        final_dens_bulk[e] = dens[1]
-                    else:
-                        raise ValueError(f'No density found for the bulk at {temp}K and {chempots[e]/kjmol:#0.4f}kJ/mol')
+                dens_bulk = np.nanmin(dens_bulk, axis=1) #take the minimum equilibrium density
+                if self.ncomp > 1:
+                    # calculate component bulk densities
+                    dens_bulk = np.einsum('i,j->ij', dens_bulk, self.guest.fractions)
             else:
-                final_dens_bulk = np.array([eos.calculate_rho(temp, mu) for mu in chempots])
-            loading_list -= final_dens_bulk*He_frac*self.host.cell.volume
+                dens_bulk = np.array([eos.calculate_rho(temp, mu) for mu in chempots])
+            loading_list -= dens_bulk*He_frac*self.host.cell.volume
 
         return loading_list
 
@@ -170,24 +163,24 @@ class Calculator(object):
         chempots = np.array([np.array(rx.findall(f), dtype=float) for f in dens_list])*kjmol
         return selection_sort(chempots)
 
-    def get_helium_fraction(self, temperature):
+    def get_helium_fraction(self, temperature, cutoff=12*angstrom):
         """
         Returns an approximation for the helium void fraction for a given temperature
         """
-        He_pot_fn = self.workdir/'ExtPots/He_potential.npy'
+        if not (self.workdir/'ExtPots').is_dir():
+            He_pot_fn = self.workdir/'He_potential.npy'
+        else:
+            He_pot_fn = self.workdir/'ExtPots/He_potential.npy'
+
         if He_pot_fn.is_file():
             He_pot = np.load(He_pot_fn)
+
         else:
             #Helium parameters from "The molecular theory of gases and liquids" by Joseph O. Hirschfelder, Charles F. Curtiss, and R. Byron Bird
-            guest = SphericalLJGuest('He', 4.0026*amu, sigma=2.58*angstrom, epsilon=10.22/boltzmann)
-            HE_syst, guest_par = write_LJ_pars_chk(guest, dr=self.workdir)
-            pars_fn = self.workdir / 'pars.txt'
-            merge_ffpar_files(pars_fn, self.host.par, guest_par) 
-            ff_ext = get_ff(self.host.mol, HE_syst, pars_fn, rcut=np.min(np.linalg.norm(self.host.cell.rvecs, axis=1)))
-            ext_pot = ExternalPotential(self.grid, natom=1, ff=ff_ext, epot_dr=self.workdir/'ExtPots')
-            ext_pot.generate_potential()
-            ext_pot.dump_potential(fn=self.workdir/'ExtPots/He_potential.npy')
-            He_pot = ext_pot.potential
+            He_sigma, He_epsilon = 2.576*angstrom, 10.22*boltzmann
+            host_data, FF_dict = get_system_data(self.host.chk, self.host.par)
+            He_pot = get_external_potential(self.grid.points[...,:3], host_data, FF_dict, sigmaff=He_sigma, epsilonff=He_epsilon, cutoff=cutoff)
+            np.save(He_pot_fn, He_pot)
         exp_He_pot = np.clip(np.exp(-He_pot/boltzmann/temperature), 0, 1)
         He_vol = self.grid.integrate(exp_He_pot).real
         return He_vol/self.host.cell.volume
@@ -228,7 +221,7 @@ class Calculator(object):
         return selectivities
 
 
-    def save_loadings(self, temperature, chempots=None, pressure=False, excess=False, eos=None, fn=None):
+    def save_loadings(self, temperature, chempots=None, pressure=False, excess=False, He_frac=None, eos=None, fn=None):
         '''This function saves the loadings of all the calculated densities at the specified temperatures in a csv
         file vs the chemical potential or pressure.
         
@@ -255,7 +248,7 @@ class Calculator(object):
         if chempots is None:
             chempots = self.get_chemical_potential(temperature)
 
-        loadings = self.return_loading(temperature, chempots, excess=excess, eos=eos)
+        loadings = self.return_loading(temperature, chempots, excess=excess, eos=eos, He_frac=He_frac)
         
         # prepare data if saving vs pressure
         if pressure:

@@ -226,7 +226,7 @@ class GuestMixture(object):
         self.guests = guests
         self.fractions = fractions
 
-        assert len(guests) == len(fractions)
+        assert len(guests) == len(fractions) == len(self.names)
         # assert all(isinstance(g, Guest) for g in guests)
         assert all(f >= 0 for f in fractions)
         self.fractions = np.array(fractions)/np.sum(fractions)

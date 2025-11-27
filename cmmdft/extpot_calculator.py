@@ -228,7 +228,7 @@ def get_external_potential(points, host_data, FF_dict, sigmaff, epsilonff, cutof
         
     return Vext
 
-def get_external_potential_derivatives(points, host_data, FF_dict, sigmaff, epsilonff, spacings):
+def get_external_potential_derivatives(points, host_data, FF_dict, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones potential.
 
@@ -275,7 +275,7 @@ def get_external_potential_derivatives(points, host_data, FF_dict, sigmaff, epsi
         rz -= L[2]*(rz/L[2]).round() #periodic BC
 
         R = np.sqrt(rx**2 + ry**2 + rz**2+1e-16) # to avoid zero
-        V, dV, ddV, dddV = lennard_jones(R, sigma_mixed, epsilon_mixed, derivative=True)
+        V, dV, ddV, dddV = lennard_jones(R, sigma_mixed, epsilon_mixed, derivative=True, cutoff=cutoff)  # (N,)
         Vext += V
         dVdx += dV * rx
         dVdy += dV * ry
@@ -772,9 +772,6 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, chk_g
     guest_data, FF_dict_guest = get_system_data(chk_guest, pars_file_guest)
     guest_ffatypes = guest_data[2]
 
-    host_pos = host_data[0]
-    ffatype_ids = host_data[3]
-    rvecs = host_data[5]
 
     external_potential_dict = {}
     for i in range(len(FF_dict_guest)):

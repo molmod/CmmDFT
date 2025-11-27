@@ -107,19 +107,15 @@ class Solver(object):
         with log.section(self.name, self.log_level, timer='Omega'):
 
             N = np.asarray([self.grid.integrate_n(rho[e]) for e in range(self.nspecies)])
-            # print('N:', N)
             rho_reg = self._clip_density(rho)
-            # print('rho_reg min/max:', np.min(rho_reg), np.max(rho_reg))
             wvl3 = np.atleast_1d(self.fener.wavelength)**3
             rho_lam = np.einsum('i,ijkl->ijkl', wvl3, rho_reg)
             Fid = self.grid.integrate(rho_reg*(np.log(rho_lam)-1.0)).real/self.fener.beta
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(self.iphase ,self.curr_step, np.sum(N), np.sum(-self.chempot*N), Fid)
-            # print('mu_N', self.chempot*N/kjmol)
             G = Fid - np.sum(self.chempot*N)
             for part in self.fener.parts:
                 Fpart = part.value(rho, krho)
                 G += Fpart
-                # print(part.name, 'F', Fpart/kjmol, 'kJ/mol')
                 line += "\t% .6e" %(Fpart)
             line += "\t% .6e" %(G)
             self.tracking_line = line
@@ -151,7 +147,6 @@ class Solver(object):
             C1 = np.zeros(self.rho_shape)
             for part in self.fener.parts:
                 c1 = part.derive(rho, krho)
-                print('part', part.name, 'max C1', np.max(c1), 'min C1', np.min(c1))
                 C1 += c1
             return C1
 
@@ -326,7 +321,6 @@ class Solver(object):
                 if self._check_convergence(rho_new, krho_new, C1_new, rho, N_new):
                     converged = True
                     break
-                np.save('rho_debug.npy', rho_new)
                 rho = rho_new.copy()
                 C1 = C1_new.copy()
                 krho = krho_new.copy()
@@ -575,8 +569,8 @@ class Anderson(Picard):
         krho_new = self.grid.fftn(rho_new)
         n3_new = self._get_n3(krho_new)
 
-        while np.max(n3_new) > 0.99:
-            self.damping = max(self.damping*self.damping_factors[1], self.damping_min)
+        while np.max(n3_new) > 0.99 and self.damping > (self.damping_min*0.1)*1.01:
+            self.damping = max(self.damping*self.damping_factors[1], self.damping_min*0.1)
             log.dump('Max(n3) = %5.3f > 0.99, reducing damping factor to %5.3f'%(np.max(n3_new), self.damping))
 
             rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
@@ -601,10 +595,8 @@ class Anderson(Picard):
                 if self.curr_step < 3:
                     self.it_eps0 = self.it_eps
 
-            AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true
-            print('Anderson condition:', AND_condition, 'it_eps:', self.it_eps, 'it_eps0:', self.it_eps0)
-            
-            AND_condition = AND_condition or (self.curr_step >= 10)
+            AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true or self.curr_step > 10
+
             if AND_condition:
                 rho_new, krho_new, C1_new = self.update_rho_Anderson()
                 Grho_new = self.get_new_rho(C1_new, self.fugacity)

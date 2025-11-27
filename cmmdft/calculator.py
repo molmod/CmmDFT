@@ -682,7 +682,9 @@ class Calculator(object):
         if supercell:
             points = make_supercell(points, grid_spacings=self.grid.spacings, repetitions=[3,3,3], periodic=False)
             cvs_mat = (points - diffusion_path[0])@unit_vector
-        cvs = np.arange(np.min(cvs_mat), np.max(cvs_mat) + step_dist, step_dist)
+        cvs_pos = np.arange(0, np.max(cvs_mat) + step_dist, step_dist)
+        cvs_neg = np.arange(0, np.min(cvs_mat) - step_dist, -step_dist)[::-1]
+        cvs = np.concatenate((cvs_neg, cvs_pos[1:]))
 
         if cvs_limits is not None:
             assert len(cvs_limits) == 2, 'cvs_limits must be a tuple of two numbers constraining the cvs values for which the free energy is calculated'
@@ -755,21 +757,26 @@ class Calculator(object):
                 fn = self.workdir / f'rho_{file_suff}.npy'
                 assert os.path.isfile(fn), f'No density found for {fn}'
                 rho = np.load(fn).real
-                if supercell:
-                    rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
 
-                for e in range(len(cvs)-1):  # now calculating n and p for the different input collective variables
-                    q_min = cvs[e]
-                    q_max = cvs[e+1]
-                    step_dist = q_max - q_min
-                    mask = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
+                n_list = np.empty((rho.shape[0],cvs.shape[0]-1))
+                for i, rho_part in enumerate(rho):
+                    header += f'density_{i},'
 
-                    if normalize:
-                        n_list[e] =  self.grid.integrate(mask*rho)/step_dist
-                    else:
-                        n_list[e] =  self.grid.integrate(mask*rho)
-                        
-                q_list = (cvs[1:]+cvs[:-1])/2
+                    if supercell:
+                        rho_part = make_supercell(rho_part, repetitions=[3,3,3], periodic=True)
+
+                    for e in range(len(cvs)-1):  # now calculating n and p for the different input collective variables
+                        q_min = cvs[e]
+                        q_max = cvs[e+1]
+                        step_dist = q_max - q_min
+                        mask = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
+
+                        if normalize:
+                            n_list[i, e] =  self.grid.integrate(mask*rho_part)/step_dist
+                        else:
+                            n_list[i, e] =  self.grid.integrate(mask*rho_part)
+
+                    q_list = (cvs[1:]+cvs[:-1])/2
 
                 if save:
                     data = np.vstack((q_list[np.newaxis,...], n_list)).T

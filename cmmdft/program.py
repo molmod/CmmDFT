@@ -389,7 +389,7 @@ class Program(object):
                 rho = np.load(self.rho_fn)
                 N = self.grid.integrate(rho)
                 return N, rho, True
-
+                
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
             rho_old = self.rho0.copy()
             N, rho, converged = self.solver.solve(chempot, rho_old, log_level)

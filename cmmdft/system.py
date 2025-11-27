@@ -70,7 +70,7 @@ class Host(object):
 
     
 class NanoporousHost(Host):
-    def __init__(self, name, chk, par, shift=True):
+    def __init__(self, name, chk, par, ffname, shift=True):
         '''This function initializes a nanoporous host system
         
         Parameters
@@ -91,9 +91,10 @@ class NanoporousHost(Host):
             Host.__init__(self, name, self.mol.cell)
             self.chk = chk
             self.par = par
+            self.ffname = ffname
     
     def copy(self):
-        return NanoporousHost(self.name, self.chk, self.par)
+        return NanoporousHost(self.name, self.chk, self.par, self.ffname)
 
     
 class EmptyHost(Host):
@@ -111,7 +112,7 @@ class EmptyHost(Host):
 
 
 class Guest(object):
-    def __init__(self, name, mass):
+    def __init__(self, name, mass, ffname):
         self.name = name
         self.mass = mass
         self.preset_Rhs = None
@@ -121,9 +122,10 @@ class Guest(object):
         self.nspecies = 1
         self.fractions = np.array([1.0])
         self.m = np.array([1.0])
+        self.ffname = ffname
     
     def copy(self):
-        return type(self)(self.name, self.mass)
+        return type(self)(self.name, self.mass, self.ffname)
 
     def wavelength(self, temperature):
         kT = boltzmann*temperature
@@ -166,8 +168,8 @@ class Guest(object):
                     
 
 class SphericalLJGuest(Guest):
-    def __init__(self, name, mass, sigma, epsilon, m=1):
-        Guest.__init__(self, name, mass)
+    def __init__(self, name, mass, sigma, epsilon, ffname, m=1):
+        Guest.__init__(self, name, mass, ffname)
         self.sigma = sigma
         self.epsilon = epsilon
         self.natom = 1
@@ -185,7 +187,7 @@ class SphericalLJGuest(Guest):
 
 
 class NonSphericalGuest(Guest):
-    def __init__(self, name, chk, par):
+    def __init__(self, name, chk, par, ffname):
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Reading guest from %s with parameters from %s' %(chk, par))
             self.mol = YaffSystem.from_file(chk)
@@ -195,10 +197,10 @@ class NonSphericalGuest(Guest):
             mass = None
             if self.mol.masses is not None:
                 mass = self.mol.masses.sum()
-            Guest.__init__(self, name, mass)
+            Guest.__init__(self, name, mass, ffname)
 
     def copy(self):
-        return type(self)(self.name, self.chk, self.par)
+        return type(self)(self.name, self.chk, self.par, self.ffname)
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         beta = 1/(boltzmann*temperature)
@@ -207,12 +209,12 @@ class NonSphericalGuest(Guest):
 
 
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
-    def __init__(self, name, mass, sigma, epsilon, chk, par, m=1):
-        NonSphericalGuest.__init__(self, name, chk, par)
-        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, m=m)
+    def __init__(self, name, mass, sigma, epsilon, chk, par, ffname, m=1):
+        NonSphericalGuest.__init__(self, name, chk, par, ffname)
+        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m)
 
     def copy(self):
-        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.chk, self.par)
+        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.chk, self.par, self.ffname)
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)

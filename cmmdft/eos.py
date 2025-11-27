@@ -98,19 +98,24 @@ class EquationOfState(object):
         else:
             raise ValueError('Either rho or chemical potential must be provided')
 
-    def compute_fugacity(self, rho=None, chempot=None, pressure=None, **kwargs):
+    def compute_fugacity(self, temperature=None, rho=None, chempot=None, pressure=None, P_ref=1*bar):
+        
+        if temperature is not None:
+            s_temp = getattr(self, 'temperature', None)
+            if s_temp != temperature:
+                self.set_temperature(temperature)
         kT = boltzmann*self.temperature
+
         if rho is not None:
             mu = self.compute_chempot(rho)
             
             if not hasattr(self, 'P_ref'):
-                self.set_reference_state(**kwargs)
+                self.set_reference_state(P_ref=P_ref)
 
             return self.P_ref * np.exp((mu-self.mu_ref)/(kT))
         elif chempot is not None:
             if not hasattr(self, 'P_ref'):
-                self.set_reference_state(**kwargs)
-
+                self.set_reference_state(P_ref=P_ref)
             return self.P_ref * np.exp((chempot-self.mu_ref)/(kT))
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
@@ -118,7 +123,7 @@ class EquationOfState(object):
             mu = self.compute_chempot(rho)
             
             if not hasattr(self, 'P_ref'):
-                self.set_reference_state(**kwargs)
+                self.set_reference_state(P_ref=P_ref)
 
             return self.P_ref * np.exp((mu-self.mu_ref)/(kT))
 
@@ -1146,14 +1151,16 @@ b_constants = np.array([
 
 class PCSAFT_EOS(EquationOfState):
 
-    def __init__(self, mass, sigma, epsilon, m):
+    def __init__(self, mass, sigma, epsilon, m, CS_HS=False):
         EquationOfState.__init__(self, mass)
         self.sigma = sigma
         self.epsilon = epsilon
         self.m = m      
         self.m_mix = m
         self.x = 1.0 #fraction of particles of this species in mixture
-        self.CS = CarnahanStarlingEOS(mass, sigma, epsilon, m)
+        self.CS_HS = CS_HS
+        if CS_HS:
+            self.CS = CarnahanStarlingEOS(mass, sigma, epsilon, m)
 
     @classmethod
     def from_guest(cls, guest):
@@ -1169,7 +1176,9 @@ class PCSAFT_EOS(EquationOfState):
         self.m2_eps2_sig3 = self.m**2*(self.epsilon/boltzmann/temperature)**2*self.sigma**3
         self.dhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))
         self.wvl = planck/np.sqrt(2*np.pi*(self.mass)*boltzmann*temperature)
-        self.CS.set_temperature(temperature)
+
+        if self.CS_HS:
+            self.CS.set_temperature(temperature)
     
     def _get_a_and_b(self, m):
         ai = np.zeros(7)
@@ -1283,8 +1292,10 @@ class PCSAFT_EOS(EquationOfState):
         kT = boltzmann*self.temperature
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        fhs = self.CS.excess_free_energy_particle(rho)/boltzmann/self.temperature
-        # fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
+        if self.CS_HS:
+            fhs = self.CS.excess_free_energy_particle(rho)/kT
+        else:
+            fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
         fchain = self._chain_contribution(zeta2, zeta3)
         fdisp = self._dispersion_contribution(rho, eta)
         return boltzmann*self.temperature*(fhs + fchain + fdisp)
@@ -1292,8 +1303,10 @@ class PCSAFT_EOS(EquationOfState):
     def derivative_excess_free_energy_particle(self, rho):
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        # dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
-        dfhs = self.CS.derivative_excess_free_energy_particle(rho)/boltzmann/self.temperature
+        if self.CS_HS:
+            dfhs = self.CS.derivative_excess_free_energy_particle(rho)/boltzmann/self.temperature
+        else:
+            dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
         dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
         dfdisp = self._derivative_dispersion_contribution(rho, eta)
         return boltzmann*self.temperature*(dfhs + dfchain + dfdisp)
@@ -1306,7 +1319,7 @@ class PCSAFT_EOS(EquationOfState):
 
 
 class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
-    def __init__(self, mass, sigma, epsilon, m, x, kij=None):
+    def __init__(self, mass, sigma, epsilon, m, x, kij=None, CS_HS=False):
         """
         PC-SAFT EOS, consisting of hard-chain, dispersion and hard sphere
         Extended for homogoneous mixtures
@@ -1326,7 +1339,9 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         assert self.sigma.shape == (self.ncomp,), 'sigma should be a list/array with length equal to number of components'
         assert self.epsilon.shape == (self.ncomp,), 'epsilon should be a list/array with length equal to number of components'
         assert self.m.shape == (self.ncomp,), 'm should be a list/array with length equal to number of components'
-        self.CS = CarnahanStarlingMixEOS(self.mass, self.sigma, self.epsilon, m=m, homogenous=True, homogenous_fraction=self.x)
+        self.CS_HS = CS_HS
+        if CS_HS:
+            self.CS = CarnahanStarlingMixEOS(self.mass, self.sigma, self.epsilon, m=m, homogenous=True, homogenous_fraction=self.x)
     
     @classmethod
     def from_guest(cls, guest):
@@ -1343,7 +1358,8 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         self.dhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))
         self.wvl = planck/np.sqrt(2*np.pi*(self.mass)*boltzmann*temperature)
         self._get_mixture_parameters(temperature)
-        self.CS.set_temperature(temperature)
+        if self.CS_HS:
+            self.CS.set_temperature(temperature)
     
     def _get_mixture_parameters(self, temperature):
         x = self.x
@@ -1509,7 +1525,6 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         rho_da2 += -np.pi*self.m_mix*rho*self.m2_eps2_sig3*(dI2deta*C1 + I2*dC1)*deta_drho
         ddisp_drho = (rho_da1 + rho_da2)
 
-
         #1/rho * sum(xj ddisp/dxj)
         ddisp_dx = np.zeros((self.ncomp,) + rho.shape)
         for j in range(self.ncomp):
@@ -1519,7 +1534,6 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
             ddisp_dxj += -np.pi*self.m_mix*self.m2_eps2_sig3*(dI2dx[j]*C1 + I2*dC1dx[j])
             ddisp_dx[j] = ddisp_dxj
         ddisp_dx_sum = np.dot(self.x, ddisp_dx)
-
 
         #ddisp/dxi
         drhoi_ddisp = np.zeros((self.ncomp,) + rho.shape)
@@ -1533,8 +1547,10 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         kT = boltzmann*self.temperature
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        # drhoi_dhs = self._drhoi_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
-        drhoi_dhs = self.CS._drhoi_excess_free_energy_particle(rho)/boltzmann/self.temperature
+        if self.CS_HS:
+            drhoi_dhs = self.CS._drhoi_excess_free_energy_particle(rho)/kT
+        else:
+            drhoi_dhs = self._drhoi_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
         drhoi_dch = self._drhoi_chain_contribution(rho, zeta2, zeta3)
         drhoi_ddisp = self._drhoi_dispersion_contribution(rho, eta)
         return kT*(drhoi_dhs + drhoi_dch + drhoi_ddisp)
@@ -1543,9 +1559,10 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         kT = boltzmann*self.temperature
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
-        
-        # dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
-        dfhs = self.CS.derivative_excess_free_energy_particle(rho)/kT
+        if self.CS_HS:
+            dfhs = self.CS.derivative_excess_free_energy_particle(rho)/kT
+        else:
+            dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
         dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
         dfdisp = self._derivative_dispersion_contribution(rho, eta)
         return kT*(dfhs + dfchain + dfdisp)

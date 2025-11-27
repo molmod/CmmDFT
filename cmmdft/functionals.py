@@ -14,7 +14,6 @@ import numpy as np, os, copy, re
 from pathlib import Path
 from molmod.units import kjmol, angstrom
 from molmod.constants import planck, boltzmann
-from yaff import ForceField
 
 import time
 
@@ -739,8 +738,6 @@ class PCSAFTFunctional(Functional):
             ratio = (lambda_chain[k] + eps*rho_ref) / (rho[k] + eps*rho_ref)
 
             rho_lambda = 1/ratio
-            # rho_lambda = np.zeros(self.grid.npoints, dtype=np.complex_)
-            # rho_lambda = (rho[k]/np.clip(lambda_chain[k], eps, None))
             k_rho_lambda = self.grid.fftn(rho_lambda)
             dphi_rho_lambda = (1-self.m[k])*self.grid.ifftn(k_rho_lambda*self.kwlambda[k])
             dphi_chain[k] += dphi_ch + dphi_rho_lambda

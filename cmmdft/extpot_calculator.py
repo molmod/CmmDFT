@@ -228,7 +228,7 @@ def get_external_potential(points, host_data, FF_dict, sigmaff, epsilonff, cutof
         
     return Vext
 
-def get_external_potential_derivatives(points, host_data, FF_dict, sigmaff, epsilonff, spacings):
+def get_external_potential_derivatives(points, host_data, FF_dict, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones potential.
 

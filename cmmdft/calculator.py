@@ -5,9 +5,7 @@ from pathlib import Path
 import scipy.optimize as opt
 from scipy.special import logsumexp
 import getpass, datetime
-import json
-import itertools
-# from gemmi import cif
+import json, zipfile, itertools
 
 from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom, amu
 from molmod.constants import boltzmann, avogadro
@@ -21,7 +19,7 @@ from .functionals import WDAVFunctional, ExternalPotential
 from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
 from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff, get_file_suffix, Document
-
+from .extpot_calculator import get_external_potential, get_system_data
 #log.set_level('silent')
 
 
@@ -143,17 +141,13 @@ class Calculator(object):
             if isinstance(eos, EquationOfState):
                 eos.set_temperature(temp)
                 dens_bulk = eos.solve_densities_from_chempots(chempots)
-                final_dens_bulk = np.zeros(len(chempots))
-                for e,dens in enumerate(dens_bulk):
-                    if not np.isnan(dens[0]):
-                        final_dens_bulk[e] = dens[0]
-                    elif not np.isnan(dens[1]):
-                        final_dens_bulk[e] = dens[1]
-                    else:
-                        raise ValueError(f'No density found for the bulk at {temp}K and {chempots[e]/kjmol:#0.4f}kJ/mol')
+                dens_bulk = np.nanmin(dens_bulk, axis=1) #take the minimum equilibrium density
+                if self.ncomp > 1:
+                    # calculate component bulk densities
+                    dens_bulk = np.einsum('i,j->ij', dens_bulk, self.guest.fractions)
             else:
-                final_dens_bulk = np.array([eos.calculate_rho(temp, mu) for mu in chempots])
-            loading_list -= final_dens_bulk*He_frac*self.host.cell.volume
+                dens_bulk = np.array([eos.calculate_rho(temp, mu) for mu in chempots])
+            loading_list -= dens_bulk*He_frac*self.host.cell.volume
 
         return loading_list
 
@@ -169,24 +163,24 @@ class Calculator(object):
         chempots = np.array([np.array(rx.findall(f), dtype=float) for f in dens_list])*kjmol
         return selection_sort(chempots)
 
-    def get_helium_fraction(self, temperature):
+    def get_helium_fraction(self, temperature, cutoff=12*angstrom):
         """
         Returns an approximation for the helium void fraction for a given temperature
         """
-        He_pot_fn = self.workdir/'ExtPots/He_potential.npy'
+        if not (self.workdir/'ExtPots').is_dir():
+            He_pot_fn = self.workdir/'He_potential.npy'
+        else:
+            He_pot_fn = self.workdir/'ExtPots/He_potential.npy'
+
         if He_pot_fn.is_file():
             He_pot = np.load(He_pot_fn)
+
         else:
             #Helium parameters from "The molecular theory of gases and liquids" by Joseph O. Hirschfelder, Charles F. Curtiss, and R. Byron Bird
-            guest = SphericalLJGuest('He', 4.0026*amu, sigma=2.58*angstrom, epsilon=10.22/boltzmann)
-            HE_syst, guest_par = write_LJ_pars_chk(guest, dr=self.workdir)
-            pars_fn = self.workdir / 'pars.txt'
-            merge_ffpar_files(pars_fn, self.host.par, guest_par) 
-            ff_ext = get_ff(self.host.mol, HE_syst, pars_fn, rcut=np.min(np.linalg.norm(self.host.cell.rvecs, axis=1)))
-            ext_pot = ExternalPotential(self.grid, natom=1, ff=ff_ext, epot_dr=self.workdir/'ExtPots')
-            ext_pot.generate_potential()
-            ext_pot.dump_potential(fn=self.workdir/'ExtPots/He_potential.npy')
-            He_pot = ext_pot.potential
+            He_sigma, He_epsilon = 2.576*angstrom, 10.22*boltzmann
+            host_data, FF_dict = get_system_data(self.host.chk, self.host.par)
+            He_pot = get_external_potential(self.grid.points[...,:3], host_data, FF_dict, sigmaff=He_sigma, epsilonff=He_epsilon, cutoff=cutoff)
+            np.save(He_pot_fn, He_pot)
         exp_He_pot = np.clip(np.exp(-He_pot/boltzmann/temperature), 0, 1)
         He_vol = self.grid.integrate(exp_He_pot).real
         return He_vol/self.host.cell.volume
@@ -205,9 +199,29 @@ class Calculator(object):
     
         epot_int = self.grid.integrate(np.exp(-potential/temperature/boltzmann))
         return 1/avogadro/boltzmann/temperature/self.host.cell.volume*epot_int
+    
+    def get_selectivity(self, temperature, chempot):
+        """
+        Returns the selectivity between multiple components at given temperature and chemical potentials
+        """
+        assert self.ncomp > 1, 'Selectivity can only be calculated for multicomponent systems'
+        chempots = np.atleast_2d(chempot)
+        loadings = self.return_loading(temperature, chempot)
+        mole_fractions = np.array(self.guest.fractions)
+        selectivities = np.zeros((len(chempots), self.ncomp, self.ncomp))
+
+        for i in range(self.ncomp):
+            for j in range(self.ncomp):
+                xi = mole_fractions[i]
+                xj = mole_fractions[j]
+                if xi == 0 or xj == 0:
+                    raise ValueError(f'Mole fraction of component {i} or {j} is zero, cannot compute selectivity')
+                
+                selectivities[:, i, j] += (loadings[:, i]/loadings[:, j])/(mole_fractions[i]/mole_fractions[j])
+        return selectivities
 
 
-    def save_loadings(self, temperature, chempots=None, pressure=False, excess=False, eos=None, fn=None):
+    def save_loadings(self, temperature, chempots=None, pressure=False, excess=False, He_frac=None, eos=None, fn=None):
         '''This function saves the loadings of all the calculated densities at the specified temperatures in a csv
         file vs the chemical potential or pressure.
         
@@ -234,7 +248,7 @@ class Calculator(object):
         if chempots is None:
             chempots = self.get_chemical_potential(temperature)
 
-        loadings = self.return_loading(temperature, chempots, excess=excess, eos=eos)
+        loadings = self.return_loading(temperature, chempots, excess=excess, eos=eos, He_frac=He_frac)
         
         # prepare data if saving vs pressure
         if pressure:
@@ -259,7 +273,7 @@ class Calculator(object):
             else:
                 header = 'chempot [Eh],loading [molecules/uc]'
                 data0 = np.atleast_2d(chempots).T
-                
+
         data = np.hstack((data0, loadings))
         if fn is None:
             suffix = '_vs_P' if pressure else ''
@@ -269,8 +283,9 @@ class Calculator(object):
             fn = Path(fn)
         np.savetxt(fn, data, delimiter=',', header=header, comments='')
         
-        
-    def save_loadings_AIF(self, temp, chempots=None, pressures=None, eos=None, input_fn=None, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
+    def save_loadings_AIF(self, temp, chempots=None, pressures=None, eos=None, 
+                          input_fn=None, input_zip=True, user=None, excess=False, selectivity=False,
+                            loading_unit='au/uc', fn=None, He_frac=None):
         """
         Save the adsorption loadings to an AIF (Adsorption Information File) format.
         Parameters:
@@ -290,25 +305,38 @@ class Calculator(object):
         He_frac : float, optional
             Helium fraction used in the calculation of excess adsorption, if not provided the Helium void fraction is calculated with the function get_Helium_fraction.
         """
-        assert self.ncomp == 1, 'AIF output is (currently) only supported for single component adsorption'
+        if selectivity:
+            assert self.ncomp > 1, 'Selectivity can only be calculated for multicomponent systems'
+
         d = Document()
         d.add_new_block('CmmDFT2aif')
 
         block = d.sole_block()
         # general information
         block.set_pair('_audit_aif_version', '6acf6ef')
-        block.set_pair('_adsnt_material_id', self.host.name)
-        block.set_pair('_exptl_adsorptive', self.guest.name)
-        block.set_pair('_exptl_temperature', f'{temp:0.3f}K')
+        if user is None:
+            user = getpass.getuser()
+        block.set_pair('_exptl_operator',  user)
         block.set_pair('_exptl_method', 'simulation')
         adsorption_type = 'excess' if excess else 'absolute'
         block.set_pair('_exptl_isotherm_type', adsorption_type)
+        block.set_pair('_exptl_temperature', f'{temp:0.3f}')
+        if self.ncomp > 1:
+            for i in range(self.ncomp):
+                block.set_pair(f'_exptl_adsorptive{i+1}', self.guest.names[i])
+        else:
+            block.set_pair('_exptl_adsorptive', self.guest.name)
+
+        block.set_pair('_adsnt_material_id', self.host.name)
 
         # simulation metadata
         # block.set_pair('_simltn_code', f'CmmDFT-{self.program.version}')
-        block.set_pair('_simltn_code', f'CmmDFT')
+        block.set_pair('_simltn_date', datetime.datetime.now().isoformat())
+        block.set_pair('_simltn_code', f'custom')
         block.set_pair('_simltn_sampling', 'cDFT')
+        
         input_file_list = []
+        zip_file_fn = self.workdir / 'simulation_input_files.zip'
         if input_fn is not None:
             input_file_list.append(str(input_fn))
         if hasattr(self.host, 'chk') and self.host.chk is not None:
@@ -319,15 +347,24 @@ class Calculator(object):
             input_file_list.append(str(self.guest.chk))
         if hasattr(self.guest, 'par') and self.guest.par is not None:
             input_file_list.append(str(self.guest.par))
-        block.set_pair('_simltn_input_files', input_file_list)
 
+        with zipfile.ZipFile(zip_file_fn, 'w') as zipf:
+            for file_path in input_file_list:
+                zipf.write(file_path, arcname=os.path.basename(file_path))
+        block.set_pair('_simltn_input_files_archive', str(zip_file_fn))
+
+        # get force field information from ff_suffix
+        # set host force field info if present
         if isinstance(self.host, NanoporousHost):
-            ffs = self.program.name_dict['ff_suffix'].split('_')
-            block.set_pair('_simltn_forcefield_adsorptive', ffs[0])
-            block.set_pair('_simltn_forcefield_adsorbent', ffs[1])
+            block.set_pair('_simltn_forcefield_adsorbent', self.host.ffname)
+        
+        # set guest force field info
+        if self.ncomp > 1:
+            # if multiple guest ffs are provided, assume each component has its own ff
+            for i in range(self.ncomp):
+                block.set_pair(f'_simltn_forcefield_adsorptive{i+1}', self.guest.guests[i].ffname)
         else:
-            block.set_pair('_simltn_forcefield_adsorbent', self.program.name_dict['ff_suffix'])
-
+            block.set_pair('_simltn_forcefield_adsorptive', self.guest.ffname)
 
         # record mass to infer simulation size
         block.set_pair('_units_temperature', 'K')
@@ -342,34 +379,93 @@ class Calculator(object):
         if pressures is None:
             assert eos is not None, 'Must provide an equation of state object (with the function calculate_pressure), when calculating pressures from chemical potentials'
             assert chempots is not None, 'Must provide chemical potentials when calculating pressures'
-            pressures = np.array([eos.calculate_pressure(temp, chem) for chem in chempots])
+            pressures = eos.compute_pressure(temperature=temp, chempot=chempots)
         if chempots is None:
             assert pressures is not None, 'Must provide chemical potentials or pressures'
             assert eos is not None, 'Must provide an equation of state object (with the function calculate_mu), when calculating chemical potentials from pressures'
-            chempots = np.array([eos.calculate_mu(temp, pres) for pres in pressures])
-        
-        fugacities = np.exp(self.fener.beta*chempots)/self.fener.beta/self.fener.wavelength**3
+            chempots = eos.compute_chempot(temperature=temp, pressure=pressures)
+        fugacities = eos.compute_fugacity(temperature=temp, chempot=chempots)
         uptake_absolute = self.return_loading(temp, chempots, excess=False)
-
-        #get the uptake and convert to the desired units
-        cv_units = convert_units(self.guest.mass, np.sum(self.host.mol.masses), self.host.cell.volume)
-        factor = cv_units.conversion_factor('au/uc', loading_unit)
-        uptake_absolute *= factor
         if excess:
             uptake_excess = self.return_loading(temp, chempots, excess=True, eos=eos, He_frac=He_frac)
-            uptake_excess *= factor
+        else:
+            uptake_excess = None
+
+        #get the uptake and convert to the desired units
+        if self.ncomp > 1:
+            for i in range(self.ncomp):
+                cv_units = convert_units(self.guest.mass[i], np.sum(self.host.mol.masses), self.host.cell.volume)
+                factor = cv_units.conversion_factor('au/uc', loading_unit)
+                uptake_absolute[:,i] *= factor
+                if excess:
+                    uptake_excess[:,i] *= factor
+        else:
+            cv_units = convert_units(self.guest.mass, np.sum(self.host.mol.masses), self.host.cell.volume)
+            factor = cv_units.conversion_factor('au/uc', loading_unit)
+            uptake_absolute *= factor
+            if excess:
+                uptake_excess *= factor
 
         #format adsorption
         pressures_bar = pressures/bar
         fugacities_bar = fugacities/bar
         mus_kjmol = chempots/kjmol
-        loop_ads = block.init_loop('_adsorp_', ['pressure', 'fugacity', 'chemicalpotential', 'amount_absolute'])
-        loop_ads.set_all_values([
+        if self.ncomp > 1:
+            mole_fraction = np.full((len(chempots), self.ncomp), self.guest.fractions)
+        else:
+            mole_fraction = None
+        
+        if selectivity:
+            selectivities = self.get_selectivity(temp, chempots)
+        else:
+            selectivities = None
+
+        value_dict = {'pressure': pressures_bar,
+                      'molefraction': mole_fraction,
+                      'fugacity': fugacities_bar,
+                      'chemicalpotential': mus_kjmol,
+                      'amount_absolute': uptake_absolute,
+                      'amount_excess': uptake_excess,
+                      'selectivity': selectivities}
+        included_valuenames = ['pressure', 'fugacity', 'chemicalpotential', 'amount_absolute']
+        if self.ncomp > 1:
+            included_valuenames.insert(1, 'molefraction')
+        if excess:
+            included_valuenames.append('amount_excess')
+        if selectivity:
+            included_valuenames.append('selectivity')
+ 
+        valuename_list = []
+        values = []       
+        if self.ncomp > 1:
+            valuename_list.append('pressure')
+            values.append(['%.5E' % item for item in pressures_bar])
+            for name in included_valuenames[1:]:
+                if name == 'selectivity':
+                    for i in range(self.ncomp):
+                        for j in range(self.ncomp):
+                            if i != j:
+                                valuename_list.append(f'selectivity{i+1}{j+1}')
+                                values.append(['%.5E' % item for item in value_dict[name][:,i,j]])
+                else:
+                    for i in range(self.ncomp):
+                        valuename_list.append(f'{name}_comp{i+1}')
+                        values.append(['%.5E' % item for item in value_dict[name][:,i]])
+        else:
+            valuename_list = ['pressure', 'fugacity', 'chemicalpotential', 'amount_absolute']
+            values = [
             ['%.5E' % item for item in pressures_bar],
             ['%.5E' % item for item in fugacities_bar],
             ['%.5E' % item for item in mus_kjmol],
             ['%.5E' % item for item in uptake_absolute]
-        ])
+            ]
+            if excess:
+                valuename_list.append('amount_excess')
+                values.append(['%.5E' % item for item in uptake_excess])
+
+        
+        loop_ads = block.init_loop('_adsorp_', valuename_list)
+        loop_ads.set_all_values(values)
 
         if fn is None:
             fn = self.workdir / f'adsorption_{temp:0.2f}K.aif'

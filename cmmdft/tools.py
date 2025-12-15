@@ -18,10 +18,10 @@ from molmod.constants import boltzmann
 from yaff import System, ForceField, Parameters
 
 __all__ = [
-    'selection_sort', 'bisect_left',
+    'selection_sort', 'bisect_left', 'get_file_suffix',
     'merge_ffpar_files', 'merge_ffpar_files', 'get_ff', 'hard_spheres_barker_henderson', 'merge_yaff_systems', 'write_LJ_pars_chk',
     'effective_potential_QU', 'effective_potential_Leb', 'effective_potential_MC', 'effective_potential_precalc',
-    'spherical_potential_boltz', 'spherical_potential_semi_boltz', 'spherical_potential_ave', 'spherical_potential_eff',
+    'spherical_potential_boltz', 'spherical_potential_semi_boltz', 'spherical_potential_ave',
     'generate_rotation_matrix', 'find_local_maxima', 'find_neighbours'
     'potantial_from_mfa', 'make_supercell',
     'TricubicInterpolator', 'convert_units'
@@ -64,6 +64,16 @@ def bisect_left(a, x, lo=0, hi=None, *, key=None):
             else:
                 hi = mid
     return lo
+
+def get_file_suffix(chempot, temp):
+    if hasattr(chempot, '__iter__'):
+        file_suff = ''
+        for mu in chempot:
+            file_suff += f'{mu/kjmol:#7.5f}kJmol_'
+        file_suff += f'{temp:#7.5f}K'
+    else:
+        file_suff = f'{chempot/kjmol:#7.5f}kJmol_{temp:#7.5f}K'
+    return file_suff
 
 def hard_spheres_barker_henderson(beta, ff = None,  len_jon = None, natom=1, rmin=1e-5, rmax=None, npoints=50, degree=7, style='LJ'):
     '''This function calculates the hard-sphere radius according to the Barker-Henderson method, given a

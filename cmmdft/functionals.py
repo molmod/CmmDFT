@@ -16,7 +16,7 @@ from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spheric
 from .log import log
 from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS, SumOfEOS
-from .yukawa import lj3dFT
+
 __all__ = [
     'FreeEnergy', 'Functional','FMTFunctional','MFMTFunctional', 'WhiteBearIIFunctional',
     'MFAFunctional', 'CoarsenedFunctional','LJMFAFunctional',  'ExternalPotential', 'EffectiveExternalPotential', 'WDAVFunctional', 'WDACorFMTunctional', 
@@ -152,17 +152,17 @@ class FreeEnergy(object):
         '''
         #ideal gas contribution
         with log.section('FREEENER', 2, timer='Tracking'):        
-            N = self.grid.integrate(rho).real
+            N = self.grid.integrate(rho)
             rho_reg = rho.copy()
             rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
             #print('Minimum density in rho_reg {:e}'.format(np.min(self.system.guest.wavelength(self.temperature)**3*rho_reg)))
-            Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0)).real/self.beta
+            Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0))/self.beta
             G = Fid - chempot*N
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, (-chempot*N/unit), Fid/unit)
             if krho is None:
                 krho = self.grid.fft(rho)#*self.grid.dr
             for part in self.parts:
-                Fpart = part.value(krho).real
+                Fpart = part.value(krho)
                 if print_out: print(part.name, round(Fpart/kjmol,2))
                 G += Fpart
                 line += "\t% .6e" %(Fpart/unit)
@@ -345,12 +345,6 @@ class FreeEnergy(object):
             else:
                 log.dump('loading interaction potential from %s' %fn)
                 mfa.load_potential(fn)
-        self.add_part(mfa)
-    
-    def add_yukawa_mean_field(self, **kwargs):
-        mfa = YukawaMFAFunctional(self.grid)
-
-        mfa.generate_kpotential(self.system.guest.sigma, self.system.guest.epsilon, **kwargs)
         self.add_part(mfa)
 
     def add_correlation_wda_lj(self, **kwargs):
@@ -573,13 +567,13 @@ class HardSphereFunctional(Functional):
         """
         # The scalar density functions
         kn0 = krho*self.scalar_weight_functions[0]
-        n0 = self.grid.ifft(kn0).real#*self.grid.dk
+        n0 = self.grid.ifft(kn0)
         kn1 = krho*self.scalar_weight_functions[1]
-        n1 = self.grid.ifft(kn1).real#*self.grid.dk
+        n1 = self.grid.ifft(kn1)
         kn2 = krho*self.scalar_weight_functions[2]
-        n2 = self.grid.ifft(kn2).real#*self.grid.dk
+        n2 = self.grid.ifft(kn2)
         kn3 = krho*self.scalar_weight_functions[3]
-        n3 = self.grid.ifft(kn3).real#*self.grid.dk
+        n3 = self.grid.ifft(kn3)
         #When n3 approaches 1, things can go wrong because the functional
         # contains terms with log(1-n3) and 1/(1-n3)
         n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n3 is in [0, 1-1e-12]
@@ -587,10 +581,10 @@ class HardSphereFunctional(Functional):
 
 
         knv1 = krho[..., None] * self.vector_weight_functions[0]
-        nv1 = self.grid.ifftn(knv1).real  
+        nv1 = self.grid.ifftn(knv1)  
 
         knv2 = krho[..., None] * self.vector_weight_functions[1]
-        nv2 = self.grid.ifftn(knv2).real
+        nv2 = self.grid.ifftn(knv2)
         
         xi = None
         if 'a' in self.version:
@@ -611,12 +605,12 @@ class HardSphereFunctional(Functional):
         knyz = krho*self.tensor_weight_functions[4]
         knzz = krho*self.tensor_weight_functions[5]
 
-        nxx = self.grid.ifft(knxx).real
-        nxy = self.grid.ifft(knxy).real
-        nxz = self.grid.ifft(knxz).real
-        nyy = self.grid.ifft(knyy).real
-        nyz = self.grid.ifft(knyz).real
-        nzz = self.grid.ifft(knzz).real
+        nxx = self.grid.ifft(knxx)
+        nxy = self.grid.ifft(knxy)
+        nxz = self.grid.ifft(knxz)
+        nyy = self.grid.ifft(knyy)
+        nyz = self.grid.ifft(knyz)
+        nzz = self.grid.ifft(knzz)
 
 
         tr2 = (nxx**2 + nyy**2 + nzz**2 + 2*(nxy**2 + nxz**2 + nyz**2))
@@ -625,13 +619,13 @@ class HardSphereFunctional(Functional):
 
     def get_n3(self, krho):
         kn3 = krho*self.scalar_weight_functions[3]
-        return self.grid.ifft(kn3).real#*self.grid.dk        
+        return self.grid.ifft(kn3)
 
     def get_n2_nv2(self, krho):
         kn2 = krho*self.scalar_weight_functions[2]
         n2 = self.grid.ifft(kn2)#*self.grid.dk
         knv2 = krho[..., None] * self.vector_weight_functions[1]
-        nv2 = self.grid.ifftn(knv2).real
+        nv2 = self.grid.ifftn(knv2)
         return abs(n2)/nv2
 
     def set_density(self, krho):
@@ -999,33 +993,6 @@ class MFAFunctional(Functional):
                 return 0.5*rho*self.derive(krho)
             else:
                 return 0.5*grid.integrate(rho*self.derive(krho))
-
-class YukawaMFAFunctional(MFAFunctional):
-
-    name = 'YUKAWA'
-
-    def __init__(self, grid):
-        self.grid = grid
-        self.potential = None
-        self.kpotential = None
-        self.tailcorrections = False
-    
-    def copy(self, grid=None):
-        if grid is None: grid = self.grid.copy()
-        YUK = YukawaMFAFunctional(grid)
-        if self.kpotential is not None:
-            YUK.kpotential = self.kpotential.copy()
-        return YUK
-    
-    def generate_kpotential(self, sigma, epsilon, rcut=12*angstrom, model='WCA'):
-        # print(self.grid.kpoints[:,:,:,3])
-        # print(sigma, epsilon)
-        self.kpotential = lj3dFT(self.grid.kpoints[:,:,:,3], sigma, epsilon, cutoff=rcut, model=model)
-
-    def derive(self, krho):
-        return self.grid.ifft(krho*self.kpotential)
-    
-
 
 class CoarsenedFunctional(MFAFunctional):
     

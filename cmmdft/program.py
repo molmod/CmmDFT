@@ -14,7 +14,7 @@ from .functionals import FreeEnergy
 from .system import System, Grid
 from .solver import Solver, Picard, Anderson, NoSolutionError
 from .log import log
-from .tools import find_local_maxima, find_neighbours
+from .tools import find_local_maxima, find_neighbours, get_file_suffix
 __all__ = ['Program']
 
 
@@ -359,17 +359,19 @@ class Program(object):
                 convergence_fn = os.path.join(self.workdir,  "convergence_%7.5fkJmol_%7.5fK.txt" %(chempot/kjmol,self.fener.temperature/kelvin))
                 self.fener.init_tracking(convergence_fn)
 
-            self.file_suffix = '_%7.5fkJmol_%7.5fK' %(chempot/kjmol,self.fener.temperature/kelvin)
-            self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.file_suffix))
+            self.file_suffix = get_file_suffix(chempot, self.fener.temperature)
+            self.rho_fn = os.path.join(self.workdir, 'rho_%s.npy'%(self.file_suffix))
             if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite and not continue_solving:
                 log.dump('  skipping because solution found in file %s' %(self.rho_fn))
-                return
+                rho = np.load(self.rho_fn)
+                N = self.grid.integrate(rho)
+                return N, rho, True
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
             rho_old = self.rho0.copy()
             N, rho, converged = self.solver.solve(chempot, rho_old, log_level)
 
             if self.solver.track_history:
-                solving_name = 'solving_history%s.csv'%(self.file_suffix)
+                solving_name = 'solving_history_%s.csv'%(self.file_suffix)
                 solver_history_fn = self.workdir / solving_name
                 data = self.solver.history[:self.solver.curr_step+1, :]
                 np.savetxt(solver_history_fn, data, delimiter=',', header=self.solver.history_header)

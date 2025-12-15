@@ -23,8 +23,9 @@ __all__ = [
     'effective_potential_QU', 'effective_potential_Leb', 'effective_potential_MC', 'effective_potential_precalc',
     'spherical_potential_boltz', 'spherical_potential_semi_boltz', 'spherical_potential_ave',
     'generate_rotation_matrix', 'find_local_maxima', 'find_neighbours'
-    'potantial_from_mfa', 'make_supercell',
-    'TricubicInterpolator', 'convert_units'
+    'potential_from_mfa', 'make_supercell',
+    'TricubicInterpolator', 'convert_units',
+    'Document'
 ]
 
 
@@ -1025,3 +1026,189 @@ class convert_units(object):
         assert input in unit_list and output in unit_list, "input must be a tuple where the first element is the value of the unit and the second is a string containing the unit type"
         return self.input_dict[input]/self.output_dict[output]
     
+class TricubicInterpolator:
+    def __init__(self, grid_values, grid_origin, grid_spacing, coefficients):
+        """
+        Initialize the tricubic interpolator.
+        
+        Parameters:
+        - grid_values: (8, Nx, Ny, Nz) array with the function and its derivatives.
+        - grid_origin: (3,) array for the grid's Cartesian origin.
+        - grid_spacing: (3,) array for grid spacing in x/y/z directions.
+        - coefficients: (64, 64) matrix used in tricubic interpolation.
+        """
+        self.values = grid_values  # (8, Nx, Ny, Nz)
+        self.origin = np.array(grid_origin)
+        self.spacing = np.array(grid_spacing)
+        self.coeff = coefficients
+        self.shape = grid_values.shape[1:]  # (Nx, Ny, Nz)
+        self.Nx, self.Ny, self.Nz = self.shape
+
+        # 8 corner offsets for the cubic interpolation
+        self.corner_offsets = np.array([
+            [0, 0, 0], [1, 0, 0],
+            [0, 1, 0], [1, 1, 0],
+            [0, 0, 1], [1, 0, 1],
+            [0, 1, 1], [1, 1, 1]
+        ])
+
+    def _wrap_indices(self, idx, dim):
+        """ Ensure indices wrap around for periodic boundary conditions. """
+        # if idx>= dim:
+        #     print(f"Warning: index {idx} exceeds dimension {dim}.")
+        # return np.mod(idx, dim)
+        return idx
+    
+    def interpolate_unvectorized(self, position):
+        """
+        Unvectorized interpolation for a single position.
+
+        Parameters:
+        - position: (3,) array of Cartesian coordinates.
+        
+        Returns:
+        - interpolated: scalar value of the interpolated function.
+        """
+        # Compute fractional grid coordinates
+        s = (position - self.origin) / self.spacing
+        ix = np.floor(s).astype(int)
+        rx = s - ix
+
+        # Wrap indices for periodic boundaries
+        ix0 = self._wrap_indices(ix[0], self.Nx)
+        iy0 = self._wrap_indices(ix[1], self.Ny)
+        iz0 = self._wrap_indices(ix[2], self.Nz)
+
+        # Prepare X: (64,)
+        X = np.zeros(64)
+
+
+        for corner_idx, (dx, dy, dz) in enumerate(self.corner_offsets):
+            xi = self._wrap_indices(ix0 + dx, self.Nx)
+            yi = self._wrap_indices(iy0 + dy, self.Ny)
+            zi = self._wrap_indices(iz0 + dz, self.Nz)
+
+            for deriv in range(8):
+                X[corner_idx + deriv * 8] = self.values[deriv, xi, yi, zi]
+                
+        a = np.zeros(64)
+        for e in range(64):
+            for ee in range(64):
+                a[e] += self.coeff[e,ee]*X[ee]
+
+        value = 0
+        for e in range(4):
+            for ee in range(4):
+                for eee in range(4):
+                    value += a[e+ee*4+eee*16]*(rx[0]**e)*(rx[1]**ee)*(rx[2]**eee)
+        return value
+    
+    def interpolate(self, positions):
+        """
+        Vectorized interpolation for multiple positions.
+
+        Parameters:
+        - positions: (N, 3) array of Cartesian coordinates.
+        
+        Returns:
+        - interpolated: (N,) array of interpolated values.
+        """
+        positions = np.atleast_2d(positions)
+        N = positions.shape[0]
+
+        # Compute fractional grid coordinates
+        s = (positions - self.origin) / self.spacing
+        ix = np.floor(s).astype(int)
+        rx = s - ix
+
+        # Wrap indices for periodic boundaries
+        ix0 = self._wrap_indices(ix[:, 0], self.Nx)
+        iy0 = self._wrap_indices(ix[:, 1], self.Ny)
+        iz0 = self._wrap_indices(ix[:, 2], self.Nz)
+
+
+        # Prepare X: (N, 64)
+        X = np.zeros((N, 64))
+        for corner_idx, (dx, dy, dz) in enumerate(self.corner_offsets):
+            xi = self._wrap_indices(ix0 + dx, self.Nx)
+            yi = self._wrap_indices(iy0 + dy, self.Ny)
+            zi = self._wrap_indices(iz0 + dz, self.Nz)
+
+            for deriv in range(8):
+                X[:, corner_idx + deriv * 8] = self.values[deriv, xi, yi, zi]
+        
+        # Cap extreme values to avoid overflow
+        result = np.zeros(N)
+
+        # Compute interpolation coefficients (N, 64)
+        a = X @ self.coeff.T
+        u, v, w = rx[:, 0], rx[:, 1], rx[:, 2]
+        # Compute relative distances for polynomial powers
+        for i in range(4):
+            ui = u ** i
+            for j in range(4):
+                vj = v ** j
+                for k in range(4):
+                    wk = w ** k
+                    idx = i + 4 * j + 16 * k
+                    result += a[:, idx] * ui * vj * wk
+
+        # Apply cap to extreme values
+        if result.shape[0] > 1:
+            return result
+        else:
+            return result[0]
+
+class Document(object):
+    def __init__(self):
+        self.blocks = []
+
+    def add_new_block(self, block_name):
+        block = Block(block_name)
+        self.blocks.append(block)
+        return block
+    
+    def sole_block(self):
+        if not self.blocks:
+            self.add_new_block('default')
+        return self.blocks[0]
+    
+    def write_file(self, filepath):
+        with open(filepath, 'w') as f:
+            for block in self.blocks:
+                f.write(f'data_{block.name}\n')
+                for key, value in block.pairs.items():
+                    f.write(f'{key} {value}\n')
+                for loop in block.loops:
+                    f.write(f'\nloop_\n')
+                    for key in loop.keys:
+                        f.write(f'{loop.prefix}{key}\n')
+                    num_rows = len(loop.data[loop.keys[0]])
+                    for i in range(num_rows):
+                        row = ''.join(loop.data[key][i] + ' ' for key in loop.keys)
+                        f.write(f'{row}\n')
+
+
+class Block(object):
+    def __init__(self, name):
+        self.name = name
+        self.pairs = {}
+        self.loops = []
+
+    def set_pair(self, key, value):
+        self.pairs[key] = value
+
+    def init_loop(self, prefix, keys):
+        loop = Loop(prefix, keys)
+        self.loops.append(loop)
+        return loop
+
+class Loop(object):
+    def __init__(self, prefix, keys):
+        self.prefix = prefix
+        self.keys = keys
+        self.data = {key: [] for key in keys}
+
+    def set_all_values(self, columns):
+        for key, column in zip(self.keys, columns):
+            self.data[key] = column            

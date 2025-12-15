@@ -297,7 +297,7 @@ class FreeEnergy(object):
             wda = WDAVFunctional(self.grid, self.system.guest.Rhs, eos)
         self.add_part(wda)
 
-    def add_hard_sphere(self,version='MFMT', xi_limit=1):
+    def add_hard_sphere(self,version='MFMT'):
         """
             Adds a hard sphere repulsion functional of various types
 
@@ -311,7 +311,7 @@ class FreeEnergy(object):
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
-            HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, version=version, xi_limit=xi_limit)
+            HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, version=version)
             self.add_part(HardSphere)
     
     def add_mean_field(self, tailcorrections=False, **kwargs):
@@ -456,7 +456,7 @@ class HardSphereFunctional(Functional):
     
     name = 'HardSphere'
     
-    def __init__(self, grid, Rhs, xi_limit=1, version='MFMT'):
+    def __init__(self, grid, Rhs, version='MFMT'):
         """
         **Arguments:**
 
@@ -471,8 +471,6 @@ class HardSphereFunctional(Functional):
         self.grid = grid  
         self.R = Rhs
         self.version = version
-        self.xi_limit = xi_limit
-        self.xi_limit = xi_limit
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
@@ -576,7 +574,7 @@ class HardSphereFunctional(Functional):
         n3 = self.grid.ifft(kn3)
         #When n3 approaches 1, things can go wrong because the functional
         # contains terms with log(1-n3) and 1/(1-n3)
-        n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n3 is in [0, 1-1e-12]
+
         # The vector density functions
 
 
@@ -589,7 +587,7 @@ class HardSphereFunctional(Functional):
         xi = None
         if 'a' in self.version:
             xi = (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)/((n2)**2+1e-16)
-            xi = np.clip(xi, 0.0, self.xi_limit)  # Ensure xi is in [0, xi_limit]
+            xi = np.clip(xi, 0.0, 1)  # Ensure xi is in [0, xi_limit]
 
         ln_n3 = np.log(1-n3)
         n3_2 = n3*n3

@@ -203,7 +203,7 @@ class Solver(object):
                     self.DER = np.linalg.norm((np.abs(rho_new)*beta*dOmega/(self.a_tol + self.r_tol*np.abs(rho_new)))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
                     crit = self.DER
                     log.dump("             *  Norm of derivative                  = %11.4e" %self.DER)
-
+                print(criterion, thresh, crit, CRIT_PASS)
                 CRIT_PASS *= (crit < thresh)
 
             if self.track_history:
@@ -470,7 +470,7 @@ class Anderson(Picard):
     name = 'ANDERSON'
 
     def __init__(self, program, nsteps=100, method='hybridanderson', 
-                 m=5, damping=0.3, delta=0.1, damping_max=0.8, damping_min=0.01, adaptive_damping=True,
+                 m=5, damping=0.3, delta=0.1, damping_max=0.8, damping_min=0.01, adaptive_damping=True, damping_factors=(1.5,0.5),
                    **kwargs):
         """
         Initialize the solver with the given parameters.
@@ -499,7 +499,7 @@ class Anderson(Picard):
         self.damping_max = damping_max
         self.damping_min = damping_min
         self.adaptive_damping = adaptive_damping
-        self.damping_factors = (1.2,0.6)
+        self.damping_factors = damping_factors
         self.delta = delta
 
     def _initiate_solving(self, chempot):
@@ -707,7 +707,7 @@ class QuasiNewton(Picard):
     name = 'QUASI_NEWTON'
 
     def __init__(self, program, nsteps=100, m=10, method='bfgs', hybrid=True, delta=0.5,
-                 alpha_init=0.05, c1=1e-4, c2=0.9, n_line_search=10, trust_radius=1, verbose=True, **kwargs):
+                 alpha_init=0.05, c1=1e-4, c2=0.9, line_search='backtracking', n_line_search=10, trust_radius=1, verbose=True, **kwargs):
         """
         Initialize the Quasi-Newton solver with the given parameters.
         Parameters:
@@ -735,6 +735,8 @@ class QuasiNewton(Picard):
         self.c1 = c1
         self.c2 = c2
         self.trust_radius = trust_radius
+        self.line_search = line_search
+        assert self.line_search in ['backtracking', 'quadratic', 'none'], f"Line search method {self.line_search} not recognized."
         self.n_line_search = n_line_search
         self.verbose = verbose
 
@@ -896,19 +898,18 @@ class QuasiNewton(Picard):
                 rho_trial = self._clip_density(rho_trial)
 
                 p_eff = self.flatten(rho_trial - rho)
-                step_norm = np.linalg.norm(p_eff)
-                if step_norm < step_floor:
-                    alpha *= tau
-                    continue
+                # step_norm = np.linalg.norm(p_eff)
+                # if step_norm < step_floor:
+                #     alpha *= tau
+                #     continue
 
                 krho_trial = self.grid.fft(rho_trial)
                 f_new = self._get_Omega(rho_trial, krho_trial)
 
                 gtp_eff = float(np.dot(grad, p_eff))
-                # if self.verbose:
-                    # print(f"[Proj-LS] alpha={alpha:.3e}  f_new={f_new:.6e}  "
-                    #     f"Armijo RHS={f0 + self.c1 * gtp_eff:.6e}  "
-                    #     f"||p_eff||={step_norm:.3e}")
+                # print(f"[Proj-LS] alpha={alpha:.3e}  f_new={f_new:.6e}  "
+                #     f"Armijo RHS={f0 + self.c1 * gtp_eff:.6e}  "
+                #     f"||p_eff||={step_norm:.3e}")
 
                 # sanity check for unphysical minima
                 if f0-f_new > max_allowed_drop:
@@ -940,6 +941,58 @@ class QuasiNewton(Picard):
                 alpha_prev.append(alpha)
 
             raise SwitchToPicardError('Line search not converging')
+    
+    def _quadratic_line_search(self, rho, krho, g, p):
+        f0 = self.omega_history[-1]
+        d = self.unflatten(p)
+        alpha1 = self._get_alpha_max(rho, krho, d)*self.correction_factor
+        rho_trial = rho + alpha1 * d
+        rho_trial = self._clip_density(rho_trial)
+        krho_trial = self.grid.fft(rho_trial)
+        f_new = self._get_Omega(rho_trial, krho_trial)
+
+        p_eff = self.flatten(rho_trial - rho)
+        grad = self.flatten(g)
+        gtp_eff = float(np.dot(grad, p_eff))
+
+        if f_new <= f0 + self.c1 * gtp_eff * alpha1:
+            C1_new = self._get_C1(rho_trial, krho_trial)
+            Grho_new = self.get_new_rho(C1_new, self.fugacity)
+            if np.any(np.isinf(Grho_new)):
+                log.dump('Grho_new contains Infs, skipping this step')
+            else:                       
+                log.dump(f'Line search succeeded with full step, alpha={alpha1}')
+                return rho_trial, krho_trial, C1_new, f_new
+            
+        slope = np.dot(grad, p)
+        alpha_opt = -slope * alpha1**2 / (2*(f_new - f0 - slope*alpha1))
+        if alpha_opt < 0 or alpha_opt > alpha1:
+            raise SwitchToPicardError('Quadratic line search not converging')
+        rho_new = rho + alpha_opt * d
+        rho_new = self._clip_density(rho_new)
+        krho_new = self.grid.fft(rho_new)
+        C1_new = self._get_C1(rho_new, krho_new)
+        Grho_new = self.get_new_rho(C1_new, self.fugacity)
+        if np.any(np.isinf(Grho_new)):
+            raise SwitchToPicardError('Grho_new contains Infs, skipping this step')
+        f_new = self._get_Omega(rho_new, krho_new)
+        log.dump(f'Line search succeeded with alpha={alpha_opt}')
+        return rho_new, krho_new, C1_new, f_new
+
+
+    def _no_line_search(self, rho, krho, g, p):
+        d = self.unflatten(p)
+        alpha = 0.5*self._get_alpha_max(rho, krho, d)*self.correction_factor
+        rho_trial = rho + alpha * d
+        rho_trial = self._clip_density(rho_trial)
+        krho_trial = self.grid.fft(rho_trial)
+        C1_new = self._get_C1(rho_trial, krho_trial)
+        Grho_new = self.get_new_rho(C1_new, self.fugacity)
+        if np.any(np.isinf(Grho_new)):
+            raise SwitchToPicardError('Grho_new contains Infs, skipping this step')
+        f_new = self._get_Omega(rho_trial, krho_trial)
+        return rho_trial, krho_trial, C1_new, f_new
+
 
     def _update_rho_QN(self, rho, krho, C1):
         with log.section(self.name, self.log_level, timer='Update rho QN'):
@@ -967,7 +1020,19 @@ class QuasiNewton(Picard):
             self.g_prev_flat = g # save the previous gradient
             self.d_prev_flat = d_real # save the actual direction for next iteration
 
-            rho_new, krho_new, C1_new, Omega_new = self._line_search_feasible(rho, krho, g, d_real)
+            if self.line_search == 'backtracking':
+                rho_new, krho_new, C1_new, Omega_new = self._line_search_feasible(rho, krho, g, d_real)
+            elif self.line_search == 'quadratic':
+                rho_new, krho_new, C1_new, Omega_new = self._quadratic_line_search(rho, krho, g, d_real)
+            elif self.line_search == 'none':
+                rho_new, krho_new, C1_new, Omega_new = self._no_line_search(rho, krho, g, d_real)
+
+            Grho = self.get_new_rho(C1, self.fugacity)
+            Grho_new = self.get_new_rho(C1_new, self.fugacity)
+            res_norm = np.linalg.norm(Grho - rho)
+            res_norm_new = np.linalg.norm(Grho_new - rho_new)
+            if res_norm_new*0.8 > res_norm:
+                raise SwitchToPicardError('Residual norm increased too much, switching to Picard')
             return rho_new, krho_new, C1_new, Omega_new
 
     def update_rho(self, rho, krho, C1):

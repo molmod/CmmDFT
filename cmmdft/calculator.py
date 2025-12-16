@@ -3,6 +3,7 @@
 import os, sys, numpy as np, matplotlib.pyplot as plt, copy, re
 from pathlib import Path
 import scipy.optimize as opt
+from scipy.special import logsumexp
 import getpass, datetime
 import json
 import itertools
@@ -15,10 +16,11 @@ ylog.set_level(ylog.silent)
 
 from .system import System, Grid, NanoporousHost, SphericalLJGuest
 from .program import Program
-from .functionals import FreeEnergy, WDAVFunctional, ExternalPotential
+# from .free_energy import FreeEnergy
+from .functionals import WDAVFunctional, ExternalPotential, FreeEnergy
 from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
-from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff, Document
+from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff, get_file_suffix, Document
 #log.set_level('silent')
 
 
@@ -54,12 +56,9 @@ class Calculator(object):
         average, min, max, std
 
         """
-        try:
-            fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
-            assert fn.is_file(), f'No file found at {fn}'
-        except AssertionError:
-            fn = self.workdir / f'rho_{chempot/kjmol:#4.5f}kJmol_{temp/kelvin:#3.0f}K.npy'
-            assert fn.is_file(), f'No file found at {fn}'
+        file_suff = get_file_suffix(chempot, temp)
+        fn = self.workdir / f'rho_{file_suff}.npy'
+        assert fn.is_file(), f'No file found at {fn}'
 
         rho = np.load(fn)
         return rho.mean(), rho.min(), rho.max(), rho.std()
@@ -81,12 +80,9 @@ class Calculator(object):
         Loading
 
         """
-        try:
-            fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
-            assert fn.is_file(), f'No file found at {fn}'
-        except AssertionError:
-            fn = self.workdir / f'rho_{chempot/kjmol:#4.5f}kJmol_{temp/kelvin:#3.0f}K.npy'
-            assert fn.is_file(), f'No file found at {fn}'
+        file_suff = get_file_suffix(chempot, temp)
+        fn = self.workdir / f'rho_{file_suff}.npy'
+        assert fn.is_file(), f'No file found at {fn}'
 
         rho = np.load(fn)
            
@@ -105,12 +101,9 @@ class Calculator(object):
         
         The argument mwbr should be an instance of the ModifiedBenedictWebbRubinEOS class used in the WDA correlation functional.
         """
-        try:
-            fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
-            assert fn.is_file(), f'No file found at {fn}'
-        except AssertionError:
-            fn = self.workdir / f'rho_{chempot/kjmol:#4.5f}kJmol_{temp/kelvin:#3.0f}K.npy'
-            assert fn.is_file(), f'No file found at {fn}'
+        file_suff = get_file_suffix(chempot, temp)
+        fn = self.workdir / f'rho_{file_suff}.npy'
+        assert fn.is_file(), f'No file found at {fn}'
 
         rho = np.load(fn)
         self.guest.compute_hardsphere_radius(temp)
@@ -233,8 +226,6 @@ class Calculator(object):
          
         if chempots is None:
             chempots = self.get_chemical_potential(temperature)
-        def hack(P, eos, mu, temperature):
-            return eos.calculate_mu(temperature, P) - mu
         
         data = np.zeros((2, len(chempots)))
         if pressure:
@@ -407,38 +398,35 @@ class Calculator(object):
         '''        
         if rho is None:
             if fn is None:
-                fn = self.workdir / f'rho_{chempot/kjmol:#4.5f}kJmol_{temp:3.0f}K.npy'
-                try:
-                    assert fn.is_file(), f'No density found for {fn}' 
-                except AssertionError:
-                    fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp:#7.5f}K.npy'
-                    assert fn.is_file(), f'No density found for {fn}' 
+                file_suff = get_file_suffix(chempot, temp)
+                fn = self.workdir / f'rho_{file_suff}.npy'
+                assert fn.is_file(), f'No density found for {fn}' 
             rho = np.load(fn)
         else:
             assert isinstance(rho, np.ndarray), 'The density must be a numpy array'
+            # assert np.isclose(np.array(rho.shape), np.array(self.grid.npoints)), f'The shape of the density {rho.shape} does not match the grid shape {self.grid.npoints}'
 
-        if over_loading: N = self.grid.integrate(rho).real
+        if over_loading: N = self.grid.integrate(rho)
         krho = self.grid.fft(rho)#*self.grid.dr
         if partname.lower() in ["fid", "fideal"]:
             prefactor = boltzmann*temp
             rho_reg = rho.copy()
-            rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
-            integrandum = rho_reg.real*(np.log(rho_reg.real*self.fener.wavelength**3)-1)
+            rho_reg = np.clip(rho_reg, 1e-20, None)  # avoid log(0)
+            integrandum = rho_reg*(np.log(rho_reg*self.fener.wavelength**3)-1)
             if local:
-                if over_loading: return prefactor*integrandum.real/N
-                else: return prefactor*integrandum.real                
+                if over_loading: return prefactor*integrandum/N
+                else: return prefactor*integrandum                
             else:
-                if over_loading: return prefactor*self.grid.integrate(integrandum).real/N
-                else: return prefactor*self.grid.integrate(integrandum).real
+                if over_loading: return prefactor*self.grid.integrate(integrandum)/N
+                else: return prefactor*self.grid.integrate(integrandum)
         else:
-            assert partname in self.fener.part_names, f'The provided partname must be present in the fener object, or the ideal gas contribution, this being "fid" or "fideal", {partname} not found in {self.fener.part_names}'
+            assert partname in self.fener.part_names, f'{partname} not found in {self.fener.part_names}. The provided partname must be present in the fener object, or the ideal gas contribution ("fid" or "fideal")'
             for part in self.fener.parts:
                 if part.name == partname:
                     if partname in ['MFMT', 'FMT', 'WDA-V', 'WDA-N', 'CORR']:
                         if self.fener.temperature != temp: self.fener.set_temperature(temp)
-                    if over_loading: return part.value(krho, local).real/N
-                    else: return part.value(krho, local).real
-            raise IOError(f"Recieved partname ({partname}) not present in functional (contains: {','.join([part.name for part in self.fener.parts])})" )
+                    if over_loading: return part.value(krho, local)/N
+                    else: return part.value(krho, local)
 
     def free_energy(self, temp, chempot, local=False):
         '''This function calculates the total free energy of a system at a given temperature and chemical
@@ -582,11 +570,9 @@ class Calculator(object):
         if supercell:
             points = make_supercell(points, grid_spacings=self.grid.spacings, repetitions=[3,3,3], periodic=False)
             cvs_mat = (points - diffusion_path[0])@unit_vector
-
-        # cvs = np.linspace(np.min(cvs_mat), np.max(cvs_mat), nbins+1) #sift out values which virtually identical and sort the cv in ascending order
-        cvs_min = selection_sort(np.arange(0, np.min(cvs_mat), - step_dist))
-        cvs_pos = np.arange(0, np.max(cvs_mat), step_dist)
-        cvs = np.concatenate((cvs_min[:-1], cvs_pos))
+        cvs_pos = np.arange(0, np.max(cvs_mat) + step_dist, step_dist)
+        cvs_neg = np.arange(0, np.min(cvs_mat) - step_dist, -step_dist)[::-1]
+        cvs = np.concatenate((cvs_neg, cvs_pos[1:]))
 
         if cvs_limits is not None:
             assert len(cvs_limits) == 2, 'cvs_limits must be a tuple of two numbers constraining the cvs values for which the free energy is calculated'
@@ -596,15 +582,15 @@ class Calculator(object):
             right_index = bisect_left(cvs, large_limit)
             cvs = cvs[left_index: right_index]
 
+        #construct a mask to filter out points which are too far from the diffusion axis
         dist_mask = np.ones_like(cvs_mat)
         if dist_from_axis is not None:
-            #filter out points which are too far from the diffusion axis
             distances = np.linalg.norm(np.cross(points-diffusion_path[0], unit_vector),axis=-1) #calculate the distance to the axis
             dist_mask = distances < dist_from_axis
 
         return cvs, cvs_mat, dist_mask
 
-    def project_density(self, temp, chempot, cvs, cvs_mat, dist_mask, rewrite=False, supercell=True, normalize=False, save=True):
+    def project_density(self, temp, chempot, cvs, cvs_mat, dist_mask, rewrite=False, supercell=True, normalize=False, save=True, save_fn=None):
         '''The function `project_density` calculates and returns the projected density at a given temperature
         and chemical potential.
         
@@ -636,7 +622,8 @@ class Calculator(object):
         '''
         with log.section('CALCULATOR', 2, timer='projecting density'):
 
-            fn = self.workdir / f'projected_density_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.csv'
+            file_suff = get_file_suffix(chempot, temp)
+            fn = self.workdir / f'projected_density_{file_suff}.csv'
             if fn.is_file() and not rewrite:
                 data = np.loadtxt(fn, delimiter=',', skiprows=1).T
                 q_list = data[0]
@@ -648,30 +635,34 @@ class Calculator(object):
 
                 n_list = np.empty(cvs.shape[0]-1)
 
+                fn = self.workdir / f'rho_{file_suff}.npy'
+                assert os.path.isfile(fn), f'No density found for {fn}'
+                rho = np.load(fn).real
+                if supercell:
+                    rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
+
                 for e in range(len(cvs)-1):  # now calculating n and p for the different input collective variables
-                    
                     q_min = cvs[e]
                     q_max = cvs[e+1]
                     step_dist = q_max - q_min
                     mask = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
 
-                    fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:3.0f}K.npy'
-                    if not fn.is_file():
-                        fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
-                        assert os.path.isfile(fn), f'No density found for {fn}'
-                    rho = np.load(fn).real
-                    if supercell:
-                        rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
                     if normalize:
                         n_list[e] =  self.grid.integrate(mask*rho)/step_dist
                     else:
                         n_list[e] =  self.grid.integrate(mask*rho)
+                        
                 q_list = (cvs[1:]+cvs[:-1])/2
+
                 if save:
                     data = np.array((q_list, n_list)).T
-                    fn = self.workdir / f'projected_density_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.csv'
-                    np.savetxt(fn, data, delimiter=',', header = 'cv, density')
-                    log.dump(f'Calculated the projected density at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')
+                    if save_fn is None:
+                        save_fn = self.workdir / f'projected_density_{file_suff}.csv'
+                    else: 
+                        save_fn = self.workdir / save_fn
+
+                    np.savetxt(save_fn, data, delimiter=',', header = 'cv, density')
+                    log.dump(f'Calculated the projected density at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {save_fn}')
                 return q_list, n_list
         
     def project_contributions(self, temp, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, fn=None, rewrite=False):
@@ -712,18 +703,26 @@ class Calculator(object):
         with log.section('CALCULATOR', 2, timer='projecting contributions'):
             if not isinstance(contrib_names, list):
                 contrib_names = [contrib_names]
+            contrib_names = [name.lower() for name in contrib_names]
             header = 'cv, density'
             q_list = (cvs[1:]+cvs[:-1])/2
             q_len = q_list.shape[0]
             qq, density = self.project_density(temp, chempot, cvs, cvs_mat, dist_mask, rewrite=rewrite, supercell=supercell)
-            ret_data = np.empty((2+len(contrib_names), q_len))
-            ret_data[0] = q_list
-            ret_data[1] = density
+            
+            result_data = np.empty((2+len(contrib_names), q_len))
+            result_data[0] = q_list
+            result_data[1] = density
+
+            rho_fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
+            assert rho_fn.is_file(), f'No density found for {rho_fn}'
+            rho = np.load(rho_fn).real
+
             for ee, contrib_name in enumerate(contrib_names):
                 contrib_list = np.empty(cvs.shape[0]-1)
                 header += f', {contrib_name}'
-
-                if 'pure_extpot' in contrib_name.lower():
+                
+                # pure_extpot will return the average value of the external potential per CV, for all points where the density is not zero
+                if 'pure_extpot' in contrib_names:
                     
                     if 'ExtPot' in self.fener.part_names:
                         index = self.fener.part_names.index('ExtPot')
@@ -731,34 +730,37 @@ class Calculator(object):
                         index = self.fener.part_names.index('EffExtPot')
                     else:
                         raise IOError('No external potential present in the functional')
+                    if supercell:
+                        rho_super = make_supercell(rho, repetitions=[3,3,3], periodic=True)
+                    else:
+                        rho_super = rho
+                    rho_mask = np.isclose(rho_super, 0, atol=1e-7)
+
+                if 'pure_extpot' in contrib_name.lower():
+                    data = self.fener.parts[index].potential
+                else:
+                    data = self.free_energy_contrib(temp, chempot, contrib_name, local=True, rho=rho) 
+                if supercell:
+                    data = make_supercell(data, repetitions=[3,3,3], periodic=True)       
+                                
                 for e in range(len(cvs)-1):  # now calculating n and p for the different input collective variables
                     
                     q_min = cvs[e]
                     q_max = cvs[e+1]
-                    round_cvs = np.unique(np.round(cvs_mat, decimals=4))
                     mask = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
 
                     if 'pure_extpot' in contrib_name.lower():
-                        data = self.fener.parts[index].potential
-                    else:
-                        data = self.free_energy_contrib(temp, chempot, contrib_name, local=True)
-                    if supercell:
-                        data = make_supercell(data, repetitions=[3,3,3], periodic=True)
-                    if 'pure_extpot' in contrib_name.lower():
-                        rho_fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
-                        rho = np.load(rho_fn)
-                        if supercell:
-                            rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
-                        rho_mask = np.isclose(rho, 0, atol=1e-7)
                         mask *= ~rho_mask
                         contrib_list[e] =  np.sum(mask*data)/np.sum(mask)
                     else:
                         contrib_list[e] =  self.grid.integrate(mask*data)
                 
-                ret_data[ee+2] = contrib_list
+                result_data[ee+2] = contrib_list
+
             if fn is None:
-                fn = self.workdir / f'projected_contributions_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.csv'
-            np.savetxt(fn, ret_data.T, delimiter=',', header = header)
+                file_suff = get_file_suffix(chempot, temp)
+                fn = self.workdir / f'projected_contributions_{file_suff}.csv'
+            np.savetxt(fn, result_data.T, delimiter=',', header = header)
             log.dump(f'Calculated the projected contributions at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')
 
             
@@ -785,19 +787,36 @@ class Calculator(object):
             omega = self.grand_potential(temp, chempot)
             chempot_key = f'{chempot:#0.8f}'
             if fn is None:
-                fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.json'
+                fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.csv'
             if os.path.isfile(fn):
-                with open(fn, 'r') as f:
-                    load_grand_dict = json.load(f)
-                load_grand_dict[chempot_key] = [n, omega]
+                data = np.loadtxt(fn, delimiter=',', skiprows=1)
+                data = np.atleast_2d(data).T
+                keys = [f'{key:#0.8f}' for key in data[0]]
+                
+                if chempot_key in keys:  
+                    index = keys.index(chempot_key)
+                    data[1][index] = n
+                    data[2][index] = omega.real
+                else: 
+                    mu_sorted = selection_sort(np.array(data[0]))
+                    if chempot > mu_sorted[-1]:
+                        new_col = np.array([[chempot], [n], [omega.real]])
+                        data = np.hstack((data, new_col))
+                    else:
+                        index = bisect_left(mu_sorted, chempot)
+                        new_col = np.array([[chempot], [n], [omega.real]])
+                        data = np.hstack((
+                            data[:, :index],
+                            new_col,
+                            data[:, index:]
+                        ))
+
             else:
-                load_grand_dict = {chempot_key:[n, omega]}
-            with open(fn, 'w') as f:
-                json.dump(load_grand_dict, f)
-            log.dump(f'Calculated the loading and grand potential at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')
+                data = np.array([[chempot], [n], [omega.real]])
 
-
-    def free_energy_path(self, temp, chempot, chempots=None, fn=None, max_n_chems=0, dens_omega_fn=None):
+            np.savetxt(fn, data.T, delimiter=',', header='chempot [kJ/mol], loading [molecules/uc], grand potential [Eh/uc]', comments='')
+    
+    def free_energy_path(self, temp, chempot, chempots=None, fn=None, max_n_chems=0, dens_omega_fn=None, fn_suffix=''):
         """
         Calculates the free energy profile along a predefined collective variable, q, this variable is the projection of the position of a molecule on a diffusion path of guests in the MOF.
         First two properties are calculated, n(q) and p(q), which respectively are the number of molecule with cv q and the probability of finding a molecule at that cv.
@@ -830,6 +849,10 @@ class Calculator(object):
                 int_chems = selection_sort(np.array(chempots))
                 i = bisect_left(int_chems, chempot)
                 chems = int_chems[:i+1]
+            assert chems.shape[0] > 0, f'No chemical potentials lower than {chempot/kjmol}kJ/mol found, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
+            assert np.isclose(chems[-1], chempot), f'The last chemical potential in the list must be equal to the input chemical potential, {chempot/kjmol}kJ/mol, but the last chemical potential in the list is {chems[-1]/kjmol}kJ/mol, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
+            assert (chems <= chempot).all(), f'All chemical potentials in the list must be lower than the input chemical potential, {chempot/kjmol}kJ/mol, but the last chemical potential in the list is {chems[-1]/kjmol}kJ/mol, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
+            
             #if the provided list is too long, it is shortened to the maximum number of chemical potentials
             if len(chems)>max_n_chems and max_n_chems != 0:
                 max_n_chems = int(max_n_chems)
@@ -838,60 +861,43 @@ class Calculator(object):
                 it_chems = np.concatenate((it_chems, chempot))
             else:
                 it_chems = chems
-            # preparing arrays for following iteration
-            n_dict = {}
-
+            # it_chems is a list of chemical potentials which are lower than the input chemical potential, and the input chemical potential itself
+            # collect the projected densities for the different chemical potentials
+            n_proj_prev_mu_list = []
             for mu in it_chems:
-               proj_fn = self.workdir / f'projected_density_{mu/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.csv'
-               q_list, n_dict[f'{mu:0.8f}'] = np.loadtxt(proj_fn, delimiter=',', skiprows=1).T
-            proj_fn = self.workdir / f'projected_density_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.csv'
-            n_list = np.loadtxt(proj_fn, delimiter=',', skiprows=1).T[1]
-            
+                file_suff = get_file_suffix(mu, temp)
+                proj_fn = self.workdir / f'projected_density_{file_suff}{fn_suffix}.csv'
+                q_list, n_proj = np.loadtxt(proj_fn, delimiter=',', skiprows=1).T
+                n_proj_prev_mu_list.append(n_proj)
+            n_proj_prev_mu_list = np.array(n_proj_prev_mu_list)
             q_len = q_list.shape[0]
             omega_list =  np.empty(q_len, dtype=np.float64)
             free_list =  np.empty(q_len, dtype=np.float64)
 
-            dens_omega_dict = {}
+            #collect the previous projected densities and grand potentials
+            dens_omega_fn = self.workdir / f'loading_grand_potential_{temp:#7.5f}K.csv'
+            assert dens_omega_fn.is_file(), f'No loading and grand potential found for {temp}K and {chempot/kjmol}kJ/mol, please run the save_loading_and_grand_potential function first'
+            dens_omega_list = np.atleast_2d(np.loadtxt(dens_omega_fn, delimiter=',', skiprows=1))
 
-            if dens_omega_fn is not None:
-                with open(dens_omega_fn, 'r') as f:
-                    dens_omega_dict = json.load(f)
-            else:
-                try:
-                    for mu in it_chems:
-                        dens_omega_dict[f'{mu:0.8f}'] = [self.loading(temp, mu), self.grand_potential(temp, mu).real]
-                except AssertionError:
-                    dens_omega_fn = self.workdir / f'loading_grand_potential_{temp:#7.5f}K.json'
-                    with open(dens_omega_fn, 'r') as f:
-                        dens_omega_dict = json.load(f)
-                        
-            omega_shift = 0
-            for i, mu in enumerate(it_chems):
-                scaling = np.exp(-beta*(dens_omega_dict[f'{mu:0.8f}'][1] + omega_shift))
-                while np.isinf(scaling):
-                    omega_shift += 0.1
-                    scaling = np.exp(-beta*(dens_omega_dict[f'{mu:0.8f}'][1] + omega_shift))
+            #check if the chemical potentials are present in the previous densities and grand potentials file, then collect those densities and grand potentials
+            real_dens_omega_list = np.zeros((len(it_chems), 2))
+            list_mu_keys = [f'{key/kjmol:#0.8f}' for key in dens_omega_list[:, 0]]
+            for i, it_mu in enumerate(it_chems):
+                it_key = f'{it_mu/kjmol:#0.8f}'
+                assert it_key in list_mu_keys, f'No loading and grand potential found for {temp}K and {it_mu/kjmol}kJ/mol, please run the save_loading_and_grand_potential function first'
+                index = list_mu_keys.index(it_key)
+                real_dens_omega_list[i] = dens_omega_list[index, 1:]
 
-            for e in range(q_len):  # now calculating n and p for the different input collective variables
-                
-                integrand = np.zeros(len(it_chems))
-
-                for i, mu in enumerate(it_chems):
-                    n = n_dict[f'{mu:0.8f}'][e]
-                    scaling = np.exp(-beta*(dens_omega_dict[f'{mu:0.8f}'][1] + omega_shift)/8)
-                    integrand[i] = n*scaling
-                    if np.isinf(scaling):
-                        print(f'{mu/kjmol}, {i},{n}, {integrand[i]}, {scaling}')
-
-                op = beta*np.trapz(integrand, it_chems) 
-                if op == 0:
-                    omega_list[e] = np.nan
-                else:
-                    omega_list[e] = -np.log(op)/beta - omega_shift
-                free_list[e] = omega_list[e] + dens_omega_dict[f'{mu:0.8f}'][0]*chempot
+            # integrate over the chemical potentials
+            grand_potential_list = -beta * real_dens_omega_list[:, 1]
+            # print('grand potential list', grand_potential_list/kjmol)
+            for e in range(q_len):
+                n_list_per_mu = n_proj_prev_mu_list[:, e]
+                omega_list[e] = -(logsumexp(grand_potential_list, b=n_list_per_mu, axis=0) + np.log(beta))/beta
+                free_list[e] = omega_list[e] + real_dens_omega_list[-1, 0]*chempot
 
             data = np.empty((4,q_len))
-            data[:] = q_list, n_list, omega_list, free_list
+            data[:] = q_list, n_proj_prev_mu_list[-1], omega_list, free_list
             if fn is None:
                 fn = self.workdir / f'free_energy_profile_{chempot/kjmol:#0.8f}kjmol_{temp:#0.3f}K.csv'
             else: 
@@ -899,9 +905,56 @@ class Calculator(object):
 
             log.dump(f'Calculated the free energy profile at {temp}K and {chempot/kjmol:#0.3f}kJ/mol save at {fn}')
             np.savetxt(fn, data.T, delimiter=',', header = 'cv,density,grand canonical potential,free energy')        
-            # return cvs_mat
-            return q_list, n_list, omega_list, free_list
         
+    def diffusion_coefficient(self, temp, chempot, mass, fn=None):
+        '''This function calculates the diffusion coefficient of a system at a given temperature and chemical
+        potential.
+        
+        Parameters
+        ----------
+        temp
+            The `temp` parameter represents the temperature in Kelvin.
+        chempot
+            The parameter `chempot` represents the chemical potential in atomic units.
+        mass
+            The `mass` parameter represents the mass of the diffusing particle in atomic units.
+        fn
+            The "fn" parameter is an optional argument which can be used to specify a certain density file
+            to be used for the calculation.
+        '''
+
+        with log.section('CALCULATOR', 2, timer='diffusion coefficient calculation'):
+            beta = 1/temp/boltzmann            
+
+            file_suff = get_file_suffix(chempot, temp)
+            fn = self.workdir / f'free_energy_profile_{file_suff}.csv'
+            assert fn.is_file(), f'No free energy profile found for {temp}K and {chempot/kjmol:#7.5f}kJ/mol at {fn}'
+            data = np.loadtxt(fn, delimiter=',', skiprows=1).T
+            cvs = data[0]
+            free_energy = data[3]
+
+
+            #calculate the prefactor
+            prefactor = np.sqrt(boltzmann*temp/2/np.pi/mass)
+
+            # determine transition state and minimums
+            max_index = np.argmax(free_energy)
+            min_index = np.argmin(free_energy[:max_index])
+
+            #calculate the diffusion coefficient using the free energy profile
+            integrand = np.exp(-beta*free_energy)
+            denom = np.trapz(integrand[min_index:max_index], cvs[min_index:max_index])
+
+            hopping_rate = prefactor*integrand[max_index]/denom
+
+            #calculate the diffusion coefficient using the transition state theory
+            diffusion_length = cvs[max_index] - cvs[min_index]
+            dimensionality = 1
+
+            D = hopping_rate*diffusion_length**2/2/dimensionality
+            log.dump(f'Calculated the diffusion coefficient at {temp}K and {chempot/kjmol:#7.5f}kJ/mol: D = {D:.5e} m^2/s')
+            return D
+
     def contribution_approximation(self, temp, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, pert_size=1e-5, symmetric=False, fn=None):
         '''This function calculates and saves projected contributions based on a perturbation of the density 
         and free energy calculations.
@@ -938,9 +991,12 @@ class Calculator(object):
             if not isinstance(contrib_names, list):
                 contrib_names = [contrib_names]
             header = 'cv, density'            
-            rho_fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
+            
+            file_suff = get_file_suffix(chempot, temp)
+            rho_fn = self.workdir / f'rho_{file_suff}.npy'
             assert rho_fn.is_file(), f'No density found for {temp}K and {chempot/kjmol}kJ/mol'
             rho = np.load(rho_fn).real
+            rho_sup = make_supercell(rho, repetitions=[3,3,3], periodic=True)
 
             n_list = self.project_density(temp, chempot, cvs, cvs_mat, dist_mask, supercell=supercell)[1]
             n_list_not_norm = self.project_density(temp, chempot, cvs, cvs_mat, dist_mask, supercell=supercell, rewrite=True, normalize=False, save=False)[1]
@@ -972,28 +1028,18 @@ class Calculator(object):
                 print('q',(q_max+q_min)/2 ,'number', np.sum(mask_full))
 
                 #define the perturbation
-                rho_sup  = make_supercell(rho, repetitions=[3,3,3], periodic=True)
                 rho_pert_sup = pert_size*rho_sup*mask_full
 
-                rho_splices = np.zeros((27,npoints[0],npoints[1],npoints[2]))
-                i = 0
-                hor_rho_split = np.hsplit(rho_pert_sup,3)
-                for hor_splice in hor_rho_split:
-                    ver_split = np.vsplit(hor_splice, 3)
-                    for ver_splice in ver_split:
-                        rho_splices[i:i+3] = np.dsplit(ver_splice, 3)
-                        i += 3
-                rho_pert_sup_cutout = np.sum(rho_splices, axis=0)
+                # Split into 3×3×3 subgrids and stack
+                rho_splices = np.array([
+                    z_slice
+                    for x_slice in np.hsplit(rho_pert_sup, 3)
+                    for y_slice in np.vsplit(x_slice, 3)
+                    for z_slice in np.dsplit(y_slice, 3)
+                ])
 
-                mask_splices = np.zeros((27,npoints[0],npoints[1],npoints[2]))
-                i = 0
-                hor_mask_split = np.hsplit(mask_full,3)
-                for hor_splice in hor_mask_split:
-                    ver_split = np.vsplit(hor_splice, 3)
-                    for ver_splice in ver_split:
-                        mask_splices[i:i+3] = np.dsplit(ver_splice, 3)
-                        i += 3
-                mask_cutout = np.sum(mask_splices, axis=0)
+                # Sum all 27 subregions into a single 3D array (cutout of the perturbation)                        
+                rho_pert_sup_cutout = np.sum(rho_splices, axis=0)
                 try:
                     rho_pert = rho_pert_sup_cutout/n_list_not_norm[e]
                 except FloatingPointError:
@@ -1001,9 +1047,18 @@ class Calculator(object):
                     continue
                 
                 new_rho = rho + rho_pert
+                if symmetric:
+                    neg_rho = rho - rho_pert
+                    neg_mask = neg_rho < 0
+                    neg_rho[neg_mask] = 0
+                    factor = 2
+                else:
+                    neg_rho = rho.copy()
+                    factor = 1
+
                 for ee, contrib_name in enumerate(contrib_names):
 
-                    #calculate the old, new and difference free energy
+                    #calculate the old and new free energy and their difference
                     if contrib_name.lower() in ['fid_derive', 'fideal_derive']:
                         integrand = np.zeros_like(rho)
                         integrand[rho>0] = np.log(self.fener.wavelength**3*rho[rho>0])*boltzmann*temp
@@ -1022,28 +1077,51 @@ class Calculator(object):
                             old = self.free_energy_contrib(temp, chempot, contrib_name, rho=neg_rho)/2
                             new = self.free_energy_contrib(temp, chempot, contrib_name, rho=new_rho)/2
                     else:
+                        old = old_contribs[ee]
                         if contrib_name.lower() in ['free_energy', 'grand_potential']:
-                            old = self.grand_potential(temp, chempot, rho=rho)
+                            # old = self.grand_potential(temp, chempot, rho=rho)
                             new = self.grand_potential(temp, chempot, rho=new_rho)
                         else:
-                            old = self.free_energy_contrib(temp, chempot, contrib_name, rho=rho)
+                            old = old_contribs[ee]
+                            # old = self.free_energy_contrib(temp, chempot, contrib_name, rho=rho)
                             new = self.free_energy_contrib(temp, chempot, contrib_name, rho=new_rho)
                             
                     delta = (new - old)/pert_size
                     contrib_list[ee+2, e] = delta
-
             if fn is None:
-                fn = self.workdir / f'approx_contributions_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.csv'
+                file_suff = get_file_suffix(chempot, temp)
+                fn = self.workdir / f'approx_contributions_{file_suff}.csv'
             np.savetxt(fn, contrib_list.T, delimiter=',', header = header)
             log.dump(f'Calculated the projected contributions at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')                
 
     def local_contribution(self, temp, chempot, contrib_names, pert_size=1e-7):
+        """
+        Calculates the local contributions to the chemical potential by perturbing the density at each grid point.
+        
+        Parameters
+        ----------
+        temp : float
+            The temperature in Kelvin.
+        chempot : float
+            The chemical potential.
+        contrib_names : list of str
+            A list of contribution names for which the local contributions are to be calculated.
+        pert_size : float, optional
+            The size of the perturbation to apply to the density at each grid point. Default is 1e-7.
+        Returns
+        -------
+        local_contribs : numpy.ndarray
+            A 4D array containing the local contributions for each contribution name at each grid point.
+        """
+
         with log.section('CALCULATOR', 2, timer='local contributions'):
-            rho_fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
+            file_suff = get_file_suffix(chempot, temp)
+            rho_fn = self.workdir / f'rho_{file_suff}.npy'
             assert rho_fn.is_file(), f'No density found for {temp}K and {chempot/kjmol}kJ/mol'
             rho = np.load(rho_fn).real
             npoints = self.grid.npoints
 
+            # calculate the old contributions
             old_contribs = np.zeros(len(contrib_names))
             for i, contrib_name in enumerate(contrib_names):
                 if contrib_name.lower() in ['fid_derive', 'fideal_derive']:
@@ -1101,15 +1179,16 @@ class Calculator(object):
             T1 = temperature + dT/2
             T2 = temperature - dT/2
 
-            fn= self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temperature/kelvin:#7.5f}K.npy'
-            assert fn.is_file(), 'No density found for %3.0f K and %4.5f kJ/mol' %(temperature,chempot/kjmol)  
-            rho = np.load(fn)           
+            file_suff = get_file_suffix(chempot, temperature)
+            fn = self.workdir / f'rho_{file_suff}.npy'
+            assert fn.is_file(), 'No density found for %3.0f K and %4.5f kJ/mol' %(temperature,chempot/kjmol)
+            rho = np.load(fn)
 
             if weighted_density:
                 wda = WDAVFunctional((T1+T2)/2, self.grid, D=self.system.guest.Rhs, eos=None)
                 wda._init_weight_function()
                 rho = wda._get_weighted_density(self.grid.fft(rho)).real
-                fn = self.workdir / f'wrho_{chempot/kjmol:#7.5f}kJmol_{temperature/kelvin:#7.5f}K.npy'
+                fn = self.workdir / f'wrho_{file_suff}.npy'
                 np.save(fn, rho)
 
             mask = rho>10**-8 #remove densities which are close to zero or negative
@@ -1127,7 +1206,7 @@ class Calculator(object):
 
                 # log.dump(f'Reduced sef-diffusivity constant {0.585*np.exp(alpha*s_ex)}')
                 Ds_local = np.zeros_like(rho)
-                Ds_local[mask] = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(0.788*s_ex[mask])
+                Ds_local[mask] = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex[mask])
                 Ds = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*self.grid.integrate(s_ex))
 
                 S_ex = self.grid.integrate(s_ex)
@@ -1163,7 +1242,8 @@ class Calculator(object):
         '''
         with log.section('CALCULATOR', 2, timer='Virt extpot'):
             if rho_fn is None:
-                rho_fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temperature/kelvin:#7.5f}K.npy'
+                file_suffix = get_file_suffix(chempot, temperature)
+                rho_fn = self.workdir / f'rho_{file_suffix}.npy'
                 assert rho_fn.is_file(), f'No density found for {temperature}K and {chempot/kjmol}kJ/mol'
             
             rho = np.load(rho_fn)
@@ -1177,7 +1257,7 @@ class Calculator(object):
                     continue
                 else:
                     # print(part.name)
-                    dF += part.derive(krho)
+                    dF += part.derive(rho, krho)
             
             # dF = self.grid.ifft(dF).real
             ext_pot[~rho_mask] = -boltzmann*temperature*np.log(rho[~rho_mask]*self.fener.wavelength**3) - dF[~rho_mask] + chempot

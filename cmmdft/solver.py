@@ -299,6 +299,8 @@ class Solver(object):
                 if self._check_convergence(rho_new, krho_new, C1_new, rho, N_new):
                     converged = True
                     break
+                # tconvstop = time.perf_counter()
+                # log.dump(f'Checking the convergence took {round(tconvstop-tconvstart,2)} seconds')
 
                 rho = rho_new.copy()
                 C1 = C1_new.copy()
@@ -548,17 +550,21 @@ class Anderson(Picard):
             AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true
 
             if AND_condition:
-                rho_new, krho_new, C1_new = self.update_rho_Anderson()
-                Grho_new = self.get_new_rho(C1_new, self.fugacity)
-                self.And_true = True
-                if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
+                try:
+                    rho_new, krho_new, C1_new = self.update_rho_Anderson()
+                    Grho_new = self.get_new_rho(C1_new, self.fugacity)
+                    self.And_true = True
+                    if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
+                        # log.warning('The Anderson method failed, falling back to Picard')
+                        rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
+                    else:
+                        Omega_new = self._get_Omega(rho_new, krho_new)
+                        if Omega_new > prev_omega*(0.8):
+                            # log.warning('The Anderson method increased the grand potential, falling back to Picard')
+                            rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
+                except FloatingPointError:
                     # log.warning('The Anderson method failed, falling back to Picard')
                     rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
-                else:
-                    Omega_new = self._get_Omega(rho_new, krho_new)
-                    if Omega_new > prev_omega*(0.8):
-                        # log.warning('The Anderson method increased the grand potential, falling back to Picard')
-                        rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
 
             else:
                 rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)

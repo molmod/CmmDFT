@@ -152,17 +152,17 @@ class FreeEnergy(object):
         '''
         #ideal gas contribution
         with log.section('FREEENER', 2, timer='Tracking'):        
-            N = self.grid.integrate(rho).real
+            N = self.grid.integrate(rho)
             rho_reg = rho.copy()
             rho_reg[rho_reg<=0 + np.isclose(rho_reg,0)]=1e-30
             #print('Minimum density in rho_reg {:e}'.format(np.min(self.system.guest.wavelength(self.temperature)**3*rho_reg)))
-            Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0)).real/self.beta
+            Fid = self.grid.integrate(rho_reg*(np.log(self.wavelength**3*rho_reg)-1.0))/self.beta
             G = Fid - chempot*N
             line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(iphase ,self.tracking_step, N, (-chempot*N/unit), Fid/unit)
             if krho is None:
                 krho = self.grid.fft(rho)#*self.grid.dr
             for part in self.parts:
-                Fpart = part.value(krho).real
+                Fpart = part.value(krho)
                 if print_out: print(part.name, round(Fpart/kjmol,2))
                 G += Fpart
                 line += "\t% .6e" %(Fpart/unit)
@@ -297,7 +297,7 @@ class FreeEnergy(object):
             wda = WDAVFunctional(self.grid, self.system.guest.Rhs, eos)
         self.add_part(wda)
 
-    def add_hard_sphere(self,version='MFMT', xi_limit=1, n_pos=True):
+    def add_hard_sphere(self,version='MFMT'):
         """
             Adds a hard sphere repulsion functional of various types
 
@@ -311,7 +311,7 @@ class FreeEnergy(object):
             # def fun_Rhs(temperature):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
-            HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, version=version, xi_limit=xi_limit, n_pos=n_pos)
+            HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, version=version)
             self.add_part(HardSphere)
     
     def add_mean_field(self, tailcorrections=False, **kwargs):
@@ -461,7 +461,7 @@ class HardSphereFunctional(Functional):
     
     name = 'HardSphere'
     
-    def __init__(self, grid, Rhs, xi_limit=1, version='MFMT', n_pos=True):
+    def __init__(self, grid, Rhs, version='MFMT'):
         """
         **Arguments:**
 
@@ -476,8 +476,6 @@ class HardSphereFunctional(Functional):
         self.grid = grid  
         self.R = Rhs
         self.version = version
-        self.xi_limit = xi_limit
-        self.n_pos = n_pos
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
@@ -572,36 +570,29 @@ class HardSphereFunctional(Functional):
         """
         # The scalar density functions
         kn0 = krho*self.scalar_weight_functions[0]
-        n0 = self.grid.ifft(kn0).real#*self.grid.dk
+        n0 = self.grid.ifft(kn0)
         kn1 = krho*self.scalar_weight_functions[1]
-        n1 = self.grid.ifft(kn1).real#*self.grid.dk
+        n1 = self.grid.ifft(kn1)
         kn2 = krho*self.scalar_weight_functions[2]
-        n2 = self.grid.ifft(kn2).real#*self.grid.dk
+        n2 = self.grid.ifft(kn2)
         kn3 = krho*self.scalar_weight_functions[3]
-        n3 = self.grid.ifft(kn3).real#*self.grid.dk
-
-        if self.n_pos:
-            n0 = np.clip(n0, 0, None)  # Ensure n0 is non-negative
-            n1 = np.clip(n1, 0, None)  # Ensure n1 is non-negative
-            n2 = np.clip(n2, 0, None)  # Ensure n2 is non-negative
-            n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n0 is non-negative
+        n3 = self.grid.ifft(kn3)
         #When n3 approaches 1, things can go wrong because the functional
         # contains terms with log(1-n3) and 1/(1-n3)
-        else:
-            n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n3 is in [0, 1-1e-12]
+
         # The vector density functions
 
 
         knv1 = krho[..., None] * self.vector_weight_functions[0]
-        nv1 = self.grid.ifftn(knv1).real  
+        nv1 = self.grid.ifftn(knv1)  
 
         knv2 = krho[..., None] * self.vector_weight_functions[1]
-        nv2 = self.grid.ifftn(knv2).real
+        nv2 = self.grid.ifftn(knv2)
         
         xi = None
         if 'a' in self.version:
             xi = (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)/((n2)**2+1e-16)
-            xi = np.clip(xi, 0.0, self.xi_limit)  # Ensure xi is in [0, xi_limit]
+            xi = np.clip(xi, 0.0, 1)  # Ensure xi is in [0, xi_limit]
 
         ln_n3 = np.log(1-n3)
         n3_2 = n3*n3
@@ -617,12 +608,12 @@ class HardSphereFunctional(Functional):
         knyz = krho*self.tensor_weight_functions[4]
         knzz = krho*self.tensor_weight_functions[5]
 
-        nxx = self.grid.ifft(knxx).real
-        nxy = self.grid.ifft(knxy).real
-        nxz = self.grid.ifft(knxz).real
-        nyy = self.grid.ifft(knyy).real
-        nyz = self.grid.ifft(knyz).real
-        nzz = self.grid.ifft(knzz).real
+        nxx = self.grid.ifft(knxx)
+        nxy = self.grid.ifft(knxy)
+        nxz = self.grid.ifft(knxz)
+        nyy = self.grid.ifft(knyy)
+        nyz = self.grid.ifft(knyz)
+        nzz = self.grid.ifft(knzz)
 
 
         tr2 = (nxx**2 + nyy**2 + nzz**2 + 2*(nxy**2 + nxz**2 + nyz**2))
@@ -631,13 +622,13 @@ class HardSphereFunctional(Functional):
 
     def get_n3(self, krho):
         kn3 = krho*self.scalar_weight_functions[3]
-        return self.grid.ifft(kn3).real#*self.grid.dk        
+        return self.grid.ifft(kn3)
 
     def get_n2_nv2(self, krho):
         kn2 = krho*self.scalar_weight_functions[2]
         n2 = self.grid.ifft(kn2)#*self.grid.dk
         knv2 = krho[..., None] * self.vector_weight_functions[1]
-        nv2 = self.grid.ifftn(knv2).real
+        nv2 = self.grid.ifftn(knv2)
         return abs(n2)/nv2
 
     def set_density(self, krho):
@@ -1033,8 +1024,6 @@ class MFAFunctional(Functional):
                 return 0.5*rho*self.derive(krho)
             else:
                 return 0.5*grid.integrate(rho*self.derive(krho))
-    
-
 
 class CoarsenedFunctional(MFAFunctional):
     

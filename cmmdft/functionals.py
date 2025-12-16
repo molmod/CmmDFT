@@ -346,7 +346,7 @@ class FreeEnergy(object):
                 log.dump('loading interaction potential from %s' %fn)
                 mfa.load_potential(fn)
         self.add_part(mfa)
-
+    
     def add_correlation_wda_lj(self, **kwargs):
         '''The function adds a WDA contribution to correct for correlation effect in a molecular simulation
             system. The various contributions in this WDA require LJ epsilon and sigma parameters are taken
@@ -379,9 +379,14 @@ class FreeEnergy(object):
             sigma = self.system.guest.sigma
             epsilon = self.system.guest.epsilon
             
+            if 'MFA' in self.part_names:
+                mfa_part = self.part_dict['MFA']
+                a = mfa_part.compute_vdw_a()
+            else:
+                a = None
             MBWR = ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon)
             CS = CarnahanStarlingEOS(mass, Rhs)
-            MFA = MFAEOS(mass, sigma, epsilon)
+            MFA = MFAEOS(mass, sigma, epsilon, a=a)
             SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
 
             corr = WDAVFunctional(self.grid, self.system.guest.Rhs, SUM)
@@ -917,7 +922,7 @@ class MFAFunctional(Functional):
             os.makedirs(dn)
         np.save(fn, self.potential)
 
-    def generate_potential(self, ff, rmin, natom=1, limit_potential=0, **kwargs):
+    def generate_potential(self, ff, rmin, natom=1, limit_potential=0, cutoff=None, **kwargs):
         """
             Calculate U(r) on the real-space grid
 
@@ -938,14 +943,25 @@ class MFAFunctional(Functional):
         with(log.section('MFA', 2, timer='MFA init')):
             ff.system.pos[:] = limit_potential
             self.potential = np.zeros(self.grid.points.shape[:3], dtype=np.float64)
-            for r in np.unique(self.grid.points[:,:,:,3].round(decimals=4)):
+            shift = 0.0
+
+            rs = self.grid.points[:,:,:,3]
+            if cutoff is not None:
+                rs[rs>cutoff] = cutoff
+            rmin_mask = rs>rmin
+            for r in np.unique(rs.round(decimals=4)):
                 if r<rmin: continue
                 mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
                 ff.system.pos[natom:,2] = r
                 ff.update_pos(ff.system.pos)  
                 e = ff.compute()
                 self.potential[mask] = e
-            self.kpotential = self.grid.fft(self.potential)#*self.grid.dr
+                if cutoff is not None and r==cutoff:
+                    shift = e
+
+            self.potential[rmin_mask] -= shift
+
+            self.kpotential = self.grid.fftn(self.potential)*self.grid.sigma_lanczos
     
     def generate_potential_lj(self, sigma, epsilon, rmin=None, limit_potential=0, cutoff=None, **kwargs):
         """
@@ -988,7 +1004,10 @@ class MFAFunctional(Functional):
         """
         with log.section('MFA', 3, timer='MFA derive'):
             if self.tailcorrections:
-                return self.small_grid.ifft(krho*self.kpotential[::2,::2,::2])*self.grid.cell.volume
+                r0 = self.repetitions[0]
+                r1 = self.repetitions[1]
+                r2 = self.repetitions[2]
+                return self.small_grid.ifft(krho*self.kpotential[::r0,::r1,::r2])*self.grid.cell.volume
             
             else:
                 return self.grid.ifft(krho*self.kpotential)*self.grid.cell.volume

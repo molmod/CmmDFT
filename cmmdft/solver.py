@@ -162,7 +162,7 @@ class Solver(object):
         
         n3_max = np.max(self._get_n3(krho)).real
         n3_max_new = np.max(self._get_n3(krho_new)).real
-        return np.min([abs((1-n3_max)/(n3_max_new - n3_max)), 1])
+        return np.min([abs((1-n3_max)/((n3_max_new - n3_max) + 1e-16)), 1])
 
     def _check_convergence(self, rho_new, krho_new, C1_new, rho, N_new):
         """
@@ -203,7 +203,6 @@ class Solver(object):
                     self.DER = np.linalg.norm((np.abs(rho_new)*beta*dOmega/(self.a_tol + self.r_tol*np.abs(rho_new)))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
                     crit = self.DER
                     log.dump("             *  Norm of derivative                  = %11.4e" %self.DER)
-                print(criterion, thresh, crit, CRIT_PASS)
                 CRIT_PASS *= (crit < thresh)
 
             if self.track_history:
@@ -469,8 +468,8 @@ class Anderson(Picard):
 
     name = 'ANDERSON'
 
-    def __init__(self, program, nsteps=100, method='hybridanderson', 
-                 m=5, damping=0.3, delta=0.1, damping_max=0.8, damping_min=0.01, adaptive_damping=True, damping_factors=(1.5,0.5),
+    def __init__(self, program, nsteps=500, method='hybridanderson', 
+                 m=5, damping=0.3, delta=0.2, damping_max=0.8, damping_min=0.01, adaptive_damping=True, damping_factors=(1.5,0.5),
                    **kwargs):
         """
         Initialize the solver with the given parameters.
@@ -480,7 +479,7 @@ class Anderson(Picard):
         fener : object
             The fener object used for the solver.
         nsteps : int, optional
-            The number of steps for the solver (default is 100).
+            The number of steps for the solver (default is 500).
         method : str, optional
             The method used for solving (default is 'hybridanderson').
         m : int, optional
@@ -528,12 +527,10 @@ class Anderson(Picard):
         res_norm = np.linalg.norm(self.prev_Grhos[-1] - self.prev_rhos[-1])
         prev_res_norm = np.linalg.norm(self.prev_Grhos[-2] - self.prev_rhos[-2])
 
-        print(self.damping)
         if res_norm < prev_res_norm:
             self.damping = min(self.damping*self.damping_factors[0], self.damping_max)
         else:
             self.damping = max(self.damping*self.damping_factors[1], self.damping_min)
-        print('Damping coefficient: %5.3f'%(self.damping))
         
     def update_rho(self, rho, krho, C1):
         with log.section(self.name, self.log_level, timer='Update rho'):
@@ -573,8 +570,6 @@ class Anderson(Picard):
                 rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
 
             return rho_new, krho_new, C1_new
-
-
 
     def update_rho_Anderson(self):
         mk = min(self.curr_step, self.m)

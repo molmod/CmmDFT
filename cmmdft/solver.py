@@ -93,7 +93,7 @@ class Solver(object):
         """
         Routine which is called before the solving starts to reset the solver if necessary.
         """
-        chempot = np.asarray(chempot)
+        chempot = np.atleast_1d(chempot)
         self.fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
         self.chempot = chempot
         self.curr_step = 0
@@ -106,7 +106,7 @@ class Solver(object):
     def _get_Omega(self, rho, krho):
         with log.section(self.name, self.log_level, timer='Omega'):
 
-            N = np.asarray([self.grid.integrate(rho[e]) for e in range(self.nspecies)])
+            N = np.asarray([self.grid.integrate_n(rho[e]) for e in range(self.nspecies)])
             rho_reg = self._clip_density(rho)
             wvl3 = np.atleast_1d(self.fener.wavelength)**3
             rho_lam = np.einsum('i,ijkl->ijkl', wvl3, rho_reg)
@@ -116,7 +116,6 @@ class Solver(object):
             for part in self.fener.parts:
                 Fpart = part.value(rho, krho)
                 G += Fpart
-                print(part.name, 'F', Fpart/kjmol, 'kJ/mol')
                 line += "\t% .6e" %(Fpart)
             line += "\t% .6e" %(G)
             self.tracking_line = line
@@ -137,19 +136,17 @@ class Solver(object):
 
     def _get_dOmega(self, rho, C1):
         rho_reg = self._clip_density(rho)
-        lnrho = np.log(self.fener.wavelength**3*rho_reg, dtype='float64') / self.fener.beta # Avoid log(0)
-        dO = lnrho + C1 - self.chempot
+        lnrho = np.log(np.einsum('i,ijkl->ijkl',self.fener.wavelength**3,rho_reg), dtype='float64') / self.fener.beta # Avoid log(0)
+        dO = lnrho + C1 - self.chempot[:, np.newaxis, np.newaxis, np.newaxis]
         return dO
 
     def _get_C1(self, rho, krho=None):
         with log.section(self.name, self.log_level, timer='C1'):
-            print('rho', np.min(rho), np.max(rho))
             if krho is None:
                 krho = self.grid.fftn(rho)
             C1 = np.zeros(self.rho_shape)
             for part in self.fener.parts:
                 c1 = part.derive(rho, krho)
-                print('part', part.name, 'max C1', np.max(c1), 'min C1', np.min(c1))
                 C1 += c1
             return C1
 
@@ -180,7 +177,7 @@ class Solver(object):
         
         n3_max = np.max(self._get_n3(krho)).real
         n3_max_new = np.max(self._get_n3(krho_new)).real
-        return np.min([abs((1-n3_max)/(n3_max_new - n3_max)), 1])
+        return np.min([abs((1-n3_max)/((n3_max_new - n3_max)+1e-16)), 1])
 
     def _check_convergence(self, rho_new, krho_new, C1_new, rho, N_new):
         """
@@ -324,7 +321,6 @@ class Solver(object):
                 if self._check_convergence(rho_new, krho_new, C1_new, rho, N_new):
                     converged = True
                     break
-                np.save('rho_debug.npy', rho_new)
                 rho = rho_new.copy()
                 C1 = C1_new.copy()
                 krho = krho_new.copy()
@@ -461,7 +457,7 @@ class Picard(Solver):
 
             # check if the quadratic approximation is valid and if the SLSQP solver should be used
             if alpha_opt <= 0 and max_pot-min_pot>self.thresh:
-                # log.dump('original alpha_opt: %5.5e'%alpha_opt)
+                log.dump('original alpha_opt: %5.5e'%alpha_opt)
                 tstart = time.time()
                 def calc_G_rho(alpha):
                     rho_temp = (1-alpha)*rho + alpha*Grho
@@ -473,11 +469,11 @@ class Picard(Solver):
                 alpha_opt_new = opt.minimize(calc_G_rho, [self.alpha_mix*alpha_max], bounds=bounds, method='SLSQP', options= {'ftol':1e-8}).x
                 tstop = time.time() 
                 alpha_opt = alpha_opt_new
-                # log.dump('SLSQP alpha opt: %5.5e in %5.5fs'%(alpha_opt, tstop-tstart))
+                log.dump('SLSQP alpha opt: %5.5e in %5.5fs'%(alpha_opt, tstop-tstart))
 
             if alpha_opt <= 0 or np.isclose(alpha_opt,0):
                 alpha_opt = self.alpha_mix*alpha_max
-                # log.dump(f'Manually set the value of alpha_mix to: {alpha_opt*self.correction_factor}')
+                log.dump(f'Manually set the value of alpha_mix to: {alpha_opt*self.correction_factor}')
                 
             rho_new = (1-alpha_opt*self.correction_factor)*rho + alpha_opt*self.correction_factor*Grho
             rho_new = self._clip_density(rho_new)
@@ -572,8 +568,8 @@ class Anderson(Picard):
         krho_new = self.grid.fftn(rho_new)
         n3_new = self._get_n3(krho_new)
 
-        while np.max(n3_new) > 0.99:
-            self.damping = max(self.damping*self.damping_factors[1], self.damping_min)
+        while np.max(n3_new) > 0.99 and self.damping > (self.damping_min*0.1)*1.01:
+            self.damping = max(self.damping*self.damping_factors[1], self.damping_min*0.1)
             log.dump('Max(n3) = %5.3f > 0.99, reducing damping factor to %5.3f'%(np.max(n3_new), self.damping))
 
             rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
@@ -598,7 +594,7 @@ class Anderson(Picard):
                 if self.curr_step < 3:
                     self.it_eps0 = self.it_eps
 
-            AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true
+            AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true or self.curr_step > 10
 
             if AND_condition:
                 rho_new, krho_new, C1_new = self.update_rho_Anderson()
@@ -767,8 +763,7 @@ class QuasiNewton(Picard):
             Additional keyword arguments passed to the superclass initializer.
         """
         super().__init__(program, nsteps, method=method, **kwargs)
-        self.shape = np.array(program.rho_shape)
-        self.n = np.prod(self.shape)
+        self.n = np.prod(self.rho_shape)
         self.m = m
 
         self.QN_method = method.lower()
@@ -813,7 +808,7 @@ class QuasiNewton(Picard):
         numpy.ndarray
             Reshaped array with the original dimensions.
         """
-        return x.reshape(self.shape)
+        return x.reshape(self.rho_shape)
 
     def _initiate_solving(self, chempot):
         super()._initiate_solving(chempot)
@@ -922,7 +917,7 @@ class QuasiNewton(Picard):
             tau_very_aggressive = 0.01
             tau_gentle = 0.6
             alpha_min = 1e-8
-            step_floor = 1e-12
+            step_floor = 1e-20
             max_allowed_drop = 1e+3*kjmol
 
             # Flatten inputs
@@ -944,6 +939,7 @@ class QuasiNewton(Picard):
                 p_eff = self.flatten(rho_trial - rho)
                 step_norm = np.linalg.norm(p_eff)
                 if step_norm < step_floor:
+                    log.dump('Step size below floor, reducing alpha')
                     alpha *= tau
                     continue
 
@@ -952,9 +948,9 @@ class QuasiNewton(Picard):
 
                 gtp_eff = float(np.dot(grad, p_eff))
                 # if self.verbose:
-                    # print(f"[Proj-LS] alpha={alpha:.3e}  f_new={f_new:.6e}  "
-                    #     f"Armijo RHS={f0 + self.c1 * gtp_eff:.6e}  "
-                    #     f"||p_eff||={step_norm:.3e}")
+                print(f"[Proj-LS] alpha={alpha:.3e}  f_new={f_new:.6e}  "
+                    f"Armijo RHS={f0 + self.c1 * gtp_eff:.6e}  "
+                    f"||p_eff||={step_norm:.3e}")
 
                 # sanity check for unphysical minima
                 if f0-f_new > max_allowed_drop:
@@ -1023,12 +1019,14 @@ class QuasiNewton(Picard):
 
             if self.k_picard < self.picard_iteration_thresh:
                 # Use Picard method for the first few iterations
+                log.dump(f'Using Picard iteration {self.k_picard+1}/{self.picard_iteration_thresh}')
                 rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
                 self.k_picard += 1
             elif self.k_QN < self.QN_iteration_thresh:
                 # Use Quasi-Newton method for the next few iterations
                 try:
                     rho_new, krho_new, C1_new, Omega_new = self._update_rho_QN(rho, krho, C1)
+                    log.dump(f'QN iteration {self.k_QN+1}, line search success rate: {self.line_search_success}/{self.line_search_counter}')
                     if Omega_new > prev_omega*(0.8):
                         raise SwitchToPicardError('Quasi-Newton increased the grand potential, switching to Picard')
                     self.k_QN += 1

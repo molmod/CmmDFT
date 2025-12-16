@@ -155,6 +155,7 @@ __all__ = ['Interpolator', 'effective_potential', 'effective_potential_vectorize
            'get_interpolator_dict', 'get_external_potential_dict', 'get_system_data']
 
 def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):    
+def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):    
     """ Lennard-Jones potential """
     r = np.asarray(r)
     
@@ -171,6 +172,7 @@ def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
     V_shift = 4 * epsilon * (rc6**2 - rc6)
 
     V[inside] = 4 * epsilon * (r12 - r6) - V_shift
+    V[inside] = 4 * epsilon * (r12 - r6) - V_shift
 
     if derivative:
         dV = np.zeros_like(r)
@@ -182,7 +184,6 @@ def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
         return V, dV, ddV, dddV
     else:
         return V
-
 
 
 def get_external_potential(points, host_data, FF_dict, sigmaff, epsilonff, cutoff=12*angstrom):
@@ -200,6 +201,10 @@ def get_external_potential(points, host_data, FF_dict, sigmaff, epsilonff, cutof
     Returns:
     - Vext: External potential at the given points. 
     """
+    host_pos = host_data[0]
+    ffatype_ids = host_data[3]
+    rvecs = host_data[-1]
+
     host_pos = host_data[0]
     ffatype_ids = host_data[3]
     rvecs = host_data[-1]
@@ -229,7 +234,7 @@ def get_external_potential(points, host_data, FF_dict, sigmaff, epsilonff, cutof
         
     return Vext
 
-def get_external_potential_derivatives(points, host_data, FF_dict, sigmaff, epsilonff, spacings):
+def get_external_potential_derivatives(points, host_data, FF_dict, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones potential.
 
@@ -276,7 +281,7 @@ def get_external_potential_derivatives(points, host_data, FF_dict, sigmaff, epsi
         rz -= L[2]*(rz/L[2]).round() #periodic BC
 
         R = np.sqrt(rx**2 + ry**2 + rz**2+1e-16) # to avoid zero
-        V, dV, ddV, dddV = lennard_jones(R, sigma_mixed, epsilon_mixed, derivative=True)
+        V, dV, ddV, dddV = lennard_jones(R, sigma_mixed, epsilon_mixed, derivative=True, cutoff=cutoff)  # (N,)
         Vext += V
         dVdx += dV * rx
         dVdy += dV * ry
@@ -773,16 +778,13 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, chk_g
     guest_data, FF_dict_guest = get_system_data(chk_guest, pars_file_guest)
     guest_ffatypes = guest_data[2]
 
-    host_pos = host_data[0]
-    ffatype_ids = host_data[3]
-    rvecs = host_data[5]
 
     external_potential_dict = {}
     for i in range(len(FF_dict_guest)):
         sigmaff, epsilonff = FF_dict_guest[i]
         if mic:
             key = guest_ffatypes[i]
-            external_potential_dict[key] = partial(get_external_potential, FF_dict=FF_dict_host, sigmaff=sigmaff, epsilonff=epsilonff, host_pos=host_pos, ffatype_ids=ffatype_ids, rvecs=rvecs, cutoff=cutoff)
+            external_potential_dict[key] = partial(get_external_potential, host_data=host_data, FF_dict=FF_dict_host, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
         else:
             raise NotImplementedError("Non-MIC external potentials are not implemented yet.")
             # external_potential_dict[key] = partial(compute_batch_insertion_energy_typed, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst)

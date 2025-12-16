@@ -70,7 +70,7 @@ class Host(object):
 
     
 class NanoporousHost(Host):
-    def __init__(self, name, chk, par, shift=True):
+    def __init__(self, name, chk, par, ffname, shift=True):
         '''This function initializes a nanoporous host system
         
         Parameters
@@ -91,9 +91,10 @@ class NanoporousHost(Host):
             Host.__init__(self, name, self.mol.cell)
             self.chk = chk
             self.par = par
+            self.ffname = ffname
     
     def copy(self):
-        return NanoporousHost(self.name, self.chk, self.par)
+        return NanoporousHost(self.name, self.chk, self.par, self.ffname)
 
     
 class EmptyHost(Host):
@@ -111,7 +112,7 @@ class EmptyHost(Host):
 
 
 class Guest(object):
-    def __init__(self, name, mass):
+    def __init__(self, name, mass, ffname):
         self.name = name
         self.mass = mass
         self.preset_Rhs = None
@@ -121,9 +122,10 @@ class Guest(object):
         self.nspecies = 1
         self.fractions = np.array([1.0])
         self.m = np.array([1.0])
+        self.ffname = ffname
     
     def copy(self):
-        return type(self)(self.name, self.mass)
+        return type(self)(self.name, self.mass, self.ffname)
 
     def wavelength(self, temperature):
         kT = boltzmann*temperature
@@ -166,8 +168,8 @@ class Guest(object):
                     
 
 class SphericalLJGuest(Guest):
-    def __init__(self, name, mass, sigma, epsilon, m=1):
-        Guest.__init__(self, name, mass)
+    def __init__(self, name, mass, sigma, epsilon, ffname, m=1):
+        Guest.__init__(self, name, mass, ffname)
         self.sigma = sigma
         self.epsilon = epsilon
         self.natom = 1
@@ -179,12 +181,13 @@ class SphericalLJGuest(Guest):
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         beta = 1/(boltzmann*temperature)
         Tt = 1/beta/self.epsilon
-        Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        # Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        Rhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))/2
         return Rhs, self.sigma
 
 
 class NonSphericalGuest(Guest):
-    def __init__(self, name, chk, par):
+    def __init__(self, name, chk, par, ffname):
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Reading guest from %s with parameters from %s' %(chk, par))
             self.mol = YaffSystem.from_file(chk)
@@ -194,10 +197,10 @@ class NonSphericalGuest(Guest):
             mass = None
             if self.mol.masses is not None:
                 mass = self.mol.masses.sum()
-            Guest.__init__(self, name, mass)
+            Guest.__init__(self, name, mass, ffname)
 
     def copy(self):
-        return type(self)(self.name, self.chk, self.par)
+        return type(self)(self.name, self.chk, self.par, self.ffname)
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         beta = 1/(boltzmann*temperature)
@@ -206,24 +209,24 @@ class NonSphericalGuest(Guest):
 
 
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
-    def __init__(self, name, mass, sigma, epsilon, chk, par, m=1):
-        NonSphericalGuest.__init__(self, name, chk, par)
-        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, m=m)
+    def __init__(self, name, mass, sigma, epsilon, chk, par, ffname, m=1):
+        NonSphericalGuest.__init__(self, name, chk, par, ffname)
+        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m)
 
     def copy(self):
-        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.chk, self.par)
+        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.chk, self.par, self.ffname)
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)
 
 
 class GuestMixture(object):
-    def __init__(self, names, guests, fractions, k_inter=None):
-        self.names = names
+    def __init__(self, guests, fractions, k_inter=None):
+        self.names = [guest.name for guest in guests]
         self.guests = guests
         self.fractions = fractions
 
-        assert len(guests) == len(fractions) == len(names)
+        assert len(guests) == len(fractions) == len(self.names)
         # assert all(isinstance(g, Guest) for g in guests)
         assert all(f >= 0 for f in fractions)
         self.fractions = np.array(fractions)/np.sum(fractions)
@@ -250,7 +253,7 @@ class GuestMixture(object):
         self.sigma_mix = np.array([( (gi.sigma + gj.sigma)/2 ) for gi in guests for gj in guests]).reshape((self.nspecies, self.nspecies))
 
     def copy(self):
-        return type(self)([g.copy() for g in self.guests], list(self.fractions))
+        return type(self)([g.copy() for g in self.guests], list(self.fractions), k_inter=self.k_inter)
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         Rhs_sigma = [g._calculate_hardsphere_radius(temperature, **kwargs) for g in self.guests]
@@ -380,10 +383,32 @@ class Grid(object):
         return Grid(self.cell, npoints=self.npoints)
     
     def integrate(self, data):
-        return np.sum(data)*self.dr
+        with log.section('GRID', 2, timer='Integrating'):
+            return np.sum(data)*self.dr
     
+    def integrate_n(self, data):
+        """
+        integrate along the 3 spatial axes (matching self.npoints)
+        Supports fields with arbitrary leading/trailing dimensions
+        """
+        
+        with log.section('GRID', 2, timer='Integrating'):
+            shape = data.shape
+            npoints = tuple(self.npoints)
+
+            # Find where the spatial block (Nx, Ny, Nz) lives
+            for start in range(len(shape) - 2):
+                if tuple(shape[start:start+3]) == npoints:
+                    axes = tuple(range(start, start+3))
+                    break
+            else:
+                raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
+            return np.sum(data, axis=axes)*self.dr
+
     def fft(self, rdata):
-        return fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
+        with log.section('GRID', 2, timer='fft'):
+
+            return fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
     
     def fftn(self, rdata):
         """
@@ -391,33 +416,35 @@ class Grid(object):
         Supports fields with arbitrary leading/trailing dimensions, e.g.:
         (N,N,N), (N,N,N,M), (M,N,N,N), (M1,N,N,N,M2), etc.
         """
-        shape = rdata.shape
-        npoints = tuple(self.npoints)
+        with log.section('GRID', 2, timer='fft'):
+            shape = rdata.shape
+            npoints = tuple(self.npoints)
 
-        # Find where the spatial block (Nx, Ny, Nz) lives
-        for start in range(len(shape) - 2):
-            if tuple(shape[start:start+3]) == npoints:
-                axes = tuple(range(start, start+3))
-                break
-        else:
-            raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
+            # Find where the spatial block (Nx, Ny, Nz) lives
+            for start in range(len(shape) - 2):
+                if tuple(shape[start:start+3]) == npoints:
+                    axes = tuple(range(start, start+3))
+                    break
+            else:
+                raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
 
-        # Perform FFT on the spatial axes
-        F = fftn(rdata, axes=axes, norm=None)
+            # Perform FFT on the spatial axes
+            F = fftn(rdata, axes=axes, norm=None)
 
-        # Compute scaling factor
-        factor = np.exp(1j*np.pi*self.scalprod) / np.prod(npoints)
+            # Compute scaling factor
+            factor = np.exp(1j*np.pi*self.scalprod) / np.prod(npoints)
 
-        # Reshape/broadcast factor to match the right axes
-        # Expand dimensions around the spatial block
-        expand_shape = [1] * len(shape)
-        expand_shape[axes[0]:axes[0]+3] = factor.shape
-        factor = factor.reshape(expand_shape)
+            # Reshape/broadcast factor to match the right axes
+            # Expand dimensions around the spatial block
+            expand_shape = [1] * len(shape)
+            expand_shape[axes[0]:axes[0]+3] = factor.shape
+            factor = factor.reshape(expand_shape)
 
-        return F * factor
+            return F * factor
     
     def ifft(self, fdata):
-        return ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None).real*np.prod(self.npoints)
+        with log.section('GRID', 2, timer='ifft'):
+            return ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None).real*np.prod(self.npoints)
     
     
     def ifftn(self, fdata):
@@ -426,26 +453,27 @@ class Grid(object):
         Supports arbitrary leading/trailing dims, e.g.
         (N,N,N), (N,N,N,M), (M,N,N,N), (M1,N,N,N,M2), etc.
         """
-        shape = fdata.shape
-        npoints = tuple(self.npoints)
+        with log.section('GRID', 2, timer='ifft'):
+            shape = fdata.shape
+            npoints = tuple(self.npoints)
 
-        # Locate spatial block
-        for start in range(len(shape) - 2):
-            if tuple(shape[start:start+3]) == npoints:
-                axes = tuple(range(start, start+3))
-                break
-        else:
-            raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
+            # Locate spatial block
+            for start in range(len(shape) - 2):
+                if tuple(shape[start:start+3]) == npoints:
+                    axes = tuple(range(start, start+3))
+                    break
+            else:
+                raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
 
-        # Conjugate phase factor
-        factor = np.exp(-1j*np.pi*self.scalprod)
+            # Conjugate phase factor
+            factor = np.exp(-1j*np.pi*self.scalprod)
 
-        # Broadcast factor
-        expand_shape = [1] * len(shape)
-        expand_shape[axes[0]:axes[0]+3] = factor.shape
-        factor = factor.reshape(expand_shape)
+            # Broadcast factor
+            expand_shape = [1] * len(shape)
+            expand_shape[axes[0]:axes[0]+3] = factor.shape
+            factor = factor.reshape(expand_shape)
 
-        ifft_input = fdata * factor
-        F = ifftn(ifft_input, axes=axes, norm=None)
+            ifft_input = fdata * factor
+            F = ifftn(ifft_input, axes=axes, norm=None)
 
-        return F.real * np.prod(npoints)
+            return F.real * np.prod(npoints)

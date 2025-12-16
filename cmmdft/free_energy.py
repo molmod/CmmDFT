@@ -10,7 +10,7 @@ from yaff import ForceField
 
 from .tools import get_ff, merge_ffpar_files, write_LJ_pars_chk
 from .log import log
-from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost
+from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
 
 from .functionals import *
 from .eos import *
@@ -360,10 +360,18 @@ class FreeEnergy(object):
             sigma = self.system.guest.sigma
             epsilon = self.system.guest.epsilon
 
-            MBWR = ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon)
-            CS = CarnahanStarlingEOS(mass, sigma, epsilon)
-            MFA = MFAEOS(mass, sigma, epsilon)
-            SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
+            if isinstance(self.system.guest, GuestMixture):
+                MBWR = ModifiedBenedictWebbRubinMixEOS(mass, sigma, epsilon, homogenous=False)
+                CS = CarnahanStarlingMixEOS(mass, sigma, epsilon, homogenous=False)
+                MFA = MFAMixEOS(mass, sigma, epsilon, homogenous=False)
+                SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
+
+            else:
+                MBWR = ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon)
+                CS = CarnahanStarlingEOS(mass, sigma, epsilon)
+                MFA = MFAEOS(mass, sigma, epsilon)
+                SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
+
             corr = WDAVFunctional(self.grid, self.system.guest.Rhs, SUM)
 
             self.add_part(corr)

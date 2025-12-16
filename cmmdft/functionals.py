@@ -551,12 +551,26 @@ class PCSAFTFunctional(Functional):
             self.n_components = 1
             self.m = np.array([self.m])
             self.fractions = np.array([1.0])
-            self.epsilon = np.array([[self.guest.epsilon]])
-            self.sigma = np.array([[self.guest.sigma]])
+            self.epsilon = np.atleast_1d(self.guest.epsilon)
+            self.sigma = np.atleast_1d(self.guest.sigma)
+            self.epsilon_mix = np.atleast_2d(self.guest.epsilon)
+            self.sigma_mix = np.atleast_2d(self.guest.sigma)
         else:
             self.n_components = len(self.m)
-            self.epsilon = np.atleast_2d(self.guest.epsilon)
-            self.sigma = np.atleast_2d(self.guest.sigma)
+            self.epsilon = np.atleast_1d(self.guest.epsilon)
+            self.sigma = np.atleast_1d(self.guest.sigma)
+
+            if hasattr(self.guest, 'epsilon_mix') and hasattr(self.guest, 'sigma_mix'):
+                self.epsilon_mix = self.guest.epsilon_mix
+                self.sigma_mix = self.guest.sigma_mix
+            else:
+                self.epsilon_mix = np.zeros((self.n_components, self.n_components))
+                self.sigma_mix = np.zeros((self.n_components, self.n_components))
+                for i in range(self.n_components):
+                    for j in range(self.n_components):
+                        self.epsilon_mix[i,j] = (self.guest.epsilon[i]*self.guest.epsilon[j])**0.5*(1 - self.guest.k_inter[i,j])
+                        self.sigma_mix[i,j] = (self.guest.sigma[i] + self.guest.sigma[j])/2.0
+
         if sigma_smooth is None:
             sigma_smooth = 0
         self.sigma_smooth_factor = sigma_smooth
@@ -572,7 +586,7 @@ class PCSAFTFunctional(Functional):
         self.beta = 1/(boltzmann*temperature)
         self.dhs = np.zeros(len(self.m))    
         for i in range(len(self.m)):
-            self.dhs[i] = self.sigma[i,i]*(1-0.12*np.exp(-3*self.epsilon[i,i]/boltzmann/temperature))
+            self.dhs[i] = self.sigma[i,i]*(1-0.12*np.exp(-3*self.epsilon_mix[i,i]/boltzmann/temperature))
         # self.dhs[:] = np.array(self.guest._calculate_hardsphere_radius(temperature)[0])*2
         self.sigma_smooth = self.sigma_smooth_factor*np.min(self.dhs)
         self._init_weight_functions()
@@ -593,53 +607,18 @@ class PCSAFTFunctional(Functional):
         self.kwdisp *= self.grid.sigma_lanczos[None,...]
 
         if self.n_components == 1:
-            self.m2_eps_sig3 = self.m**2*(self.beta*self.guest.epsilon)*self.guest.sigma**3
-            self.m2_eps2_sig3 = self.m**2*(self.beta*self.guest.epsilon)**2*self.guest.sigma**3
+            self.m2_eps_sig3 = self.m**2*(self.beta*self.epsilon_mix)*self.sigma_mix**3
+            self.m2_eps2_sig3 = self.m**2*(self.beta*self.epsilon_mix)**2*self.sigma_mix**3
         else:
             self.m2_eps_sig3 = 0.0
             self.m2_eps2_sig3 = 0.0
             for i in range(len(self.m)):
                 for j in range(len(self.m)):
-                    self.m2_eps_sig3 += self.fractions[i]*self.fractions[j]*self.m[i]*self.m[j]*(self.beta*self.guest.epsilon[i,j])*self.guest.sigma[i,j]**3
-                    self.m2_eps2_sig3 += self.fractions[i]*self.fractions[j]*self.m[i]*self.m[j]*(self.beta*self.guest.epsilon[i,j])**2*self.guest.sigma[i,j]**3
+                    self.m2_eps_sig3 += self.fractions[i]*self.fractions[j]*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])*self.sigma_mix[i,j]**3
+                    self.m2_eps2_sig3 += self.fractions[i]*self.fractions[j]*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])**2*self.sigma_mix[i,j]**3
 
     def _get_weighted_densities(self, rho, krho):
         wrho_chain = np.clip(self.grid.ifftn(krho*self.kwchain), 0, None)
-        # rho_mask = rho > 1e-12
-        # print(np.sum(rho_mask), np.prod(self.grid.npoints))
-
-        # krho_mask = self.grid.fftn(rho_mask.astype(np.float64))
-        # norm_k = self.grid.ifftn(self.kwlambda*krho_mask)
-        # norm_k = np.clip(norm_k, 1e-16, None)
-
-        # rho_zero = np.copy(rho)
-        # rho_zero[~rho_mask] = 0
-
-        # fft_rhok = self.grid.fftn(rho_zero*rho_mask)
-        # lambda_chain = self.grid.ifftn(self.kwlambda*fft_rhok)/norm_k
-
-        # # chi = (rho.sum(axis=0) > 1e-12).astype(np.float64)   # accessible mask (species-independent)
-        # # fft_chi = self.grid.fftn(chi)
-
-        # # lambda_chain = np.zeros_like(rho, dtype=np.float64)
-
-        # # for k in range(len(self.m)):
-        # #     kw = self.kwlambda[k]
-
-        # #     # convolution of kernel with mask → accessible fraction
-        # #     norm_k = self.grid.ifftn(kw * fft_chi).real
-        # #     norm_k = np.clip(norm_k, 1e-12, None)
-
-        # #     # convolution of kernel with density (already zero in framework)
-        # #     fft_rhok = self.grid.fftn(rho[k].astype(np.complex128))
-        # #     lam_raw = self.grid.ifftn(kw * fft_rhok).real
-
-        # #     # normalized lambda
-        # #     lambda_chain[k] = lam_raw / norm_k        
-        # lambda_chain[norm_k < 1e-10] = 1e-30
-        # print(np.min(lambda_chain), np.max(lambda_chain))
-        # lambda_chain = np.clip(lambda_chain, 1e-30, None)
-
         lambda_chain = self.grid.ifftn(krho*self.kwlambda)
         lambda_chain = np.clip(lambda_chain, 1e-30, None)
         zeta2 = np.pi/6*np.sum((self.m*(self.dhs**2))[:,None,None,None]*wrho_chain, axis=0)
@@ -1018,78 +997,7 @@ class PCSAFTFunctional(Functional):
             val_disp = self.value_disp(rho, wrho_disp, eta_disp)
             print('val chain', val_chain)
             print('val disp', val_disp)
-            return val_chain + val_disp
-        
-    def test_chain_derivative(self, rho_bulk, eps=1e-6):
-        """
-        Unit test for the chain functional derivative.
-        Compares analytic dF/drho with finite-difference approximation
-        in the bulk limit.
-
-        Parameters
-        ----------
-        rho_bulk : array, shape (nspecies,)
-            Constant bulk densities for each species.
-        eps : float
-            Perturbation size for finite-difference check.
-
-        Returns
-        -------
-        max_rel_err : float
-            Maximum relative error between analytic and numerical derivatives.
-        """
-        nspecies = len(self.m)
-
-        # construct uniform density field
-        rho_field = np.zeros((nspecies,) + tuple(self.grid.npoints))
-        for i in range(nspecies):
-            rho_field[i, ...] = rho_bulk[i]
-
-        # FFT densities
-        krho = self.grid.fftn(rho_field)
-
-        # weighted densities
-        lambda_chain, zeta2, zeta3, _, _ = self._get_weighted_densities(krho)
-
-        # analytic derivative (nspecies, N, N, N)
-        dF_analytic = self.derive_chain(rho_field, krho, lambda_chain, zeta2, zeta3)
-        print(dF_analytic)
-
-        # numerical finite-difference check
-        dF_numeric = np.zeros_like(dF_analytic)
-        F0 = self.value_chain(rho_field, lambda_chain, zeta2, zeta3)
-
-        for k in range(nspecies):
-            # perturb +eps
-            rho_plus = rho_field.copy()
-            rho_plus[k, ...] += eps
-            krho_plus = self.grid.fftn(rho_plus)
-            lam_p, z2_p, z3_p, _, _ = self._get_weighted_densities(krho_plus)
-            F_plus = self.value_chain(rho_plus, lam_p, z2_p, z3_p)
-
-            # perturb -eps
-            rho_minus = rho_field.copy()
-            rho_minus[k, ...] -= eps
-            krho_minus = self.grid.fftn(rho_minus)
-            lam_m, z2_m, z3_m, _, _ = self._get_weighted_densities(krho_minus)
-            F_minus = self.value_chain(rho_minus, lam_m, z2_m, z3_m)
-
-            # numerical derivative wrt rho_k
-            dFdrho_k = (F_plus - F_minus) / (2 * eps)
-
-            # distribute uniform derivative across the grid
-            dF_numeric[k, ...] = dFdrho_k / rho_field[k].size
-            print(dF_numeric[k, ...])
-            print(rho_field[k].size)
-
-        # compute relative error
-        denom = np.maximum(np.abs(dF_numeric), 1e-14)
-        rel_err = np.abs(dF_analytic - dF_numeric) / denom
-        print(rel_err)
-        max_rel_err = np.max(rel_err)
-
-        print(f"[Chain derivative test] max relative error = {max_rel_err:.2e}")
-        return max_rel_err        
+            return val_chain + val_disp     
 
 class MFAFunctional(Functional):
     """
@@ -1209,7 +1117,7 @@ class MFAFunctional(Functional):
         """
         with log.section('MFA', 3, timer='MFA derive'):
             if self.tailcorrections:
-                return self.small_grid.ifftn(krho*self.kpotential[::2,::2,::2])*self.grid.cell.volume
+                return self.small_grid.ifftn(krho*self.kpotential[::self.repetitions[0],::self.repetitions[1],::self.repetitions[2]])*self.grid.cell.volume
             
             else:
                 return self.grid.ifftn(krho*self.kpotential)*self.grid.cell.volume
@@ -1277,7 +1185,7 @@ class MFAFunctionalMixture(MFAFunctional):
         assert sigmas.shape == epsilons.shape
         self.potential = np.zeros((len(sigmas),len(sigmas)) + self.grid.points.shape[:3], dtype=np.float64)
         for i in range(len(sigmas)):
-            for j in range(i, len(sigmas)):
+            for j in range(len(sigmas)):
                 self.potential[i,j] = lj_potential(sigmas[i,j], epsilons[i,j])
 
         self.kpotential = self.grid.fftn(self.potential)*self.grid.sigma_lanczos[None,:,:,:]
@@ -1301,16 +1209,6 @@ class MFAFunctionalMixture(MFAFunctional):
                     for i in range(rho.shape[0]):
                         dF[k] += self.grid.ifftn(krho[i]*self.kpotential[i,k])*self.grid.cell.volume
                 return dF
-
-    def value(self, rho, krho):
-        with log.section('MFA', 3, timer='MFA value'):
-            if self.tailcorrections:
-                grid = self.small_grid
-            else:
-                grid = self.grid
-            der = self.derive(rho, krho)
-            integrand = np.einsum('i...,j...->ij...', rho, der)
-            return 0.5*grid.integrate(integrand)
 
 class CoarsenedFunctional(MFAFunctional):
     
@@ -1545,32 +1443,16 @@ class WDAVFunctional(LDAFunctional):
         LDAFunctional.__init__(self, grid, eos)
         self.temperature = None
         self.R = Rhs
-        # self.D = 2*Rhs
 
-        # self._init_weight_function()
-
-        # self.FMTun = None
-        # if callable(Rhs):
-        #     self.FMTun = Rhs
-        # elif isinstance(Rhs, float):
-        #     self.R = Rhs
-        #     self.D = 2*Rhs
-        #     self._init_weight_function()
-        # else:
-        #     raise TypeError('Rhs argument of FMTFunctional constructor should be a float or a callable function computing the Rhs for a given temperature.')
-    
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        # if self.FMTun is not None:
-        #     return type(self)(self.FMTun, grid, self.eos)
-        # else:
         return type(self)(grid, self.R, self.eos)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
-        LDAFunctional.set_temperature(self, temperature, **kwargs)
-        # if self.FMTun is not None:
-        #     self.R = self.FMTun(temperature, **kwargs)
-        self.R = Rhs
+        LDAFunctional.set_temperature(self, temperature, **kwargs)        
+        if not isinstance(Rhs, (list, np.ndarray)):
+            Rhs = [Rhs]
+        self.R = np.array(Rhs)
         self.D = 2*self.R
         self.krho = None
         self._init_weight_function()
@@ -1586,13 +1468,13 @@ class WDAVFunctional(LDAFunctional):
         the convolutions become simple products.
         """
         with log.section('WDA', 3, timer='WDA initialize'):
-            #NIEUW: omega gecorrigeerd
-            omega = self.grid.kpoints[:,:,:,3]*self.D
+            k = self.grid.kpoints[:,:,:,3]
+            omega = np.einsum('i,jkl->ijkl', self.D, k)
             mask = ~np.isclose(omega,0)
             self.kw = np.zeros_like(omega, dtype=np.complex_)
             self.kw[mask] = 3*(np.sin(omega[mask])-omega[mask]*np.cos(omega[mask]))/omega[mask]**3
             self.kw[~mask] = 1.0
-            self.kw *= self.grid.sigma_lanczos
+            self.kw *= self.grid.sigma_lanczos[None,...]
 
     def _get_weighted_density(self, krho):
         return self.grid.ifftn(krho*self.kw)#*self.grid.dk

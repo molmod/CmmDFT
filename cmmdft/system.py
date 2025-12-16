@@ -243,9 +243,11 @@ class GuestMixture(object):
             assert self.k_inter.shape == (self.nspecies, self.nspecies)
             assert np.allclose(self.k_inter, self.k_inter.T), 'k_inter should be symmetric'
             assert np.all(np.diag(self.k_inter) == 0), 'diagonal elements of k_inter should be zero'
-
-        self.epsilon = np.array([(1-self.k_inter[i,j])*np.sqrt(gi.epsilon*gj.epsilon) for i, gi in enumerate(guests) for j, gj in enumerate(guests)]).reshape((self.nspecies, self.nspecies))
-        self.sigma = np.array([( (gi.sigma + gj.sigma)/2 ) for gi in guests for gj in guests]).reshape((self.nspecies, self.nspecies))
+        self.epsilon = np.array([g.epsilon for g in guests])
+        self.sigma = np.array([g.sigma for g in guests])
+        
+        self.epsilon_mix = np.array([(1-self.k_inter[i,j])*np.sqrt(gi.epsilon*gj.epsilon) for i, gi in enumerate(guests) for j, gj in enumerate(guests)]).reshape((self.nspecies, self.nspecies))
+        self.sigma_mix = np.array([( (gi.sigma + gj.sigma)/2 ) for gi in guests for gj in guests]).reshape((self.nspecies, self.nspecies))
 
     def copy(self):
         return type(self)([g.copy() for g in self.guests], list(self.fractions))

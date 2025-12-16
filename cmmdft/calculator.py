@@ -256,7 +256,8 @@ class Calculator(object):
             fn = Path(fn)
         np.savetxt(fn, data.T, delimiter=',', header=header, comments='')
         
-    def save_loadings_AIF(self, temp, chempots, eos, input_fn=None, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
+    def save_loadings_AIF(self, temp, chempots=None, pressures=None, eos=None, 
+                          input_fn=None, input_zip=True, user=None, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
         """
         Save the adsorption loadings to an AIF (Adsorption Information File) format.
         Parameters:
@@ -283,6 +284,10 @@ class Calculator(object):
         block = d.sole_block()
         # general information
         block.set_pair('_audit_aif_version', '6acf6ef')
+        if user is None:
+            user = getpass.getuser()
+        block.set_pair('_exptl_operator',  user)
+
         block.set_pair('_adsnt_material_id', self.host.name)
         block.set_pair('_exptl_adsorptive', self.guest.name)
         block.set_pair('_exptl_temperature', f'{temp:0.3f}K')
@@ -291,7 +296,10 @@ class Calculator(object):
         block.set_pair('_exptl_isotherm_type', adsorption_type)
 
         # simulation metadata
-        block.set_pair('_simltn_code', f'CmmDFT-{self.program.version}')
+        # block.set_pair('_simltn_code', f'CmmDFT-{self.program.version}')
+        block.set_pair('_simltn_date', datetime.datetime.now().strftime('%Y-%m-%d'))
+        block.set_pair('_simltn_code', f'custom')
+
         block.set_pair('_simltn_sampling', 'cDFT')
         input_file_list = []
         if input_fn is not None:
@@ -324,16 +332,25 @@ class Calculator(object):
         #prepare data
 
         #get the pressures from the chemical potentials and the provided eos
-        pressures = np.array([eos.calculate_pressure(temp, chem) for chem in chempots])
+        if pressures is None:
+            assert eos is not None, 'Must provide an equation of state object (with the function calculate_pressure), when calculating pressures from chemical potentials'
+            assert chempots is not None, 'Must provide chemical potentials when calculating pressures'
+            pressures = np.array([eos.calculate_pressure(temp, chem) for chem in chempots])
+        if chempots is None:
+            assert pressures is not None, 'Must provide chemical potentials or pressures'
+            assert eos is not None, 'Must provide an equation of state object (with the function calculate_mu), when calculating chemical potentials from pressures'
+            chempots = np.array([eos.calculate_mu(temp, pres) for pres in pressures])
+        
         fugacities = np.exp(self.fener.beta*chempots)/self.fener.beta/self.fener.wavelength**3
         uptake_absolute = self.return_loading(temp, chempots, excess=False)
-        if excess:
-            uptake_excess = self.return_loading(temp, chempots, excess=True, eos=eos, He_frac=He_frac)
 
         #get the uptake and convert to the desired units
         cv_units = convert_units(self.guest.mass, np.sum(self.host.mol.masses), self.host.cell.volume)
         factor = cv_units.conversion_factor('au/uc', loading_unit)
-        uptake *= factor
+        uptake_absolute *= factor
+        if excess:
+            uptake_excess = self.return_loading(temp, chempots, excess=True, eos=eos, He_frac=He_frac)
+            uptake_excess *= factor
 
         #format adsorption
         pressures_bar = pressures/bar

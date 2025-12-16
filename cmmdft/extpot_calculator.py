@@ -155,23 +155,32 @@ __all__ = ['Interpolator', 'effective_potential', 'effective_potential_vectorize
 
 def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
     """ Lennard-Jones potential """
-    r6 = (sigma / r) ** 6
+    r = np.asarray(r)
+    
+    # mask for inside cutoff
+    inside = r < cutoff
+    V = np.zeros_like(r)
+    
+    # Compute only for r < cutoff
+    r6 = (sigma / r[inside])**6
     r12 = r6 * r6
 
-    dist_mask = r > cutoff
-    r[dist_mask] = cutoff
+    # Precompute cutoff shift
+    rc6 = (sigma / cutoff)**6
+    V_shift = 4 * epsilon * (rc6**2 - rc6)
 
-    rc6 = (sigma / cutoff) ** 6
-    V_shift = 4 * epsilon * (rc6 * rc6 - rc6)
+    V[inside] = 4 * epsilon * (r12 - r6) - V_shift
 
     if derivative:
-        V = 4 * epsilon * (r12 - r6) - V_shift
-        dV = 24 * epsilon * (r6 - 2 * r12) / r**2
-        ddV = 96 * epsilon * (7 * r12 - 2 * r6) / r**4
-        dddV = 384 * epsilon * (5 * r6 - 28 * r12) / r**6
+        dV = np.zeros_like(r)
+        ddV = np.zeros_like(r)
+        dddV = np.zeros_like(r)
+        dV[inside] = 24 * epsilon * (r6 - 2 * r12) / r[inside]**2
+        ddV[inside] = 96 * epsilon * (7 * r12 - 2 * r6) / r[inside]**4
+        dddV[inside] = 384 * epsilon * (5 * r6 - 28 * r12) / r[inside]**6
         return V, dV, ddV, dddV
     else:
-        return 4 * epsilon * (r12 - r6) - V_shift
+        return V
 
 
 def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_syst, cutoff=12*angstrom):
@@ -210,6 +219,45 @@ def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_syst, cutof
 
         R = np.sqrt(rx**2 + ry**2 + rz**2+1e-16) # to avoid zero
         Vext[:] += lennard_jones(R, sigma_mixed, epsilon_mixed, cutoff=cutoff)
+
+    return Vext
+
+def get_external_potential_periodic_shifts(points, FF_dict, sigmaff, epsilonff, host_syst, cutoff=12*angstrom):
+    Vext = np.zeros(len(points))
+
+    rvecs = host_syst.cell.rvecs          # (3,3) lattice vectors
+    inv_rvecs = np.linalg.inv(rvecs)
+
+    # determine how many images are needed
+    # conservative estimate
+    max_n = int(np.ceil(cutoff / np.min(np.linalg.norm(rvecs, axis=1))))
+
+    image_shifts = []
+    for nx in range(-max_n, max_n+1):
+        for ny in range(-max_n, max_n+1):
+            for nz in range(-max_n, max_n+1):
+                shift = nx*rvecs[0] + ny*rvecs[1] + nz*rvecs[2]
+                image_shifts.append(shift)
+
+    for i, atom_id in enumerate(host_syst.ffatype_ids):
+        ffatype = host_syst.ffatypes[atom_id]
+        sigma, epsilon = FF_dict[ffatype]
+
+        sigma_mixed = 0.5*(sigma + sigmaff)
+        epsilon_mixed = np.sqrt(epsilon * epsilonff)
+
+        for shift in image_shifts:
+            dx = points[:,0] - (host_syst.pos[i,0] + shift[0])
+            dy = points[:,1] - (host_syst.pos[i,1] + shift[1])
+            dz = points[:,2] - (host_syst.pos[i,2] + shift[2])
+
+            R = np.sqrt(dx*dx + dy*dy + dz*dz + 1e-16)
+
+            mask = R < cutoff
+            if np.any(mask):
+                Vext[mask] += lennard_jones(
+                    R[mask], sigma_mixed, epsilon_mixed, cutoff=cutoff
+                )
 
     return Vext
 

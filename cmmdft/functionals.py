@@ -16,7 +16,7 @@ from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spheric
 from .log import log
 from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS, SumOfEOS
-from .yukawa import lj3dFT
+
 __all__ = [
     'FreeEnergy', 'Functional','FMTFunctional','MFMTFunctional', 'WhiteBearIIFunctional',
     'MFAFunctional', 'CoarsenedFunctional','LJMFAFunctional',  'ExternalPotential', 'EffectiveExternalPotential', 'WDAVFunctional', 'WDACorFMTunctional', 
@@ -347,12 +347,6 @@ class FreeEnergy(object):
                 mfa.load_potential(fn)
         self.add_part(mfa)
     
-    def add_yukawa_mean_field(self, **kwargs):
-        mfa = YukawaMFAFunctional(self.grid)
-
-        mfa.generate_kpotential(self.system.guest.sigma, self.system.guest.epsilon, **kwargs)
-        self.add_part(mfa)
-
     def add_correlation_wda_lj(self, **kwargs):
         '''The function adds a WDA contribution to correct for correlation effect in a molecular simulation
             system. The various contributions in this WDA require LJ epsilon and sigma parameters are taken
@@ -385,9 +379,14 @@ class FreeEnergy(object):
             sigma = self.system.guest.sigma
             epsilon = self.system.guest.epsilon
             
+            if 'MFA' in self.part_names:
+                mfa_part = self.part_dict['MFA']
+                a = mfa_part.compute_vdw_a()
+            else:
+                a = None
             MBWR = ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon)
             CS = CarnahanStarlingEOS(mass, Rhs)
-            MFA = MFAEOS(mass, sigma, epsilon)
+            MFA = MFAEOS(mass, sigma, epsilon, a=a)
             SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
 
             corr = WDAVFunctional(self.grid, self.system.guest.Rhs, SUM)
@@ -585,7 +584,7 @@ class HardSphereFunctional(Functional):
             n0 = np.clip(n0, 0, None)  # Ensure n0 is non-negative
             n1 = np.clip(n1, 0, None)  # Ensure n1 is non-negative
             n2 = np.clip(n2, 0, None)  # Ensure n2 is non-negative
-            n3 = np.clip(n3, 0, 0.99)  # Ensure n0 is non-negative
+            n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n0 is non-negative
         #When n3 approaches 1, things can go wrong because the functional
         # contains terms with log(1-n3) and 1/(1-n3)
         else:
@@ -932,7 +931,7 @@ class MFAFunctional(Functional):
             os.makedirs(dn)
         np.save(fn, self.potential)
 
-    def generate_potential(self, ff, rmin, natom=1, limit_potential=0, **kwargs):
+    def generate_potential(self, ff, rmin, natom=1, limit_potential=0, cutoff=None, **kwargs):
         """
             Calculate U(r) on the real-space grid
 
@@ -953,16 +952,27 @@ class MFAFunctional(Functional):
         with(log.section('MFA', 2, timer='MFA init')):
             ff.system.pos[:] = limit_potential
             self.potential = np.zeros(self.grid.points.shape[:3], dtype=np.float64)
-            for r in np.unique(self.grid.points[:,:,:,3].round(decimals=4)):
+            shift = 0.0
+
+            rs = self.grid.points[:,:,:,3]
+            if cutoff is not None:
+                rs[rs>cutoff] = cutoff
+            rmin_mask = rs>rmin
+            for r in np.unique(rs.round(decimals=4)):
                 if r<rmin: continue
                 mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
                 ff.system.pos[natom:,2] = r
                 ff.update_pos(ff.system.pos)  
                 e = ff.compute()
                 self.potential[mask] = e
-            self.kpotential = self.grid.fft(self.potential)#*self.grid.dr
+                if cutoff is not None and r==cutoff:
+                    shift = e
+
+            self.potential[rmin_mask] -= shift
+
+            self.kpotential = self.grid.fftn(self.potential)*self.grid.sigma_lanczos
     
-    def generate_potential_lj(self, sigma, epsilon, rmin=None, limit_potential=0, **kwargs):
+    def generate_potential_lj(self, sigma, epsilon, rmin=None, limit_potential=0, cutoff=None, **kwargs):
         """
             Calculate U(r) on the real-space grid using the lennard jones potential with given epsilon and sigma parameters
 
@@ -972,14 +982,28 @@ class MFAFunctional(Functional):
                 U(r) is assumed to be zero for distances smaller than rmin. If not given, it is assumed to be equal to the zero 
                 of the LJ potential, i.e. rmin=sigma
         """        
-        if rmin is None: rmin = sigma
-        self.potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
-        mask = self.grid.points[:,:,:,3]>rmin
+        if rmin is None:
+            rmin = sigma
 
-        x = np.zeros(self.grid.points.shape[:3])
-        x[mask] = sigma/self.grid.points[:,:,:,3][mask]
-        self.potential[mask] = 4*epsilon*(x[mask]**12-x[mask]**6)
+        r = self.grid.points[..., 3]
+        pot = np.full(r.shape, limit_potential, dtype=np.float64)
 
+        # Region where potential is defined
+        mask = r > rmin
+        x = np.zeros_like(r)
+        x[mask] = sigma / r[mask]
+        pot[mask] = 4 * epsilon * (x[mask]**12 - x[mask]**6)
+
+        if cutoff is not None:
+            rc_mask = r <= cutoff
+            rc6 = (sigma / cutoff)**6
+            shift = 4 * epsilon * (rc6**2 - rc6)
+            # Shift potential inside cutoff
+            pot[rc_mask] -= shift
+            # Zero beyond cutoff
+            pot[~rc_mask] = 0.0
+
+        self.potential = pot
         self.kpotential = self.grid.fft(self.potential)*self.grid.sigma_lanczos
 
     def derive(self, krho):
@@ -989,7 +1013,10 @@ class MFAFunctional(Functional):
         """
         with log.section('MFA', 3, timer='MFA derive'):
             if self.tailcorrections:
-                return self.small_grid.ifft(krho*self.kpotential[::2,::2,::2])*self.grid.cell.volume
+                r0 = self.repetitions[0]
+                r1 = self.repetitions[1]
+                r2 = self.repetitions[2]
+                return self.small_grid.ifft(krho*self.kpotential[::r0,::r1,::r2])*self.grid.cell.volume
             
             else:
                 return self.grid.ifft(krho*self.kpotential)*self.grid.cell.volume
@@ -1006,31 +1033,6 @@ class MFAFunctional(Functional):
                 return 0.5*rho*self.derive(krho)
             else:
                 return 0.5*grid.integrate(rho*self.derive(krho))
-
-class YukawaMFAFunctional(MFAFunctional):
-
-    name = 'YUKAWA'
-
-    def __init__(self, grid):
-        self.grid = grid
-        self.potential = None
-        self.kpotential = None
-        self.tailcorrections = False
-    
-    def copy(self, grid=None):
-        if grid is None: grid = self.grid.copy()
-        YUK = YukawaMFAFunctional(grid)
-        if self.kpotential is not None:
-            YUK.kpotential = self.kpotential.copy()
-        return YUK
-    
-    def generate_kpotential(self, sigma, epsilon, rcut=12*angstrom, model='WCA'):
-        # print(self.grid.kpoints[:,:,:,3])
-        # print(sigma, epsilon)
-        self.kpotential = lj3dFT(self.grid.kpoints[:,:,:,3], sigma, epsilon, cutoff=rcut, model=model)
-
-    def derive(self, krho):
-        return self.grid.ifft(krho*self.kpotential)
     
 
 

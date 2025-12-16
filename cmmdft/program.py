@@ -52,6 +52,9 @@ class Program(object):
             values will be written to that file during the calculation.
         '''
         #Initializing       
+
+        self.version = '0.1'
+        
         self.name_dict = {'prefix':prefix, 'hostname':hostname, 'guestname':guestname, 'ff_suffix':ff_suffix, 'funct_suffix':funct_suffix, 'grid_suffix':grid_suffix, 'suffix':suffix}
 
         workdir = Path(prefix) / hostname /guestname / ff_suffix / funct_suffix / grid_suffix / suffix
@@ -98,6 +101,7 @@ class Program(object):
             new_instance.fener = self.fener
         if hasattr(self, 'solver'):
             new_instance.solver = self.solver
+        
         return new_instance
 
     def set_system(self, host, guest):
@@ -363,7 +367,11 @@ class Program(object):
             self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.file_suffix))
             if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite and not continue_solving:
                 log.dump('  skipping because solution found in file %s' %(self.rho_fn))
-                return
+                rho = np.load(self.rho_fn)
+                N = self.grid.integrate(rho)
+                converged = True
+                return N, rho, converged
+            
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
             rho_old = self.rho0.copy()
             N, rho, converged = self.solver.solve(chempot, rho_old, log_level)

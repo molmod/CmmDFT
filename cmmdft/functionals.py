@@ -947,7 +947,7 @@ class MFAFunctional(Functional):
                 self.potential[mask] = e
             self.kpotential = self.grid.fft(self.potential)#*self.grid.dr
     
-    def generate_potential_lj(self, sigma, epsilon, rmin=None, limit_potential=0, **kwargs):
+    def generate_potential_lj(self, sigma, epsilon, rmin=None, limit_potential=0, cutoff=None, **kwargs):
         """
             Calculate U(r) on the real-space grid using the lennard jones potential with given epsilon and sigma parameters
 
@@ -957,14 +957,28 @@ class MFAFunctional(Functional):
                 U(r) is assumed to be zero for distances smaller than rmin. If not given, it is assumed to be equal to the zero 
                 of the LJ potential, i.e. rmin=sigma
         """        
-        if rmin is None: rmin = sigma
-        self.potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
-        mask = self.grid.points[:,:,:,3]>rmin
+        if rmin is None:
+            rmin = sigma
 
-        x = np.zeros(self.grid.points.shape[:3])
-        x[mask] = sigma/self.grid.points[:,:,:,3][mask]
-        self.potential[mask] = 4*epsilon*(x[mask]**12-x[mask]**6)
+        r = self.grid.points[..., 3]
+        pot = np.full(r.shape, limit_potential, dtype=np.float64)
 
+        # Region where potential is defined
+        mask = r > rmin
+        x = np.zeros_like(r)
+        x[mask] = sigma / r[mask]
+        pot[mask] = 4 * epsilon * (x[mask]**12 - x[mask]**6)
+
+        if cutoff is not None:
+            rc_mask = r <= cutoff
+            rc6 = (sigma / cutoff)**6
+            shift = 4 * epsilon * (rc6**2 - rc6)
+            # Shift potential inside cutoff
+            pot[rc_mask] -= shift
+            # Zero beyond cutoff
+            pot[~rc_mask] = 0.0
+
+        self.potential = pot
         self.kpotential = self.grid.fft(self.potential)*self.grid.sigma_lanczos
 
     def derive(self, krho):

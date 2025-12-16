@@ -155,11 +155,11 @@ __all__ = ['Interpolator', 'effective_potential', 'effective_potential_vectorize
 
 def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
     """ Lennard-Jones potential """
-    r6 = (sigma / r) ** 6
-    r12 = r6 * r6
-
     dist_mask = r > cutoff
     r[dist_mask] = cutoff
+
+    r6 = (sigma / r) ** 6
+    r12 = r6 * r6
 
     rc6 = (sigma / cutoff) ** 6
     V_shift = 4 * epsilon * (rc6 * rc6 - rc6)
@@ -167,8 +167,11 @@ def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
     if derivative:
         V = 4 * epsilon * (r12 - r6) - V_shift
         dV = 24 * epsilon * (r6 - 2 * r12) / r**2
+        dV[dist_mask] = 0.0
         ddV = 96 * epsilon * (7 * r12 - 2 * r6) / r**4
+        ddV[dist_mask] = 0.0
         dddV = 384 * epsilon * (5 * r6 - 28 * r12) / r**6
+        dddV[dist_mask] = 0.0
         return V, dV, ddV, dddV
     else:
         return 4 * epsilon * (r12 - r6) - V_shift
@@ -213,7 +216,7 @@ def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_syst, cutof
 
     return Vext
 
-def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host_syst, spacings):
+def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host_syst, spacings, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones potential.
 
@@ -257,7 +260,7 @@ def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host
         rz -= L[2]*(rz/L[2]).round() #periodic BC
 
         R = np.sqrt(rx**2 + ry**2 + rz**2+1e-16) # to avoid zero
-        V, dV, ddV, dddV = lennard_jones(R, sigma_mixed, epsilon_mixed, derivative=True)
+        V, dV, ddV, dddV = lennard_jones(R, sigma_mixed, epsilon_mixed, derivative=True, cutoff=cutoff)
         Vext += V
         dVdx += dV * rx
         dVdy += dV * ry

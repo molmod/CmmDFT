@@ -155,7 +155,6 @@ __all__ = ['Interpolator', 'effective_potential', 'effective_potential_vectorize
            'get_interpolator_dict', 'get_external_potential_dict', 'get_system_data']
 
 def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):    
-def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):    
     """ Lennard-Jones potential """
     r = np.asarray(r)
     
@@ -337,6 +336,7 @@ def compute_batch_insertion_energy_typed(
     Returns:
         (M,) insertion energy for each guest atom
     """
+    raise NotImplementedError("Typed insertion energy calculation is not implemented yet.")
     if guest_positions.ndim == 1:
         guest_positions = np.expand_dims(guest_positions, axis=0)
     box = np.asarray(np.linalg.norm(host_syst.cell.rvecs, axis=1))
@@ -418,9 +418,6 @@ def compute_batch_insertion_energy_typed(
 
         insertion_energies[gidx] = E
     return insertion_energies
-
-
-
 
 def generate_rotation_matrix(degree, dimension):
     '''This function generates rotation matrices for 2D, 3D, and 4D dimensions based on the input degree.

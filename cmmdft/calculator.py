@@ -7,7 +7,6 @@ from scipy.special import logsumexp
 import getpass, datetime
 import json
 import itertools
-# from gemmi import cif
 
 from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom, amu
 from molmod.constants import boltzmann, avogadro
@@ -16,12 +15,11 @@ ylog.set_level(ylog.silent)
 
 from .system import System, Grid, NanoporousHost, SphericalLJGuest
 from .program import Program
-# from .free_energy import FreeEnergy
 from .functionals import WDAVFunctional, ExternalPotential, FreeEnergy
 from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
 from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff, get_file_suffix, Document
-#log.set_level('silent')
+from .extpot_calculator import get_external_potential, read_pars_file
 
 
 
@@ -109,7 +107,7 @@ class Calculator(object):
         self.guest.compute_hardsphere_radius(temp)
         Rhs = self.guest.Rhs
         WDA = WDAVFunctional(Rhs, self.grid, mwbr)
-        wrho = WDA._get_weighted_density(self.grid.fft(rho))#*self.grid.dr)
+        wrho = WDA._get_weighted_density(self.grid.fft(rho))
         mask_MBWR = (wrho*mwbr.sigma**3)>1.2
 
         rho_MBWR = np.copy(rho)
@@ -171,15 +169,10 @@ class Calculator(object):
             He_pot = np.load(He_pot_fn)
         else:
             #Helium parameters from "The molecular theory of gases and liquids" by Joseph O. Hirschfelder, Charles F. Curtiss, and R. Byron Bird
-            guest = SphericalLJGuest('He', 4.0026*amu, sigma=2.58*angstrom, epsilon=10.22/boltzmann)
-            HE_syst, guest_par = write_LJ_pars_chk(guest, dr=self.workdir)
-            pars_fn = self.workdir / 'pars.txt'
-            merge_ffpar_files(pars_fn, self.host.par, guest_par) 
-            ff_ext = get_ff(self.host.mol, HE_syst, pars_fn, rcut=np.min(np.linalg.norm(self.host.cell.rvecs, axis=1)))
-            ext_pot = ExternalPotential(self.grid, natom=1, ff=ff_ext, epot_dr=self.workdir/'ExtPots')
-            ext_pot.generate_potential()
-            ext_pot.dump_potential(fn=self.workdir/'ExtPots/He_potential.npy')
-            He_pot = ext_pot.potential
+            He_sigma, He_epsilon = 2.576*angstrom, 10.22*boltzmann
+            FF_dict = read_pars_file(self.host.chk, self.host.par)
+            He_pot = get_external_potential(self.grid.points[...,:3], FF_dict, sigmaff=He_sigma, epsilonff=He_epsilon, host_syst=self.host.mol, cutoff=12*angstrom)
+            np.save(He_pot_fn, He_pot)            
         exp_He_pot = np.clip(np.exp(-He_pot/boltzmann/temperature), 0, 1)
         He_vol = self.grid.integrate(exp_He_pot).real
         return He_vol/self.host.cell.volume
@@ -231,10 +224,6 @@ class Calculator(object):
         if pressure:
             header = 'pressures [Eh/a0**3], loadings [molecules/uc]'
             data[0] = np.array([eos.calculate_pressure(temperature, chem) for chem in chempots])
-            # if eos is not None:
-            #     data[0] = np.array([opt.brentq(hack, 1e-50, 150000*bar, args=(eos, chem, temperature)) for chem in chempots])
-            # else:
-            #     raise ValueError('Must provide an equation of state object, with the function calculate_mu')
         else:
             header = 'chempot [Eh], loadings [molecules/uc]'
             data[0] = chempots
@@ -287,9 +276,9 @@ class Calculator(object):
         block.set_pair('_exptl_isotherm_type', adsorption_type)
 
         # simulation metadata
-        # block.set_pair('_simltn_code', f'CmmDFT-{self.program.version}')
         block.set_pair('_simltn_date', datetime.datetime.now().strftime('%Y-%m-%d'))
-        block.set_pair('_simltn_code', f'custom')
+        block.set_pair('_simltn_code', f'CmmDFT-{self.program.version}')
+        # block.set_pair('_simltn_code', f'custom')
 
         block.set_pair('_simltn_sampling', 'cDFT')
         input_file_list = []
@@ -404,10 +393,9 @@ class Calculator(object):
             rho = np.load(fn)
         else:
             assert isinstance(rho, np.ndarray), 'The density must be a numpy array'
-            # assert np.isclose(np.array(rho.shape), np.array(self.grid.npoints)), f'The shape of the density {rho.shape} does not match the grid shape {self.grid.npoints}'
 
         if over_loading: N = self.grid.integrate(rho)
-        krho = self.grid.fft(rho)#*self.grid.dr
+        krho = self.grid.fft(rho)
         if partname.lower() in ["fid", "fideal"]:
             prefactor = boltzmann*temp
             rho_reg = rho.copy()
@@ -890,7 +878,6 @@ class Calculator(object):
 
             # integrate over the chemical potentials
             grand_potential_list = -beta * real_dens_omega_list[:, 1]
-            # print('grand potential list', grand_potential_list/kjmol)
             for e in range(q_len):
                 n_list_per_mu = n_proj_prev_mu_list[:, e]
                 omega_list[e] = -(logsumexp(grand_potential_list, b=n_list_per_mu, axis=0) + np.log(beta))/beta
@@ -1174,6 +1161,7 @@ class Calculator(object):
         Diffusion constant
 
         """
+        raise NotImplementedError("Diffusion constant calculation is not yet fully implemented.")
         with log.section('PROGRAM', 2, timer='Diffusion constant'):
 
             T1 = temperature + dT/2
@@ -1251,19 +1239,15 @@ class Calculator(object):
             rho_mask = np.isclose(rho*self.fener.wavelength**3, 0, atol=1e-200)
 
             dF = 0
-            krho = self.grid.fft(rho)#*self.grid.dr
+            krho = self.grid.fft(rho)
             for part in self.fener.parts:
                 if part.name in ['ExtPot', 'EffExtPot']:
                     continue
                 else:
-                    # print(part.name)
                     dF += part.derive(rho, krho)
             
-            # dF = self.grid.ifft(dF).real
             ext_pot[~rho_mask] = -boltzmann*temperature*np.log(rho[~rho_mask]*self.fener.wavelength**3) - dF[~rho_mask] + chempot
             ext_pot[rho_mask] = limit_potential
-            # print(chempot/kjmol)
-            # print('dF average: ', np.mean(dF[~rho_mask])/kjmol, 'density contribution average: ', np.mean(-boltzmann*temperature*np.log(rho[~rho_mask]*self.fener.wavelength**3))/kjmol)
 
             if fn is None:
                 if 'ExtPot' in self.fener.part_names:

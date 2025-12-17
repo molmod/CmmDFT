@@ -151,7 +151,7 @@ coefficients = np.array([
 
 __all__ = ['Interpolator', 'effective_potential', 'effective_potential_vectorized', 
            'generate_rotation_matrix', 'generate_effective_potential', 'get_external_potential_derivatives',
-           'get_interpolator_dict', 'get_external_potential_dict', 'read_pars_file']
+           'get_interpolator_dict', 'get_external_potential_dict', 'read_pars_file', 'get_system_data']
 
 def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
     """ Lennard-Jones potential """
@@ -222,8 +222,8 @@ def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_syst, cutof
 
     return Vext
 
-def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host_syst, spacings, cutoff=12*angstrom):
 def get_external_potential_periodic_shifts(points, FF_dict, sigmaff, epsilonff, host_syst, cutoff=12*angstrom):
+    raise NotImplementedError("This function is incomplete and not yet functional.")
     Vext = np.zeros(len(points))
 
     rvecs = host_syst.cell.rvecs          # (3,3) lattice vectors
@@ -262,7 +262,7 @@ def get_external_potential_periodic_shifts(points, FF_dict, sigmaff, epsilonff, 
 
     return Vext
 
-def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host_syst, spacings):
+def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host_syst, spacings, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones potential.
 
@@ -337,113 +337,6 @@ def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host
     dVdxyz *= dx * dy * dz
 
     return np.array([Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz])
-
-
-def compute_batch_insertion_energy_typed(
-    guest_positions, 
-    FF_dict, sigmaff, epsilonff, host_syst,
-    r_cut=15.0*angstrom, shift=False
-):
-    """
-    Compute vectorized insertion energy for typed guest atoms in a host system
-    with Lorentz-Berthelot mixing rules.
-
-    Parameters:
-        guest_positions : (M, 3) array of guest atom positions
-        guest_types     : (M,) integer guest atom types
-        host_positions  : (N, 3) array of host atom positions
-        host_types      : (N,) integer host atom types
-        box             : (3,) simulation box
-        epsilon_table   : (T,) array of epsilon per atom type
-        sigma_table     : (T,) array of sigma per atom type
-        r_cut           : cutoff distance
-        shift           : use shifted LJ
-
-    Returns:
-        (M,) insertion energy for each guest atom
-    """
-    if guest_positions.ndim == 1:
-        guest_positions = np.expand_dims(guest_positions, axis=0)
-    box = np.asarray(np.linalg.norm(host_syst.cell.rvecs, axis=1))
-    inv_box = 1.0 / box
-    n_cells = np.floor(box / r_cut).astype(int)
-    n_cells = np.maximum(n_cells, 3)
-    cell_size = box / n_cells
-
-    n_dim = 3
-    # Assign host atoms to cells
-    host_cell_indices = np.floor(host_syst.pos * inv_box * n_cells).astype(int) % n_cells
-    host_cell_dict = {}
-    for idx, cidx in enumerate(map(tuple, host_cell_indices)):
-        host_cell_dict.setdefault(cidx, []).append(idx)
-    # shift guest atoms into box
-    guest_positions = guest_positions % box
-    # Assign guest atoms to cells
-    guest_cell_indices = np.floor(guest_positions * inv_box * n_cells).astype(int) % n_cells
-
-    # Generate neighbor cell shifts that could bring host atoms within r_cut
-    max_shift = np.ceil(r_cut / cell_size).astype(int)
-    shift_range = [range(-s, s + 1) for s in max_shift]
-    neighbor_shifts = np.array(list(product(*shift_range)))
-
-    insertion_energies = np.zeros(len(guest_positions))
-    for gidx, gpos in enumerate(guest_positions):
-        gcell = guest_cell_indices[gidx]
-        E = 0.0
-        for neigh_shift in neighbor_shifts:
-            # Neighbor cell index
-            ncell = gcell + neigh_shift
-
-            # Compute image shift for wrapped dimensions
-            image_shift = np.zeros(n_dim)
-            wrapped_ncell = np.empty_like(ncell)
-
-            for i in range(n_dim):
-                if ncell[i] < 0:
-                    image_shift[i] = -1
-                    wrapped_ncell[i] = ncell[i] + n_cells[i]
-                elif ncell[i] >= n_cells[i]:
-                    image_shift[i] = 1
-                    wrapped_ncell[i] = ncell[i] - n_cells[i]
-                else:
-                    image_shift[i] = 0
-                    wrapped_ncell[i] = ncell[i]
-                
-            shift_vector = image_shift * box
-            host_idxs = host_cell_dict.get(tuple(wrapped_ncell), [])
-            if not host_idxs:
-                continue
-
-            hpos_shifted = host_syst.pos[host_idxs] + shift_vector
-            rvecs = hpos_shifted - gpos
-            dists = np.linalg.norm(rvecs, axis=1)
-
-            host_typeids = host_syst.ffatype_ids[host_idxs]
-            htypes = np.array([host_syst.ffatypes[host_typeid] for host_typeid in host_typeids])
-
-            mask = (dists < r_cut) & (dists > 1e-16)
-            if not np.any(mask):
-                continue
-
-            d = dists[mask]
-            h_selected = htypes[mask]
-            sig_host, eps_host = np.array([FF_dict[htype] for htype in h_selected]).T
-
-            eps_mix = np.sqrt(epsilonff * eps_host)
-            sig_mix = 0.5 * (sigmaff + sig_host)
-
-            inv_r6 = (sig_mix / d)**6
-            V = 4 * eps_mix * (inv_r6**2 - inv_r6)
-
-            if shift:
-                inv_rc6 = (sig_mix / r_cut)**6
-                V -= 4 * eps_mix * (inv_rc6**2 - inv_rc6)
-
-            E += np.sum(V)
-
-        insertion_energies[gidx] = E
-    return insertion_energies
-
 
 
 def generate_rotation_matrix(degree, dimension):
@@ -715,20 +608,10 @@ def effective_potential_vectorized(guest, position_shifts, epot_generator_dict, 
     pot = np.sum(pot, axis=1)  # (m, nrot)
 
     log_sum = logsumexp(-beta*pot, b=weights, axis=1)  # (m,)
-
     result = -log_sum / beta  # (m,)
-
-    result = np.where(np.isinf(result), limit_potential, result)
     result = np.where(np.isnan(result), limit_potential, result)
 
     return result  # shape: (m,)
-    # apply weights and sum over rotations
-    total_pot = np.einsum('mn,n->m', np.exp(-pot*beta), expanded_weights)  # (m,)
-
-    # Sum over atoms and rotations
-    safe_potentials = np.clip(total_pot,1e-100, None)  # Avoid log(0)
-
-    return -np.log(safe_potentials)/beta  # shape: (m,)
 
 
 def generate_effective_potential(guest_chk_fn, points, beta, epot_generator_dict, degree=11, max_size=1e+5/500):
@@ -792,7 +675,7 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
         interpolator_dict[key] = getattr(interpolator, int_method)
     return interpolator_dict
     
-def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, mic=True, shift=True, cutoff=12*angstrom):
+def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, shift=True, cutoff=12*angstrom):
     """
     Generate a dictionary of external potentials for each atom type.
     
@@ -813,10 +696,7 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, mic=T
     external_potential_dict = {}
     for key in FF_dict_guest:
         sigmaff, epsilonff = FF_dict_guest[key]
-        if mic:
-            external_potential_dict[key] = partial(get_external_potential, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst, cutoff=cutoff)
-        else:
-            external_potential_dict[key] = partial(compute_batch_insertion_energy_typed, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst)
+        external_potential_dict[key] = partial(get_external_potential, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst, cutoff=cutoff)
         
     return external_potential_dict
 
@@ -833,3 +713,36 @@ def read_pars_file(pars_file):
         epsilon = float(pp[2]) * units[1]
         FF_dict[atom] = (sigma, epsilon)
     return FF_dict
+
+def get_system_data(chk_fn, pars_file):
+    """ Read system data from a checkpoint file """
+    syst = System.from_file(chk_fn)
+    pos = syst.pos
+    masses = syst.masses
+    ffatypes = list(syst.ffatypes)
+    ffatype_ids = syst.ffatype_ids
+    if hasattr(syst, 'cell'):
+        if syst.cell is not None:
+            rvecs = syst.cell.rvecs
+        else:
+            rvecs = np.zeros((3, 3))
+
+    """ Read parameters from a pars file """
+    LJpar = Parameters.from_file(pars_file).sections['LJ']
+    units = [parse_unit(unit[1].split()[1]) for unit in LJpar.definitions['UNIT'].lines]
+    FF_dict = np.empty((len(LJpar.definitions['PARS'].lines),2))
+
+    for par in LJpar.definitions['PARS'].lines:
+        pp = par[1].split()
+        atom = pp[0]
+        if atom not in ffatypes:
+            print(f"Warning: Atom type {atom} not found in ffatypes. Skipping.")
+            continue
+        index = ffatypes.index(atom)
+        sigma = float(pp[1]) * units[0]
+        epsilon = float(pp[2]) * units[1]
+        FF_dict[index] = np.array([sigma, epsilon])
+
+    
+    # return (jnp.array(pos), jnp.array(masses), ffatypes, jnp.array(ffatype_ids), syst.natom, jnp.array(rvecs)), jnp.array(FF_dict)
+    return (pos, masses, ffatypes, ffatype_ids, syst.natom, rvecs), FF_dict

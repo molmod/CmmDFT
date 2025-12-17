@@ -427,6 +427,7 @@ class Calculator(object):
                       'amount_absolute': uptake_absolute,
                       'amount_excess': uptake_excess,
                       'selectivity': selectivities}
+        
         included_valuenames = ['pressure', 'fugacity', 'chemicalpotential', 'amount_absolute']
         if self.ncomp > 1:
             included_valuenames.insert(1, 'molefraction')

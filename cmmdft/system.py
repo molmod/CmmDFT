@@ -168,21 +168,24 @@ class Guest(object):
                     
 
 class SphericalLJGuest(Guest):
-    def __init__(self, name, mass, sigma, epsilon, ffname, m=1):
+    def __init__(self, name, mass, sigma, epsilon, ffname, m=1, hs_def='bh'):
         Guest.__init__(self, name, mass, ffname)
         self.sigma = sigma
         self.epsilon = epsilon
         self.natom = 1
         self.m = m #m parameter for PC-SAFT model
+        self.hs_def = hs_def
     
     def copy(self):
-        return type(self)(self.name, self.mass, self.sigma, self.epsilon)
+        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.ffname, m=self.m, hs_def=self.hs_def)
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         beta = 1/(boltzmann*temperature)
         Tt = 1/beta/self.epsilon
-        # Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
-        Rhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))/2
+        if self.hs_def=='bh':
+            Rhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        elif self.hs_def=='exp':
+            Rhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))/2
         return Rhs, self.sigma
 
 
@@ -209,12 +212,12 @@ class NonSphericalGuest(Guest):
 
 
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
-    def __init__(self, name, mass, sigma, epsilon, chk, par, ffname, m=1):
+    def __init__(self, name, mass, sigma, epsilon, chk, par, ffname, m=1, hs_def='bh'):
         NonSphericalGuest.__init__(self, name, chk, par, ffname)
-        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m)
+        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def)
 
     def copy(self):
-        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.chk, self.par, self.ffname)
+        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.chk, self.par, self.ffname, m=self.m, hs_def=self.hs_def)
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)

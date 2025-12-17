@@ -868,12 +868,13 @@ class CarnahanStarlingEOS(EquationOfState):
         Compressibility = eta*rho
     """
     
-    def __init__(self, mass, sigma, epsilon, m=1):
+    def __init__(self, mass, sigma, epsilon, m=1, hs_approx='exp'):
         EquationOfState.__init__(self, mass)
         self.sigma = sigma
         self.epsilon = epsilon
         self.m = m
         self.m_mix = m
+        self.hs_approx = hs_approx
 
     @classmethod
     def from_guest(cls, guest, **kwargs):
@@ -887,7 +888,10 @@ class CarnahanStarlingEOS(EquationOfState):
         super().set_temperature(temperature)
         beta = 1/(boltzmann*temperature)
         Tt = 1/beta/self.epsilon
-        self.R = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        if self.hs_approx=='exp':
+            self.R = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))/2
+        else:
+            self.R = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
         self.eta = self.m*4/3*np.pi*self.R**3
     
     def get_rough_density_grid(self, npoints):
@@ -1151,30 +1155,37 @@ b_constants = np.array([
 
 class PCSAFT_EOS(EquationOfState):
 
-    def __init__(self, mass, sigma, epsilon, m, CS_HS=False):
+    def __init__(self, mass, sigma, epsilon, m, CS_HS=False, hs_approx='exp'):
         EquationOfState.__init__(self, mass)
         self.sigma = sigma
         self.epsilon = epsilon
         self.m = m      
         self.m_mix = m
         self.x = 1.0 #fraction of particles of this species in mixture
+        
         self.CS_HS = CS_HS
         if CS_HS:
-            self.CS = CarnahanStarlingEOS(mass, sigma, epsilon, m)
+            self.CS = CarnahanStarlingEOS(mass, sigma, epsilon, m, hs_approx=hs_approx)
+
+        self.hs_approx = hs_approx
 
     @classmethod
-    def from_guest(cls, guest):
+    def from_guest(cls, guest, **kwargs):
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
         m = getattr(guest, 'm', 1)
-        return cls(mass, sigma, epsilon, m=m)
+        return cls(mass, sigma, epsilon, m=m, **kwargs)
 
     def set_temperature(self, temperature):
         self.temperature = temperature
         self.m2_eps_sig3 = self.m**2*(self.epsilon/boltzmann/temperature)*self.sigma**3
         self.m2_eps2_sig3 = self.m**2*(self.epsilon/boltzmann/temperature)**2*self.sigma**3
-        self.dhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))
+        if self.hs_approx == 'exp':
+            self.dhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))
+        else:
+            Tt = boltzmann*temperature/self.epsilon
+            self.dhs = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)
         self.wvl = planck/np.sqrt(2*np.pi*(self.mass)*boltzmann*temperature)
 
         if self.CS_HS:
@@ -1293,6 +1304,7 @@ class PCSAFT_EOS(EquationOfState):
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
         if self.CS_HS:
+            print('Carnahan-Starling hard sphere contribution used')
             fhs = self.CS.excess_free_energy_particle(rho)/kT
         else:
             fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)

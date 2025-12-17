@@ -13,7 +13,6 @@ from molmod.constants import boltzmann, planck
 from molmod.units import angstrom
 from yaff import System as YaffSystem, Cell
 
-from .tools import hard_spheres_barker_henderson, get_ff
 from .log import log
 
 __all__ = ['System', 'EmptyHost', 'NanoporousHost', 'Guest', 'Grid']
@@ -67,7 +66,7 @@ class Host(object):
 
     
 class NanoporousHost(Host):
-    def __init__(self, name, chk, par, shift=True):
+    def __init__(self, name, chk, par):
         '''This function initializes a nanoporous host system
         
         Parameters
@@ -83,8 +82,7 @@ class NanoporousHost(Host):
             log.dump('Reading host structure from %s with parameters from %s' %(chk,par))
             self.mol = YaffSystem.from_file(chk)
             #shift molecule so that center of positions is the origin (as cDFT grid will be centered around this origin)
-            if shift:
-                self.mol.pos -= self.mol.pos.sum(axis=0)/len(self.mol.pos) 
+            self.mol.pos -= self.mol.pos.sum(axis=0)/len(self.mol.pos) 
             Host.__init__(self, name, self.mol.cell)
             self.chk = chk
             self.par = par
@@ -138,25 +136,7 @@ class Guest(object):
                 self.Rhs = self.preset_Rhs
                 self.Rhs_zero = self.preset_Rhs_zero
             else:
-                path = kwargs.get('fn', None)
-                if path is None:
-                    log.dump('Computing Rhs and Rhs_zero at %7.5f without storing...' %(temperature))
-                    self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
-                elif path.exists():
-                    dict_sig = json.load(path.open())
-                    if kwargs.get('rewrite', False):
-                        log.dump('Computing Rhs and Rhs_zero at %7.5f and overwriting %s...'%(temperature, path))
-                        self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
-                        dict_sig['%7.5f'%(temperature)] = self.Rhs, self.Rhs_zero
-                        json.dump(dict_sig, path.open(mode='w'))
-                    else:
-                        log.dump('Reading Rhs and Rhs_zero at %7.5f from %s...'%(temperature, path))
-                        self.Rhs, self.Rhs_zero = dict_sig['%7.5f'%(temperature)]
-                else:
-                    log.dump('Computing Rhs and Rhs_zero at %7.5f and writing to %s...'%(temperature, path))
-                    self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
-                    dict_sig = {'%7.5f'%(temperature): (self.Rhs, self.Rhs_zero)}
-                    json.dump(dict_sig, path.open(mode='w'))
+                self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
                 log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
                     
 
@@ -195,9 +175,7 @@ class NonSphericalGuest(Guest):
         return type(self)(self.name, self.chk, self.par)
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
-        beta = 1/(boltzmann*temperature)
-        ff_int = get_ff(self.mol, self.mol, self.par, kwargs.get('rcut', 12*angstrom))
-        return hard_spheres_barker_henderson(beta, ff_int, natom=self.mol.natom, style=kwargs.get('style', 'su'))
+        raise NotImplementedError('Using generic NonSphericalGuest class, cannot compute hardsphere radius, use DualModelGuest class')
 
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
     def __init__(self, name, mass, sigma, epsilon, chk, par):
@@ -213,7 +191,7 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
 
 
 class Grid(object):
-    def __init__(self, cell, npoints=None, spacing=0.25*angstrom, shift=True):
+    def __init__(self, cell, npoints=None, spacing=0.25*angstrom):
         """
             cell
                     an instance of a Yaff cell used for extracting the system dimensions.
@@ -231,7 +209,6 @@ class Grid(object):
         with log.section('GRID', 2, timer='Initializing'):
             log.dump('Initializing grid')
             self.cell = cell
-            self.shift = shift
             assert self.cell.nvec==3
             if npoints is None:
                 lengths, angles = self.cell.parameters
@@ -256,32 +233,21 @@ class Grid(object):
             # Real space grid, centered at the origin, storing x,y,z and norm of 
             # vector of each grid point
             self.points = np.zeros((self.npoints+[4]))
-            if shift:
-                grid = [np.linspace(-0.5, 0.5, num=self.npoints[alpha], endpoint=False) for alpha in range(3)]
-            else:
-                grid = [np.linspace(0, 1, num=self.npoints[alpha], endpoint=False) for alpha in range(3)]
+            grid = [np.linspace(-0.5, 0.5, num=self.npoints[alpha], endpoint=False) for alpha in range(3)]
             gridpoints = np.asarray(np.meshgrid(grid[0],grid[1],grid[2], indexing='ij'))
             # Cartesian components of the real space grid
 
-            #New order of einsum testen ab,aijk,ijkb
-            self.points[:,:,:,:3] = np.einsum('ab,aijk->ijkb', self.cell.rvecs, gridpoints) #TODO: (louis) not sure why it is ab,bijk->ijka and not ab,aijk->ijkb
+            self.points[:,:,:,:3] = np.einsum('ab,aijk->ijkb', self.cell.rvecs, gridpoints) 
             # Norms of the vectors of the real space grid
             self.points[:,:,:,3] = np.sqrt(self.points[:,:,:,0]**2+self.points[:,:,:,1]**2+self.points[:,:,:,2]**2)
             # Fourier grid
             self.kpoints = np.zeros(self.npoints+[4])
             kgrid = [np.fft.fftfreq(self.npoints[alpha],d=self.spacings[alpha]) for alpha in range(3)]
             gridpoints = np.meshgrid(kgrid[0],kgrid[1],kgrid[2], indexing='ij')
-            #NIEUWE VERANDERING: 2*pi toegevoegd bij de kpoints
             for alpha in range(3):
-                self.kpoints[:,:,:,alpha] = 2*np.pi*gridpoints[alpha] #TODO: (louis) could be condensed using np.einsum('aijk->ijka', gridpoints)
+                self.kpoints[:,:,:,alpha] = 2*np.pi*gridpoints[alpha] 
             self.kpoints[:,:,:,3] = np.sqrt(self.kpoints[:,:,:,0]**2+self.kpoints[:,:,:,1]**2+self.kpoints[:,:,:,2]**2)
-            # Indication of even and odd grid points, even means sum of indexes is even
-            #ADDED Louis: commented out lines below for testing
-            #self.parity = np.zeros(self.npoints,dtype=int)
-            #i,j,k = np.unravel_index(np.arange(np.prod(self.npoints)),self.npoints)
-            #self.parity[i,j,k] = (-1)**(i+j+k)
             
-            #ADDED Louis: something needed in the fft functions defined below
             self.scalprod = self.kpoints[:,:,:,0]*self.spacings[0]*self.npoints[0] + self.kpoints[:,:,:,1]*self.spacings[1]*self.npoints[1] + self.kpoints[:,:,:,2]*self.spacings[2]*self.npoints[2]
 
             # Lanczos kernel for the Fourier transform, if needed to mitigate gibbs phenomenon in yukawa potential and weightfunctions

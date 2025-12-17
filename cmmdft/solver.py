@@ -463,7 +463,7 @@ class Picard(Solver):
 class Anderson(Picard):
     """
     Anderson and Hybrid-Anderson solver 
-    TODO: CITEER PAPER
+    Based  on https://doi.org/10.1063/5.0067172
     """
 
     name = 'ANDERSON'
@@ -555,15 +555,12 @@ class Anderson(Picard):
                     Grho_new = self.get_new_rho(C1_new, self.fugacity)
                     self.And_true = True
                     if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
-                        # log.warning('The Anderson method failed, falling back to Picard')
                         rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
                     else:
                         Omega_new = self._get_Omega(rho_new, krho_new)
                         if Omega_new > prev_omega*(0.8):
-                            # log.warning('The Anderson method increased the grand potential, falling back to Picard')
                             rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
                 except FloatingPointError:
-                    # log.warning('The Anderson method failed, falling back to Picard')
                     rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
 
             else:
@@ -599,7 +596,7 @@ class Fire(Solver):
     """
     Fast Inertial Relaxation Engine (FIRE) solver
     # ABC-Fire algorithm https://doi.org/10.1016/j.commatsci.2022.111978   
-    TODO: CITEER SOLVER pydftlj!!
+    based on  https://doi.org/10.1007/s10450-024-00444-z
     """
 
     name = 'FIRE'
@@ -678,13 +675,10 @@ class Fire(Solver):
                 self.V[self.mask] = 0.0
 
             self.V[self.mask] += F[self.mask]*0.5*self.dt
-            log.dump(f'mixing parameters {self.alpha}')
             self.V[self.mask] = (1-self.alpha)*self.V[self.mask] + self.alpha*F[self.mask]*np.linalg.norm(self.V[self.mask])/np.linalg.norm(F[self.mask])
             if self.method == 'abc-fire': 
                 factor = (1/(1-(1-self.alpha)**self.Npos))
-                log.dump(f'ABC-FIRE factor {factor}')
                 self.V[self.mask] *= factor
-            log.dump(f'Current time step {self.dt}')
             lnrho[self.mask] += self.dt*self.V[self.mask]
 
             rho_new[self.mask] = np.exp(lnrho[self.mask])
@@ -886,31 +880,19 @@ class QuasiNewton(Picard):
             f_prev = []
             alpha_prev = []
             alpha = alpha_max
-            # Backtracking Armijo
-            # for _ in range(max_ls):
             while alpha > alpha_min:
                 rho_trial = rho + alpha * d
                 rho_trial = self._clip_density(rho_trial)
 
                 p_eff = self.flatten(rho_trial - rho)
-                # step_norm = np.linalg.norm(p_eff)
-                # if step_norm < step_floor:
-                #     alpha *= tau
-                #     continue
 
                 krho_trial = self.grid.fft(rho_trial)
                 f_new = self._get_Omega(rho_trial, krho_trial)
 
                 gtp_eff = float(np.dot(grad, p_eff))
-                # print(f"[Proj-LS] alpha={alpha:.3e}  f_new={f_new:.6e}  "
-                #     f"Armijo RHS={f0 + self.c1 * gtp_eff:.6e}  "
-                #     f"||p_eff||={step_norm:.3e}")
 
                 # sanity check for unphysical minima
                 if f0-f_new > max_allowed_drop:
-                    # n_new = self.grid.integrate(rho_trial).real
-                    # print(f"drop too large, probably unphysical")
-                    # print(f"f0 = {f0/kjmol:.6e}, f_new = {f_new/kjmol:.6e}, drop = {(f0-f_new)/kjmol:.6e} kJ/mol, n_new = {n_new:.6e}")
                     alpha *= tau_aggressive*0.1
                     continue
 
@@ -971,7 +953,6 @@ class QuasiNewton(Picard):
         if np.any(np.isinf(Grho_new)):
             raise SwitchToPicardError('Grho_new contains Infs, skipping this step')
         f_new = self._get_Omega(rho_new, krho_new)
-        log.dump(f'Line search succeeded with alpha={alpha_opt}')
         return rho_new, krho_new, C1_new, f_new
 
 
@@ -1145,19 +1126,6 @@ def lbroyden_direction(g, s_list, y_list, H0_scale=1.0, eps=1e-12):
         p += (s - Hy) * (float(np.dot(y, p)) / ys)
     return p
 
-def mixed_broyden_direction(g, s_list, y_list, phi=0.5, eps=1e-12):
-    """
-    Interpolate between L-BFGS and L-Broyden directions:
-        p_mix = (1-phi) * p_lbfgs + phi * p_lbroyden
-    where phi in [0,1].
-    H0 scaling is taken from the last (s,y) pair (same as L-BFGS practice).
-    """
-    phi = float(np.clip(phi, 0.0, 1.0))
-    H0_scale = _gamma_from_last_pair(s_list, y_list, default=1.0)
-
-    p_bfgs = lbfgs_direction(g, s_list, y_list, H0_scale=H0_scale, eps=eps)
-    p_broy = lbroyden_direction(g, s_list, y_list, H0_scale=H0_scale, eps=eps)
-    return (1.0 - phi) * p_bfgs + phi * p_broy
 
 def cgdescent_direction(g, g_prev=None, d_prev=None, M_inv=None,
                         eps=1e-12, beta_floor=-0.1):

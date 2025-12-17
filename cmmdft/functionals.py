@@ -12,14 +12,14 @@ from molmod.units import kjmol, angstrom
 from molmod.constants import planck, boltzmann
 from yaff import ForceField
 
-from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell, effective_potential_Leb
 from .log import log
 from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS, SumOfEOS
+from .extpot_calculator import read_pars_file, get_external_potential_dict, get_interpolator_dict, generate_effective_potential, get_external_potential, get_external_potential_derivatives
 
 __all__ = [
     'FreeEnergy', 'Functional','FMTFunctional','MFMTFunctional', 'WhiteBearIIFunctional',
-    'MFAFunctional', 'CoarsenedFunctional','LJMFAFunctional',  'ExternalPotential', 'EffectiveExternalPotential', 'WDAVFunctional', 
+    'MFAFunctional', 'LJMFAFunctional',  'ExternalPotential', 'EffectiveExternalPotential', 'WDAVFunctional', 
 ]
 
 
@@ -174,7 +174,7 @@ class FreeEnergy(object):
                 self.tracking_step += 1
             return G
     
-    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e6*kjmol, rewrite=False, load_fn=None, save_fn=None,
+    def add_external_potential(self, temperature=None, cutoff=12*angstrom, limit_potential=1e4*kjmol, degree=9, interpolate=False, rewrite=False, load_fn=None, save_fn=None,
                                 **kwargs):
         '''The `add_external_potential` function adds an external potential contribution for spherical particles in a system.
             
@@ -234,18 +234,7 @@ class FreeEnergy(object):
                     if not sym_fn.is_symlink():
                         sym_fn.symlink_to(epot_dr.absolute())    
 
-                if isinstance(self.system.guest, SphericalLJGuest) and not isinstance(self.system.guest, NonSphericalGuest):
-                    log.dump('Creating parameter file for guest molecule from LJ parameters')
-                    guest_mol, guest_par = write_LJ_pars_chk(self.system.guest, self.workdir)
-                else:
-                    guest_mol, guest_par = self.system.guest.mol, self.system.guest.par
-
-                pars_fn = self.workdir / 'pars.txt'
-                merge_ffpar_files(pars_fn, self.system.host.par, guest_par) 
-                log.dump('Parameter files %s and %s have been merged and written to %s' %(self.system.host.par, guest_par, pars_fn))
-
-                ff_ext = get_ff(self.system.host.mol, guest_mol, pars_fn, rcut)
-                epot = ExternalPotential(self.grid, self.system.guest.natom, ff_ext, epot_dr, **kwargs)
+                epot = ExternalPotential(self.grid, self.system, epot_dr, cutoff=cutoff, limit_potential=limit_potential, degree=degree, interpolate=interpolate, **kwargs)
             
                 if not os.path.isfile(fn) or self.overwrite or rewrite:
                     log.dump('computing external potential on grid')
@@ -258,9 +247,9 @@ class FreeEnergy(object):
 
             # If a framework atom coincides with a grid point, the potential can be infinite
             mask = np.isfinite(epot.potential)
-            epot.potential[~mask] = upper_limit
-            mask = epot.potential > upper_limit
-            epot.potential[mask] = upper_limit
+            epot.potential[~mask] = limit_potential
+            mask = epot.potential > limit_potential
+            epot.potential[mask] = limit_potential
             log.dump('  Eext(min) = %8.5f kJ/mol' % (np.real_if_close(np.amin(epot.potential)/kjmol)))
             log.dump('  Eext(max) = %8.5f kJ/mol' % (np.real_if_close(np.amax(epot.potential)/kjmol)))
         self.add_part(epot)
@@ -961,82 +950,25 @@ class MFAFunctional(Functional):
             else:
                 return 0.5*grid.integrate(rho*self.derive(krho))
 
-class CoarsenedFunctional(MFAFunctional):
-    
-    name = 'COARSE'
-    
-    def __init__(self, grid, ff, degree=9, limit_potential=0, style='sb'):
-        """
-        **Arguments:**
-        
-        grid
-            An instance of Grid, see system.py
-        
-        """
-        self.grid = grid
-        self.potential = None
-        self.kpotential = None
-        self.ff = ff
-        self.degree = degree
-        self.limit_potential = limit_potential
-        self.style = style   
-
-    def copy(self, grid=None):
-        if grid is None: grid = self.grid.copy()
-        return type(self)(grid, self.ff, self.degree, self.limit_potential, self.style)
-
-    def generate_potential(self, rmin, temperature, natom=1):
-        """
-        Generates an interparticle potential to be used in MFA functional, where the interaction is rotationally average
-
-        Parameters
-        ----------
-        ff : yaff force field object
-        rmin : distance
-            Potential at points closer than this distance are set to limit_potential.
-        temperature : scalar
-        natom : The number of atoms in the guest molecule. The default is 1.
-        limit_potential : The default is 0.
-
-
-        """
-        with log.section('FREEENER', 2, timer='CoarsePot init'):        
-            assert natom>1
-            self.potential = np.zeros(self.grid.points.shape[:3]) + self.limit_potential
-            for r in np.unique(self.grid.points[:,:,:,3].round(decimals=4)):
-                if r<rmin: continue
-                mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
-                if self.style == 'su':
-                    pre_potential = spherical_potential_semi_boltz(self.ff, r, natom, 1/boltzmann/temperature, degree = self.degree)
-                elif self.style == 'bo':
-                    pre_potential = spherical_potential_boltz(self.ff, r, natom, 1/boltzmann/temperature, degree = self.degree)
-                elif self.style == 'ave':
-                    pre_potential = spherical_potential_ave(self.ff, r, natom, degree = self.degree)
-
-                if pre_potential > 0:
-                    self.potential[mask] = 0
-                else:
-                    self.potential[mask] = pre_potential
-            self.kpotential = self.grid.fft(self.potential) 
-
-
 class ExternalPotential(Functional):
 
     name = 'ExtPot'
 
-    def __init__(self, grid, natom, ff, epot_dr, limit_potential=1e+4*kjmol, degree=5):
+    def __init__(self, grid, system, epot_dr, limit_potential=1e+4*kjmol, degree=9, interpolate=False, cutoff=12*angstrom):
         self.grid = grid
         self.potential = None
         self.kpotential = None
-        self.natom = natom
-        self.ff = ff
+        self.host = system.host
+        self.guest = system.guest
+        self.interpolate = interpolate
+        self.cutoff = cutoff
         self.epot_dr = epot_dr
         self.limit_potential = limit_potential
         self.degree = degree
 
     def copy(self, grid=None):
         if grid is None: grid = self.grid.copy()
-        extpot = type(self)(grid, self.natom, self.ff, self.epot_dr, self.limit_potential, self.degree)
+        extpot = type(self)(grid, self.system, self.epot_dr, self.limit_potential, self.degree, self.interpolate, self.cutoff)
         if self.potential is not None:
             extpot.potential = self.potential.copy()
             extpot.kpotential = self.kpotential.copy()
@@ -1062,48 +994,44 @@ class ExternalPotential(Functional):
                 self.generate_potential(temperature)
                 self.dump_potential(epot_fn)
 
-    def generate_potential(self, temperature=None, rewrite=False, method='pre'):
-        '''This function generates a potential energy grid for a given force field and set of points, and
-        optionally sets negative values to zero.
-        
-        Parameters
-        ----------
-        ff
-            `ff` is an instance of a yaff ff.
-        natom
-            The number of atoms in the system.
-        positive, optional
-            A boolean parameter that determines whether only positive potential values should be stored in the
-        potential array. If set to True, any potential value less than or equal to zero will be set to zero.
-        
-        '''
-        points = self.grid.points
-        self.potential = np.zeros(points.shape[:3], dtype='float64')
-        COM = np.sum(self.ff.system.pos[-self.natom:]*self.ff.system.masses[-self.natom:].reshape((self.natom,1)), axis=0)/np.sum(self.ff.system.masses[-self.natom:])
-        neutr_pos = np.copy(self.ff.system.pos[-self.natom:] - COM)
+    def generate_potential(self, temperature=None):
+        with log.section('ExtPot', 2, timer='ExtPot init'):
+            points = self.grid.points[...,:3]
+            if self.interpolate:
+                assert isinstance(self.guest, NonSphericalGuest), "Only non-spherical guests are supported for interpolation of effective potential"
+                beta = 1/temperature/boltzmann
+                ff_dict = read_pars_file(self.host.par)
+                guest_atoms = read_pars_file(self.guest.par)
+                epot_fn_dict = {}
+                for atom in guest_atoms:
+                    epot_grid = Grid(self.host.mol.cell, spacing=0.15*angstrom)
+                    part_epot_fn = os.path.join(self.epot_dr, f'eff_pot_{atom}_ZIF8_derivs.npy')
+                    epot_fn_dict[atom] = part_epot_fn
+                    sigmaff, epsilonff = guest_atoms[atom]
+                    host_syst = self.host.mol
+                    log.dump(f'Calculating external potential derivatives for atom {atom} on grid {epot_grid.npoints} with spacing {epot_grid.spacings}')
+                    epot = get_external_potential_derivatives(epot_grid.points[...,:3].reshape(-1,3), ff_dict, sigmaff, epsilonff, host_syst, epot_grid.spacings, cutoff=self.cutoff).reshape((8, )+ tuple(epot_grid.npoints))
+                    np.save(part_epot_fn, epot)
 
-        if self.natom > 1:
-            assert temperature is not None, 'Temperature must be set for the calculation of the effective external potential'
+                int_dict = get_interpolator_dict(epot_fn_dict, self.grid.points[0,0,0,:3], np.array([0.15, 0.15, 0.15])*angstrom, int_method='tricubic')
+                int_eff_pot = generate_effective_potential(self.guest.chk, self.grid.points[...,:3], beta, int_dict, degree=self.degree, max_size=2e+3)
+                for atom in guest_atoms:
+                    part_epot_fn = epot_fn_dict[atom]
+                    if os.path.exists(part_epot_fn):
+                        os.remove(part_epot_fn)
+                potential = int_eff_pot.reshape(self.grid.npoints)
+            else:
+                if isinstance(self.guest, NonSphericalGuest):
+                    epot_dict = get_external_potential_dict(self.host.par, self.guest.par, self.host.chk, self.guest.chk, cutoff=self.cutoff)
+                    potential = generate_effective_potential(self.guest.chk, points, 1/temperature/boltzmann, epot_dict, degree=self.degree, cutoff=self.cutoff)
+                    potential = potential.reshape(self.grid.npoints)
+                elif isinstance(self.guest, SphericalLJGuest):
+                    ff_dict = read_pars_file(self.host.par)
+                    potential = get_external_potential(points, ff_dict, self.guest.sigma, self.guest.epsilon, self.host.mol, cutoff=self.cutoff)
+                    potential = potential.reshape(self.grid.npoints)
 
-        for i in range(points.shape[0]):
-            for j in range(points.shape[1]):
-                for k in range(points.shape[2]):
-                    self.ff.system.pos[-self.natom:] = neutr_pos + points[i,j,k,:3]
-                    if self.natom == 1:
-                        self.ff.update_pos(self.ff.system.pos)
-                        poten = self.ff.compute()
-                    else:
-                        if method == 'pre':
-                            integrand = effective_potential_precalc(self.ff, self.natom, 1/boltzmann/temperature, degree=self.degree)
-                        else:
-                            integrand = effective_potential_Leb(self.ff, self.natom, 1/boltzmann/temperature, degree=self.degree)[0]
-                        try:
-                            poten = -boltzmann*temperature*np.log(integrand) 
-                        except FloatingPointError:
-                            poten = self.limit_potential
-                    self.potential[i,j,k] = poten
-
-        self.kpotential = self.grid.fft(self.potential)
+            self.potential = potential
+            self.kpotential = self.grid.fft(self.potential)      
 
     def dump_potential(self, fn):
         assert self.potential is not None

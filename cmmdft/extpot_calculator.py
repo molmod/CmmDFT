@@ -171,6 +171,7 @@ def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
     V_shift = 4 * epsilon * (rc6**2 - rc6)
 
     V[inside] = 4 * epsilon * (r12 - r6) - V_shift
+    V[inside] = 4 * epsilon * (r12 - r6) - V_shift
 
     if derivative:
         dV = np.zeros_like(r)
@@ -199,6 +200,10 @@ def get_external_potential(points, host_data, FF_dict, sigmaff, epsilonff, cutof
     Returns:
     - Vext: External potential at the given points. 
     """
+    host_pos = host_data[0]
+    ffatype_ids = host_data[3]
+    rvecs = host_data[-1]
+
     host_pos = host_data[0]
     ffatype_ids = host_data[3]
     rvecs = host_data[-1]
@@ -331,6 +336,7 @@ def compute_batch_insertion_energy_typed(
     Returns:
         (M,) insertion energy for each guest atom
     """
+    raise NotImplementedError("Typed insertion energy calculation is not implemented yet.")
     if guest_positions.ndim == 1:
         guest_positions = np.expand_dims(guest_positions, axis=0)
     box = np.asarray(np.linalg.norm(host_syst.cell.rvecs, axis=1))
@@ -412,9 +418,6 @@ def compute_batch_insertion_energy_typed(
 
         insertion_energies[gidx] = E
     return insertion_energies
-
-
-
 
 def generate_rotation_matrix(degree, dimension):
     '''This function generates rotation matrices for 2D, 3D, and 4D dimensions based on the input degree.

@@ -114,7 +114,7 @@ class Calculator(object):
         self.guest.compute_hardsphere_radius(temp)
         Rhs = self.guest.Rhs
         WDA = WDAVFunctional(Rhs, self.grid, mwbr)
-        wrho = WDA._get_weighted_density(self.grid.fftn(rho))#*self.grid.dr)
+        wrho = WDA._get_weighted_density(self.grid.fftn(rho))
         mask_MBWR = (wrho*mwbr.sigma**3)>1.2
 
         rho_MBWR = np.copy(rho)
@@ -517,10 +517,9 @@ class Calculator(object):
             rho = np.load(fn)
         else:
             assert isinstance(rho, np.ndarray), 'The density must be a numpy array'
-            # assert np.isclose(np.array(rho.shape), np.array(self.grid.npoints)), f'The shape of the density {rho.shape} does not match the grid shape {self.grid.npoints}'
 
         if over_loading: N = self.grid.integrate(rho)
-        krho = self.grid.fftn(rho)#*self.grid.dr
+        krho = self.grid.fftn(rho)
         if partname.lower() in ["fid", "fideal"]:
             prefactor = boltzmann*temp
             rho_reg = rho.copy()
@@ -1261,6 +1260,7 @@ class Calculator(object):
         Diffusion constant
 
         """
+        raise NotImplementedError("This method is in development and not yet available.")
         with log.section('PROGRAM', 2, timer='Diffusion constant'):
 
             T1 = temperature + dT/2
@@ -1291,7 +1291,6 @@ class Calculator(object):
 
                 mass = np.sum(self.guest.mol.masses)
 
-                # log.dump(f'Reduced sef-diffusivity constant {0.585*np.exp(alpha*s_ex)}')
                 Ds_local = np.zeros_like(rho)
                 Ds_local[mask] = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex[mask])
                 Ds = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*self.grid.integrate(s_ex))
@@ -1338,7 +1337,7 @@ class Calculator(object):
             rho_mask = np.isclose(rho*self.fener.wavelength**3, 0, atol=1e-200)
 
             dF = 0
-            krho = self.grid.fftn(rho)#*self.grid.dr
+            krho = self.grid.fftn(rho)
             for part in self.fener.parts:
                 if part.name in ['ExtPot', 'EffExtPot']:
                     continue
@@ -1346,11 +1345,8 @@ class Calculator(object):
                     # print(part.name)
                     dF += part.derive(rho, krho)
             
-            # dF = self.grid.ifftn(dF).real
             ext_pot[~rho_mask] = -boltzmann*temperature*np.log(rho[~rho_mask]*self.fener.wavelength**3) - dF[~rho_mask] + chempot
             ext_pot[rho_mask] = limit_potential
-            # print(chempot/kjmol)
-            # print('dF average: ', np.mean(dF[~rho_mask])/kjmol, 'density contribution average: ', np.mean(-boltzmann*temperature*np.log(rho[~rho_mask]*self.fener.wavelength**3))/kjmol)
 
             if fn is None:
                 if 'ExtPot' in self.fener.part_names:

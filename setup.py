@@ -31,7 +31,7 @@ setup(
         author='Louis Vanduyfhuys',
         author_email='Louis.Vanduyfhuys@UGent.be',
         package_dir = {'cmmdft': 'cmmdft'},
-        packages=['cmmdft'],
+        packages=['cmmdft', 'cmmdft.rotations', 'cmmdft.rotations.helpers'],
         classifiers=[
             'Development Status :: 3 - Alpha',
             'Environment :: Console',

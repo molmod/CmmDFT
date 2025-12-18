@@ -19,8 +19,6 @@
 # along with this program; if not, see <http://www.gnu.org/licenses/>
 # --
 """Lebedev Angular Grid Module.
-
-TODO: Describe how the stored points & weights were calculated.
 """
 
 import warnings

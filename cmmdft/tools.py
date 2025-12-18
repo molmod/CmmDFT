@@ -7,8 +7,6 @@ from __future__ import division
 
 import numpy as np
 import itertools
-import numpy.random as rd
-from scipy.optimize import brentq
 from .rotations.AngGrid import AngularGrid
 from .rotations._stroud_1969 import *
 
@@ -20,10 +18,9 @@ from yaff import System, ForceField, Parameters
 __all__ = [
     'selection_sort', 'bisect_left', 'get_file_suffix',
     'merge_ffpar_files', 'merge_ffpar_files', 'get_ff', 'merge_yaff_systems', 'write_LJ_pars_chk',
-    'find_local_maxima', 'find_neighbours'
+    'find_local_maxima', 'find_neighbours',
     'potential_from_mfa', 'make_supercell',
-    'TricubicInterpolator', 'convert_units',
-    'Document'
+    'convert_units', 'Document'
 ]
 
 
@@ -296,76 +293,53 @@ def find_local_maxima(density, points):
 
 def find_neighbours(index, data, direct=True):
     """
-    A routine hich finds the neighbours of a given index and a given 3d dataset.
-    It returns first the neighbouring datapoints and second the indices of the neighbouring points.
+    Return neighbouring values and their indices for a 3D array with periodic wrapping.
 
+    Parameters
+    ----------
+    index : tuple of int
+        (ix, iy, iz) index of the central point.
+    data : ndarray, shape (Nx, Ny, Nz)
+        3D array of data.
+    direct : bool, optional
+        If True return only the 6 direct neighbors (±x, ±y, ±z). If False also return
+        the 12 face-diagonal neighbours (pairs of ±1 offsets). Triple offsets (corners)
+        are not included.
+
+    Returns
+    -------
+    neighbours : ndarray
+        1D array with neighbour values, in the order produced by the offsets.
+    new_indices : list of tuple
+        List of (ix, iy, iz) indices corresponding to the returned neighbours.
     """
-    neighbours = []
-    new_indices = []
-    xdim, ydim, zdim = data.shape
+    data = np.asarray(data)
+    assert data.ndim == 3, "data must be a 3D array"
+    ix, iy, iz = index
+    Nx, Ny, Nz = data.shape
 
-    for e,i in enumerate([-1,1]):
-        new_index = ((index[0]+i)%xdim, index[1], index[2])
-        try:
-            neighbours.append(data[new_index])
-            new_indices.append(new_index)
-        except IndexError:
-            pass
-        new_index = (index[0], (index[1]+i)%ydim, index[2])
-        try:
-            neighbours.append(data[new_index])
-            new_indices.append(new_index)
-        except IndexError:
-            pass
-        new_index = (index[0], index[1], (index[2]+i)%zdim)
-        try:
-            neighbours.append(data[new_index])
-            new_indices.append(new_index)
-        except IndexError:
-            pass
-        if not direct:
-            new_index = ((index[0]+i)%xdim, (index[1]+i)%ydim, index[2])
-            try:
-                neighbours.append(data[new_index])
-                new_indices.append(new_index)
-            except IndexError:
-                pass
-            new_index = ((index[0]+i)%xdim, (index[1]-i)%ydim, index[2])
-            try:
-                neighbours.append(data[new_index])
-                new_indices.append(new_index)
-            except IndexError:
-                pass
+    if direct:
+        offsets = np.array([
+            (-1,  0,  0), ( 1,  0,  0),
+            ( 0, -1,  0), ( 0,  1,  0),
+            ( 0,  0, -1), ( 0,  0,  1),
+        ], dtype=int)
+    else:
+        # all offsets with Manhattan distance 1 or 2 (exclude the central point and corners)
+        offs = [(dx, dy, dz)
+                for dx in (-1, 0, 1)
+                for dy in (-1, 0, 1)
+                for dz in (-1, 0, 1)
+                if not (dx == dy == dz == 0) and (abs(dx) + abs(dy) + abs(dz) in (1, 2))]
+        offsets = np.array(offs, dtype=int)
 
-            new_index = ((index[0]+i)%xdim, index[1], (index[2]+i)%zdim)
-            try:
-                neighbours.append(data[new_index])
-                new_indices.append(new_index)
-            except IndexError:
-                pass
+    xs = (ix + offsets[:, 0]) % Nx
+    ys = (iy + offsets[:, 1]) % Ny
+    zs = (iz + offsets[:, 2]) % Nz
 
-            new_index = ((index[0]+i)%xdim, index[1], (index[2]-i)%zdim)
-            try:
-                neighbours.append(data[new_index])
-                new_indices.append(new_index)
-            except IndexError:
-                pass
-
-            new_index = (index[0], (index[1]+i)%ydim, (index[2]+i)%zdim)
-            try:
-                neighbours.append(data[new_index])
-                new_indices.append(new_index)
-            except IndexError:
-                pass
-
-            new_index = (index[0], (index[1]+i)%ydim, (index[2]-i)%zdim)
-            try:
-                neighbours.append(data[new_index])
-                new_indices.append(new_index)
-            except IndexError:
-                pass
-
-    return np.array(neighbours), new_indices
+    neighbours = data[xs, ys, zs]
+    new_indices = list(zip(xs.tolist(), ys.tolist(), zs.tolist()))
+    return neighbours, new_indices
 
 
 def make_supercell(data, repetitions=[3,3,3], grid_spacings=None, periodic=True):
@@ -394,9 +368,11 @@ def make_supercell(data, repetitions=[3,3,3], grid_spacings=None, periodic=True)
 class convert_units(object):
     def __init__(self, mass_guest, mass_host, volume_host):
         """
-        ff_guest: a yaff System of the guest gas molecule
+        Convert between different adsorption units. For a given combination of guest and host
 
-        ff_host: a yaff System of the host unit cell
+        mass_guest: mass of guest molecule in amu
+        mass_host: mass of host material in gram
+        volume_host: volume of host material in centimeter**3
         """
         rho_stp = (mass_guest/amu)*1e-3/22.414 #g/cm**3
         rho_host = (mass_host/gram)/(volume_host/centimeter**3) #g/cm**3
@@ -421,143 +397,10 @@ class convert_units(object):
         unit_list = ['wt%', 'cm3/cm3', 'mol/mol', 'mol/g', 'mol/kg', 'au/uc', 'mg/g']
         assert input in unit_list and output in unit_list, "input must be a tuple where the first element is the value of the unit and the second is a string containing the unit type"
         return self.input_dict[input]/self.output_dict[output]
-    
-class TricubicInterpolator:
-    def __init__(self, grid_values, grid_origin, grid_spacing, coefficients):
-        """
-        Initialize the tricubic interpolator.
-        
-        Parameters:
-        - grid_values: (8, Nx, Ny, Nz) array with the function and its derivatives.
-        - grid_origin: (3,) array for the grid's Cartesian origin.
-        - grid_spacing: (3,) array for grid spacing in x/y/z directions.
-        - coefficients: (64, 64) matrix used in tricubic interpolation.
-        """
-        self.values = grid_values  # (8, Nx, Ny, Nz)
-        self.origin = np.array(grid_origin)
-        self.spacing = np.array(grid_spacing)
-        self.coeff = coefficients
-        self.shape = grid_values.shape[1:]  # (Nx, Ny, Nz)
-        self.Nx, self.Ny, self.Nz = self.shape
-
-        # 8 corner offsets for the cubic interpolation
-        self.corner_offsets = np.array([
-            [0, 0, 0], [1, 0, 0],
-            [0, 1, 0], [1, 1, 0],
-            [0, 0, 1], [1, 0, 1],
-            [0, 1, 1], [1, 1, 1]
-        ])
-
-    def _wrap_indices(self, idx, dim):
-        """ Ensure indices wrap around for periodic boundary conditions. """
-        # if idx>= dim:
-        #     print(f"Warning: index {idx} exceeds dimension {dim}.")
-        # return np.mod(idx, dim)
-        return idx
-    
-    def interpolate_unvectorized(self, position):
-        """
-        Unvectorized interpolation for a single position.
-
-        Parameters:
-        - position: (3,) array of Cartesian coordinates.
-        
-        Returns:
-        - interpolated: scalar value of the interpolated function.
-        """
-        # Compute fractional grid coordinates
-        s = (position - self.origin) / self.spacing
-        ix = np.floor(s).astype(int)
-        rx = s - ix
-
-        # Wrap indices for periodic boundaries
-        ix0 = self._wrap_indices(ix[0], self.Nx)
-        iy0 = self._wrap_indices(ix[1], self.Ny)
-        iz0 = self._wrap_indices(ix[2], self.Nz)
-
-        # Prepare X: (64,)
-        X = np.zeros(64)
-
-
-        for corner_idx, (dx, dy, dz) in enumerate(self.corner_offsets):
-            xi = self._wrap_indices(ix0 + dx, self.Nx)
-            yi = self._wrap_indices(iy0 + dy, self.Ny)
-            zi = self._wrap_indices(iz0 + dz, self.Nz)
-
-            for deriv in range(8):
-                X[corner_idx + deriv * 8] = self.values[deriv, xi, yi, zi]
-                
-        a = np.zeros(64)
-        for e in range(64):
-            for ee in range(64):
-                a[e] += self.coeff[e,ee]*X[ee]
-
-        value = 0
-        for e in range(4):
-            for ee in range(4):
-                for eee in range(4):
-                    value += a[e+ee*4+eee*16]*(rx[0]**e)*(rx[1]**ee)*(rx[2]**eee)
-        return value
-    
-    def interpolate(self, positions):
-        """
-        Vectorized interpolation for multiple positions.
-
-        Parameters:
-        - positions: (N, 3) array of Cartesian coordinates.
-        
-        Returns:
-        - interpolated: (N,) array of interpolated values.
-        """
-        positions = np.atleast_2d(positions)
-        N = positions.shape[0]
-
-        # Compute fractional grid coordinates
-        s = (positions - self.origin) / self.spacing
-        ix = np.floor(s).astype(int)
-        rx = s - ix
-
-        # Wrap indices for periodic boundaries
-        ix0 = self._wrap_indices(ix[:, 0], self.Nx)
-        iy0 = self._wrap_indices(ix[:, 1], self.Ny)
-        iz0 = self._wrap_indices(ix[:, 2], self.Nz)
-
-
-        # Prepare X: (N, 64)
-        X = np.zeros((N, 64))
-        for corner_idx, (dx, dy, dz) in enumerate(self.corner_offsets):
-            xi = self._wrap_indices(ix0 + dx, self.Nx)
-            yi = self._wrap_indices(iy0 + dy, self.Ny)
-            zi = self._wrap_indices(iz0 + dz, self.Nz)
-
-            for deriv in range(8):
-                X[:, corner_idx + deriv * 8] = self.values[deriv, xi, yi, zi]
-        
-        # Cap extreme values to avoid overflow
-        result = np.zeros(N)
-
-        # Compute interpolation coefficients (N, 64)
-        a = X @ self.coeff.T
-        u, v, w = rx[:, 0], rx[:, 1], rx[:, 2]
-        # Compute relative distances for polynomial powers
-        for i in range(4):
-            ui = u ** i
-            for j in range(4):
-                vj = v ** j
-                for k in range(4):
-                    wk = w ** k
-                    idx = i + 4 * j + 16 * k
-                    result += a[:, idx] * ui * vj * wk
-
-        # Apply cap to extreme values
-        if result.shape[0] > 1:
-            return result
-        else:
-            return result[0]
 
 class Document(object):
     """
-    A class to write AIF files with data blocks, key-value pairs, and loops.
+    A class to write adsorption information format (AIF) files with data blocks, key-value pairs, and loops.
     """
     def __init__(self):
         self.blocks = []

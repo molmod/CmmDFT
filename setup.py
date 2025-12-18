@@ -22,8 +22,7 @@
 #
 #--
 
-import glob
-from distutils.core import setup
+from setuptools import setup
 
 setup(
         name='CmmDFT',
@@ -42,4 +41,13 @@ setup(
             'Programming Language :: Python',
             'Topic :: Science/Engineering :: Molecular Science'
         ],
+        install_requires=['cython>=0.29.23',
+                      'numpy>=1.0',
+                      'scipy',
+                      'matplotlib',
+                      'molmod',
+                      'h5py',
+                      'yaff'
+        ]
+
 )

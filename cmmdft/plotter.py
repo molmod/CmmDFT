@@ -701,27 +701,6 @@ class Plotter(object):
             self.fig.savefig(fn, dpi=150)
         return self.fig
 
-    def plot_loading_AIF(self, temperature, x_key='pressure',  y_keys='amount'):
-        from gemmi import cif
-        fn = f'{self.workdir}/loading_{temperature}K.aif'
-        aif = cif.read(fn)
-        block = aif.sole_block()
-        values = []
-        for key in y_keys:
-            values.append(np.array(block.find_loop(f'_adsorp_{key}'), dtype=float))
-        self.fig = pp.figure()
-        ax = self.fig.gca()
-
-        ax.plot(values[0], values[1], label=f'')
-        unit_x = block.find_pair(f'_units_{x_key[0]}')
-        unit_y = block.find_pair(f'_units_{y_keys[1]}')
-        pp.xlabel(f'{key[0]} [{unit_x}]')
-        pp.ylabel(f'{key[1]} [{unit_y}]')
-
-        pp.show()
-
-        pass
-
         
 class MultiPlotter(Plotter):
     '''

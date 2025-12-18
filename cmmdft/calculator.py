@@ -5,20 +5,16 @@ from pathlib import Path
 import scipy.optimize as opt
 from scipy.special import logsumexp
 import getpass, datetime
-import json
-import itertools
 
 from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom, amu
 from molmod.constants import boltzmann, avogadro
-from yaff import log as ylog
-ylog.set_level(ylog.silent)
 
 from .system import System, Grid, NanoporousHost, SphericalLJGuest
 from .program import Program
 from .functionals import WDAVFunctional, ExternalPotential, FreeEnergy
 from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
-from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff, get_file_suffix, Document
+from .tools import selection_sort, bisect_left, make_supercell, convert_units, get_file_suffix, Document
 from .extpot_calculator import get_external_potential, read_pars_file
 
 
@@ -134,14 +130,7 @@ class Calculator(object):
             if isinstance(eos, EquationOfState):
                 eos.set_temperature(temp)
                 dens_bulk = eos.solve_densities_from_chempots(chempots)
-                final_dens_bulk = np.zeros(len(chempots))
-                for e,dens in enumerate(dens_bulk):
-                    if not np.isnan(dens[0]):
-                        final_dens_bulk[e] = dens[0]
-                    elif not np.isnan(dens[1]):
-                        final_dens_bulk[e] = dens[1]
-                    else:
-                        raise ValueError(f'No density found for the bulk at {temp}K and {chempots[e]/kjmol:#0.4f}kJ/mol')
+                final_dens_bulk = np.nanmin(dens_bulk, axis=1)
             else:
                 final_dens_bulk = np.array([eos.calculate_rho(temp, mu) for mu in chempots])
             loading_list -= final_dens_bulk*He_frac*self.host.cell.volume
@@ -150,7 +139,7 @@ class Calculator(object):
 
     def get_chemical_potential(self, temperature):
         """
-        Returns a dictionary containing all the chemical potentials for which the density is calculated for a given temperature
+        Returns an array of chemical potentials for a given temperature, for which densities have been calculated.
         """
 
         numeric_const_pattern = '[-+]? (?: (?: \d* \. \d+ ) | (?: \d+ \.? ) )(?: [Ee] [+-]? \d+ ) ?'
@@ -179,7 +168,8 @@ class Calculator(object):
     
     def get_Henry_Coefficient(self, temperature):
         """
-        Returns the Henry coefficient for a given temperature
+        Returns the Henry coefficient for a given temperature, estimated from the external potential.
+        Requires that an ExternalPotential part is present in the functional.
         """
         potential = None
         for name in self.fener.part_names:
@@ -214,7 +204,8 @@ class Calculator(object):
         thermodynamic properties of a substance, such as its pressure, volume, and temperature. The
         `save_loadings` function uses the `eos` object to calculate the pessure at a given
         temperature and chemical potential
-        
+        fn
+            The filename where the loadings will be saved. If None, a default filename will be generated         
         '''
          
         if chempots is None:
@@ -222,10 +213,10 @@ class Calculator(object):
         
         data = np.zeros((2, len(chempots)))
         if pressure:
-            header = 'pressures [Eh/a0**3], loadings [molecules/uc]'
+            header = 'pressures [au], loadings [molecules/uc]'
             data[0] = np.array([eos.calculate_pressure(temperature, chem) for chem in chempots])
         else:
-            header = 'chempot [Eh], loadings [molecules/uc]'
+            header = 'chempot [au], loadings [molecules/uc]'
             data[0] = chempots
         data[1] = self.return_loading(temperature, chempots, excess=excess, eos=eos)
         if fn is None:
@@ -237,7 +228,7 @@ class Calculator(object):
         np.savetxt(fn, data.T, delimiter=',', header=header, comments='')
         
     def save_loadings_AIF(self, temp, chempots=None, pressures=None, eos=None, 
-                          input_fn=None, input_zip=True, user=None, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
+                          input_fn=None, user=None, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
         """
         Save the adsorption loadings to an AIF (Adsorption Information File) format.
         Parameters:
@@ -308,8 +299,6 @@ class Calculator(object):
         block.set_pair('_units_loading', loading_unit)
         block.set_pair('_units_pressure','bar')
         block.set_pair('_units_mass','amu')
-
-        #prepare data
 
         #get the pressures from the chemical potentials and the provided eos
         if pressures is None:
@@ -510,22 +499,22 @@ class Calculator(object):
         Parameters
         ----------
         diffusion_path
-            The diffusion path is a 2D numpy array that represents the path along which the diffusion takes
-        place. The first row of the array represents the starting point of the diffusion path, and the
-        second row represents the ending point of the diffusion path.
+            2D array defining the diffusion path. Should be of shape (2, 3), where the first row is the zero
+        point of the path and the second row is a point defining the direction of the path.
         ring_indices
             The `ring_indices` parameter is a list of indices of the atoms that form the ring through which the
         diffusion takes place.
-        dist_from_axis
+        dist_from_axis, float, optional
             The `dist_from_axis` parameter is used to filter out points that are too far from the diffusion
         axis. It specifies the maximum distance from the diffusion axis that a point can have in order to be
-        included in the calculation of collective variables.
+        included in the calculation of collective variables. If not specified, all points will be included.
         supercell, optional
             The `supercell` parameter is a boolean flag that determines whether to create a supercell of the
-        points in the grid.
+        density points in the grid.
         step_dist
             The `step_dist` parameter is the distance between consecutive points on the collective variable
-        (CV) grid. It determines the resolution of the CV values.
+        (CV) grid. It determines the resolution of the CV values. Importanttly, it should be set such that a
+        uniform number of points fit in each bin.
         cvs_limits
             The `cvs_limits` parameter is a tuple of two numbers that constrain the collective variable (CV)
         values for which the free energy is calculated. The CV values outside this range will be excluded
@@ -578,7 +567,7 @@ class Calculator(object):
 
         return cvs, cvs_mat, dist_mask
 
-    def project_density(self, temp, chempot, cvs, cvs_mat, dist_mask, rewrite=False, supercell=True, normalize=False, save=True, save_fn=None):
+    def project_density(self, temp, chempot, cvs, cvs_mat, dist_mask, rewrite=False, supercell=True):
         '''The function `project_density` calculates and returns the projected density at a given temperature
         and chemical potential.
         
@@ -598,6 +587,8 @@ class Calculator(object):
             The `dist_mask` parameter is a boolean mask that is used to select specific regions in the
         `cvs_mat` array. It is used to filter out certain values in `cvs_mat` based on some condition. The
         resulting mask is then used to calculate the projected density.
+        rewrite, optional
+            A boolean parameter that determines whether to recalculate the projected density
         supercell, optional
             The `supercell` parameter is a boolean flag that determines whether the density calculation should
         be performed on a supercell. If `supercell` is set to `True`, the density calculation will be
@@ -634,23 +625,15 @@ class Calculator(object):
                     q_max = cvs[e+1]
                     step_dist = q_max - q_min
                     mask = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
-
-                    if normalize:
-                        n_list[e] =  self.grid.integrate(mask*rho)/step_dist
-                    else:
-                        n_list[e] =  self.grid.integrate(mask*rho)
+                    n_list[e] =  self.grid.integrate(mask*rho)
                         
                 q_list = (cvs[1:]+cvs[:-1])/2
 
-                if save:
-                    data = np.array((q_list, n_list)).T
-                    if save_fn is None:
-                        save_fn = self.workdir / f'projected_density_{file_suff}.csv'
-                    else: 
-                        save_fn = self.workdir / save_fn
+                data = np.array((q_list, n_list)).T
+                save_fn = self.workdir / f'projected_density_{file_suff}.csv'
 
-                    np.savetxt(save_fn, data, delimiter=',', header = 'cv, density')
-                    log.dump(f'Calculated the projected density at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {save_fn}')
+                np.savetxt(save_fn, data, delimiter=',', header = 'cv, density')
+                log.dump(f'Calculated the projected density at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {save_fn}')
                 return q_list, n_list
         
     def project_contributions(self, temp, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, fn=None, rewrite=False):
@@ -752,7 +735,7 @@ class Calculator(object):
             log.dump(f'Calculated the projected contributions at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')
 
             
-    def save_loading_and_grand_potential(self, temp, chempot, fn=None):
+    def save_loading_and_grand_potential(self, temp, chempot):
         '''The function `save_density_and_grand_potential` calculates and saves the projected density and the
         grand potential at a given temperature and chemical potential.
         
@@ -765,17 +748,13 @@ class Calculator(object):
         fn
             The "fn" parameter is an optional argument which can be used to specify a certain density file
         
-        Returns
-        -------
-            The function `save_density_and_grand_potential` returns two values: `q_list` and `n_list`.
         
         '''
         with log.section('CALCULATOR', 2, timer=None):
             n = self.loading(temp, chempot)
             omega = self.grand_potential(temp, chempot)
             chempot_key = f'{chempot:#0.8f}'
-            if fn is None:
-                fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.csv'
+            fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.csv'
             if os.path.isfile(fn):
                 data = np.loadtxt(fn, delimiter=',', skiprows=1)
                 data = np.atleast_2d(data).T
@@ -802,28 +781,54 @@ class Calculator(object):
             else:
                 data = np.array([[chempot], [n], [omega.real]])
 
-            np.savetxt(fn, data.T, delimiter=',', header='chempot [kJ/mol], loading [molecules/uc], grand potential [Eh/uc]', comments='')
+            np.savetxt(fn, data.T, delimiter=',', header='chempot [kJ/mol], loading [molecules/uc], grand potential [au]', comments='')
     
     def free_energy_path(self, temp, chempot, chempots=None, fn=None, max_n_chems=0, dens_omega_fn=None, fn_suffix=''):
         """
-        Calculates the free energy profile along a predefined collective variable, q, this variable is the projection of the position of a molecule on a diffusion path of guests in the MOF.
-        First two properties are calculated, n(q) and p(q), which respectively are the number of molecule with cv q and the probability of finding a molecule at that cv.
-        
+        Compute and save the free-energy profile (as a function of a collective variable) at a given
+        temperature and chemical potential by integrating projected densities over a range of
+        chemical potentials.
 
-        PARAMETERS
+        The routine collects previously computed projected densities (projected_density_*.csv)
+        for chemical potentials up to `chempot` and uses the stored loadings/grand potentials
+        (loading_grand_potential_*.csv) to perform a numerically stable integration with
+
+        The functions: project_density and save_loading_and_grand_potential should be run first 
+        to generate the required files.
+
+        Parameters
         ----------
-        temp: the temperature
-        chempot: the chemical potential of he situation studied
-        diffusion path: an array containing two coordinates defining the axis along wich the diffusion takes place, the first coordinate corresponds to a value of 0 for q, will be prioritzied over ring_indices
-        ring_indices: an array containing the indices of the atoms which constitue the ring through which the diffusion takes place
+        temp : float
+            Temperature in Kelvin.
+        chempot : float
+            Target chemical potential (atomic units). The computation integrates over chemical
+            potentials lower than or equal to this value.
+        chempots : array-like, optional
+            Optional list/array of chemical potentials to use instead of scanning available files.
+            If provided, only chemical potentials <= `chempot` are used.
+        fn : str or pathlib.Path, optional
+            Filename to save the free energy profile. If None, a default filename is generated
+            in the workdir.
+        max_n_chems : int, optional
+            If > 0, limits the number of chemical potentials sampled by subsampling the list,
+            to speed up the integration. Default is 0 (use all available chemical potentials).
+        dens_omega_fn : str or pathlib.Path, optional
+            Path to a precomputed loading/grand-potential file. If None, the function looks for the
+            default loading_grand_potential_{temp} file in `self.workdir`.
+        fn_suffix : str, optional
+            Additional suffix appended to projected density filenames when reading them.
+            (Used for testing purposes.)
 
-        RETURNS
-        ---------
-        cvs: an array 
-        n: an array containing the number of molecules with the control variable corresponding to the control variables occuring in the grid
-        p: an array containing the probability of finding a molecule with the control variable corresponding to the control variables occuring in the grid
-        Omega: The grand potential along the diffusion path corresponding to the control variables occuring in the grid
+        Returns
+        -------
+        None
+            The computed profile is written to `fn`.
 
+        Raises
+        ------
+        AssertionError
+            If required projected density or loading/grand potential files are missing, or if
+            provided chemical potentials do not satisfy the requirements (e.g. list must include `chempot`).
         """
         with log.section('CALCULATOR', 2, timer='Diffusion path calculation'):
             beta = 1/temp/boltzmann            
@@ -909,7 +914,7 @@ class Calculator(object):
             The "fn" parameter is an optional argument which can be used to specify a certain density file
             to be used for the calculation.
         '''
-
+        raise NotImplementedError("This method is deprecated. Will be removed and replaced with Thermolib's kinetics module in future releases.")
         with log.section('CALCULATOR', 2, timer='diffusion coefficient calculation'):
             beta = 1/temp/boltzmann            
 
@@ -1217,10 +1222,15 @@ class Calculator(object):
             The `chempot` parameter represents the chemical potential in atomic units.
         temperature
             The `temperature` parameter represents the temperature in Kelvin.
-        rho
-            The `rho` parameter is a 3D numpy array that represents the density profile.
+        rho_fn
+            The `rho_fn` parameter is used to specify the file path of the density profile. If it is not provided,
+            the function will look for a default file based on the chemical potential and temperature.
         fn
-            The "fn" parameter is an optional argument which can be used to specify a certain density file
+            The "fn" parameter is an optional argument which will be used to specify the file path where the
+        calculated external potential will be saved. If not provided, a default file path will be generated.
+        limit_potential
+            The `limit_potential` parameter is used to set a maximum value for the external potential. If the
+        calculated external potential exceeds this limit, it will be capped at this value.
         
         Returns
         -------

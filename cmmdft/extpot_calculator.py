@@ -149,7 +149,7 @@ coefficients = np.array([
 
 
 
-__all__ = ['Interpolator', 'effective_potential', 'effective_potential_vectorized', 
+__all__ = ['lennard_jones', 'Interpolator', 'effective_potential', 'effective_potential_vectorized', 
            'generate_rotation_matrix', 'generate_effective_potential', 'get_external_potential_derivatives',
            'get_interpolator_dict', 'get_external_potential_dict', 'read_pars_file', 'get_system_data']
 
@@ -193,7 +193,6 @@ def get_external_potential(points, FF_dict, sigmaff, epsilonff, host_syst, cutof
     - sigmaff: Sigma parameter for the guest.
     - epsilonff: Epsilon parameter for the guest.
     - host_syst: YaffSystem object for the host.
-    - rvecs: cell vectors for periodic boundary conditions.
 
     Returns:
     - Vext: External potential at the given points. 
@@ -272,7 +271,7 @@ def get_external_potential_derivatives(points, FF_dict, sigmaff, epsilonff, host
     - sigmaff: Sigma parameter for the guest.
     - epsilonff: Epsilon parameter for the guest.
     - host_syst: YaffSystem object for the host.
-    - rvecs: cell vectors for periodic boundary conditions.
+    - spacings: Spacings in each dimension (dx, dy, dz).
 
     Returns:
     - Vext: External potential at the given points. 
@@ -614,7 +613,7 @@ def effective_potential_vectorized(guest, position_shifts, epot_generator_dict, 
     return result  # shape: (m,)
 
 
-def generate_effective_potential(guest_chk_fn, points, beta, epot_generator_dict, degree=11, max_size=1e+5/500):
+def generate_effective_potential(guest_chk_fn, points, beta, epot_generator_dict, degree=11, max_size=None):
     """
     Generate the effective potential for a guest molecule in a grid.
     
@@ -625,11 +624,11 @@ def generate_effective_potential(guest_chk_fn, points, beta, epot_generator_dict
     - grid_values_fn: Filename for the grid values.
     - spacings: spacings of the original grid.
     - degree: degree of the rotational grid.
+    - max_size: Maximum number of points to process in one batch. Adjust to fit in memory.
     
     Returns:
     - interpolator: TricubicInterpolator object for potential interpolation.
     """
-
     guest = System.from_file(guest_chk_fn)
 
     position_shift = points.reshape(-1,3)
@@ -642,7 +641,8 @@ def generate_effective_potential(guest_chk_fn, points, beta, epot_generator_dict
     combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3)  # (nrot, 3, 3)
     expanded_weights = np.repeat(weights1*weights2, len(R2))   # (nrot,)
 
-
+    if max_size is None:
+        max_size = int(1e+5/len(expanded_weights))
     if len(position_shift) > max_size:
         position_shift_split = np.array_split(position_shift, np.shape(position_shift)[0]//max_size)
     else:
@@ -659,10 +659,10 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
     Generate a dictionary of interpolators for each atom type.
     
     Parameters:
-    - keys: List of atom types.
-    - grid_values_fn: Filename for the grid values.
+    - grid_values_fn_dict: Dictionary of filenames containing potential grid values and derivatives for each atom type.
     - grid_origin: Origin of the grid.
     - grid_spacing: Spacing of the grid.
+    - int_method: Interpolation method ('tricubic', 'trilinear', 'tricubic_estimated').
     
     Returns:
     - interpolator_dict: Dictionary of interpolators for each atom type.
@@ -675,13 +675,15 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
         interpolator_dict[key] = getattr(interpolator, int_method)
     return interpolator_dict
     
-def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, shift=True, cutoff=12*angstrom):
+def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, cutoff=12*angstrom):
     """
     Generate a dictionary of external potentials for each atom type.
     
     Parameters:
     - pars_file_host: Filename for the host parameters.
     - pars_file_guest: Filename for the guest parameters.
+    - chk_host: Checkpoint file for the host system.
+    - cutoff: Cutoff distance for the potential.
     
     Returns:
     - external_potential_dict: Dictionary of external potentials for each atom type.
@@ -690,8 +692,7 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, shift
     FF_dict = read_pars_file(pars_file_host)
     FF_dict_guest = read_pars_file(pars_file_guest)
     host_syst = System.from_file(chk_host)
-    if shift:
-        host_syst.pos -= host_syst.pos.sum(axis=0)/len(host_syst.pos) 
+    host_syst.pos -= host_syst.pos.sum(axis=0)/len(host_syst.pos) 
     
     external_potential_dict = {}
     for key in FF_dict_guest:
@@ -702,7 +703,7 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, shift
 
 
 def read_pars_file(pars_file):
-    """ Read parameters from a pars file """
+    """ Read parameters from a pars file. Returns a dictionary of force field parameters. """
     LJpar = Parameters.from_file(pars_file).sections['LJ']
     units = [parse_unit(unit[1].split()[1]) for unit in LJpar.definitions['UNIT'].lines]
     FF_dict = {}
@@ -715,7 +716,7 @@ def read_pars_file(pars_file):
     return FF_dict
 
 def get_system_data(chk_fn, pars_file):
-    """ Read system data from a checkpoint file """
+    """ Read system data from a chk file. Returns system properties and force field parameters. """
     syst = System.from_file(chk_fn)
     pos = syst.pos
     masses = syst.masses
@@ -744,5 +745,4 @@ def get_system_data(chk_fn, pars_file):
         FF_dict[index] = np.array([sigma, epsilon])
 
     
-    # return (jnp.array(pos), jnp.array(masses), ffatypes, jnp.array(ffatype_ids), syst.natom, jnp.array(rvecs)), jnp.array(FF_dict)
     return (pos, masses, ffatypes, ffatype_ids, syst.natom, rvecs), FF_dict

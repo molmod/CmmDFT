@@ -19,14 +19,14 @@ __all__ = ['Program']
 
 
 class Program(object):
-    def __init__(self, prefix='', hostname='', guestname='', ff_suffix='', funct_suffix='', grid_suffix='', suffix='', overwrite=False, logfile=None, second_log=False, silent=False):
+    def __init__(self, prefix='', hostname='', guestname='', ff_suffix='', funct_suffix='', grid_suffix='', suffix='', overwrite=False):
         '''This is the initialization function for a class that sets various attributes and creates a work
             directory if it doesn't exist.
             
             Parameters
             ----------
             prefix
-                A string that will be added to the beginning of the output file names.
+                A string that will be added to the beginning of the output file directory.
             hostname
                 The hostname parameter is a string that represents the name of the host framework
             guestname
@@ -34,7 +34,7 @@ class Program(object):
             ff_suffix
                 The forcefield parameter is a string that specifies the type of force field to be used in the
             simulation. First the host ff then the guest ff.
-            functionals
+            funct_suffix
                 This parameter is used to specify the type of excess functional to be used in the
             calculation. 
             grid_suffix
@@ -43,13 +43,11 @@ class Program(object):
             suffix
                 A string that will be appended to the end of the output file names. It can be used to differentiate
             between different runs or to provide additional information about the calculation.
+            overwrite, optional
                 A boolean parameter that determines whether existing files in the work directory should be
             overwritten or not. If set to True, existing files will be overwritten. If set to False, existing
             files will not be overwritten.
-            fn_energy_tracking
-                The parameter fn_energy_tracking is a file name used to track the energy during the calculation. It
-            is an optional parameter and its default value is None. If a file name is provided, the energy
-            values will be written to that file during the calculation.
+            
         '''
         #Initializing       
 
@@ -62,12 +60,6 @@ class Program(object):
         if not workdir.is_dir():
             workdir.mkdir(parents=True, exist_ok=True)
             print('Created work directory %s' %workdir)  
-
-        if silent:
-            log.set_level('silent')
-
-        if logfile is not None:
-            log.write_to_file('', logfile, second_log=second_log)
 
         #Initializing
         with log.section('PROGRAM', 1, timer='Initializing'):
@@ -87,8 +79,7 @@ class Program(object):
             funct_suffix=self.name_dict['funct_suffix'],
             grid_suffix=self.name_dict['grid_suffix'],
             suffix=self.name_dict['suffix'],
-            overwrite=self.overwrite,
-            logfile=None
+            overwrite=self.overwrite
         )
         new_instance.workdir = self.workdir
         new_instance.rho_fn = self.rho_fn
@@ -107,7 +98,7 @@ class Program(object):
     def set_system(self, host, guest):
         self.system = System(host, guest)
     
-    def set_grid(self, npoints=None, spacing=0.25*angstrom, shift=True):
+    def set_grid(self, npoints=None, spacing=0.5*angstrom):
         '''This function sets up a grid for a given program with a specified number of points or spacing. npoints or spacing must be provided
             
             Parameters
@@ -117,11 +108,11 @@ class Program(object):
                 number of points in 3 dimesions If not specified, the default value is used.
             spacing
                 The spacing parameter is the distance between two adjacent grid points in the Grid object. It is
-            specified in units of length, with the default value being 0.25 Angstroms.
+            specified in units of length, with the default value being 0.5 Angstrom.
         '''
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
-        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, shift=shift)
+        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing)
     
     def init_free_energy(self, temperature):
         '''This function initializes the FreeEnergy object of a program at a given temperature.
@@ -130,14 +121,6 @@ class Program(object):
             ----------
             temperature
                 The temperature at which the free energy calculation will be performed.
-            rewrite_RHS, optional
-                A boolean parameter that determines whether to overwrite the pre-existing hard sphere radius (RHS)
-            values for the free energy calculation. If set to True, the RHS values will be overwritten. If set to
-            False, the existing RHS values will be used for the calculation.
-            RHS_style, optional
-                RHS_style is a string parameter that specifies the averaging style of the hard sphere radius (RHS) used in the
-            calculation of the free energy. It can take one of three values: 'sb', 'bo', or 'ave'. 'su' stands for semi-uniform averaging
-            'bo' for Boltzmann weighted averaging and ave for uniform
         '''
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
@@ -233,18 +216,50 @@ class Program(object):
         self.mask_empty = (~energy_mask)*(~range_mask)*(~self.mask_mof)
         return self.mask_site, self.mask_mof, self.mask_empty    
 
-    def _set_initial_density(self, Ninit=None, chempot=None, rewrite=False, Temp=None, silent=False):
+    def _set_initial_density(self, Ninit=None, chempot=None, rewrite=False, temperature=None, silent=False):
         """
-            Sets the initial density for the solving of the cDFT calculation
+        Initialize the density field for the simulation.
 
-            Parameters
-            ----------
-            Ninit : Initial density:
-            If Ninit is a string or a Path object: loads density profile from this file, string or Path must be an existing density file
-            If Ninit a float: set the density to this float
+        This method sets up the initial density distribution using one of several strategies:
+        reading from a file, loading from a provided initial guess, or computing from
+        thermodynamic parameters.
+
+        Parameters
+        ----------
+        Ninit : str, Path, float, np.ndarray, optional
+            Initial density specification. Can be:
+            - str or Path: Path to a file containing initial density data
+            - float: Number density value (particles per unit volume)
+            - np.ndarray: Array with shape matching grid points
+            If None, density is computed from chemical potential with ideal gas law.
             
-            chempot : Chemical potential sed to calculate the ideal gas density.  The default is None.
-            rewrite : Boolean. Setting to true will lead the program to ignore previous calculations. The default is False.
+        chempot : float, optional
+            Chemical potential in energy units (J/mol). Used to compute initial density
+            via ideal gas law when Ninit is None. Required if Ninit is None.
+            
+        rewrite : bool, optional
+            If True, ignore existing density file and recompute initial density.
+            Default is False.
+            
+        temperature : float, optional
+            Temperature in Kelvin. Used for Boltzmann distribution when computing
+            density in external potential. Required when using external potential.
+            
+        silent : bool, optional
+            If True, suppress logging output. Default is False.
+
+        Raises
+        ------
+        FileNotFoundError
+            If Ninit is a file path that does not exist.
+            
+        AssertionError
+            If Ninit array shape does not match the grid dimensions.
+
+        Notes
+        -----
+        - Priority order: existing density file > Ninit > chempot-based calculation
+        - If external potential exists, density will be excluded from high-energy regions.
         """
         if silent: label_log_level = 3
         else: label_log_level = 1
@@ -268,7 +283,7 @@ class Program(object):
                         if index is not None:
                             epot_data = self.fener.parts[index].potential
                             epot_pos = np.maximum(epot_data, 0)
-                            self.rho0 = Ninit*np.exp(-epot_pos/boltzmann/Temp)
+                            self.rho0 = Ninit*np.exp(-epot_pos/boltzmann/temperature)
                             log.dump('Setting initial guess for density at %.3e/cellvolume in pores' %Ninit)
                         else:
                             log.dump('Setting initial guess for density at %.3e/cellvolume' %(Ninit*self.system.host.cell.volume))
@@ -289,22 +304,6 @@ class Program(object):
                         epot_data = np.zeros(self.grid.npoints)          
                     self.rho0 = np.exp(self.fener.beta*(chempot-epot_data))/self.fener.wavelength**3
                     
-    def _set_split_density(self, masks, densities):
-        """
-            Set the initial density to a split density according to a given split of the system
-
-            Parameters
-            ----------
-            masks : List of masks in the shape of the grid, indicating the different regions of densities
-            densities : List of the densities respective to list of the masks.
-        """
-        with log.section('PROGRAM', 1, timer='Initializing'):
-            assert len(masks) == len(densities)
-            log.dump('Setting initial guess with a split density') 
-            self.rho0 = np.zeros(self.grid.npoints)
-            for rho,mask in zip(masks, densities):
-                self.rho0[mask] = rho  
-            self.split = True
     
     def set_solver(self, solver):
         '''This function sets the solver for a program.'''
@@ -330,25 +329,42 @@ class Program(object):
 
 
     def solve(self, chempot, Ninit=None, rewrite=False, energy_tracking=True, silent=False, continue_solving=False):
-        '''This function solves for the density profile at given a chemical potential and temperature
-        
+        """
+        Determine the equilibrium density profile for a given chemical potential.
         Parameters
         ----------
-        chempot
-            The chemical potential of the simulation.
-        Ninit
-            Initial density (see _set_initial_density for more information).
-        rewrite, optional
-            A boolean parameter that determines whether to overwrite and ignore all previously calculated
-        loadings. 
-        energy_tracking, optional
-            A boolean parameter that determines whether the program will log and save energetic values during
-        the simulation. If set to True, the program will save the energetic values in a seperate file.
-        silent, optional
-            A boolean parameter that determines whether or not to print log messages during the calculation.
-        If set to True, only critical log messages will be printed.
-        
-        '''
+        chempot : float
+            Chemical potential in energy units (in atomic units)
+        Ninit : float, str, np.ndarray, optional
+            Initial number of particles. If None, determined from initial density, for more info see _set_initial_density().
+        rewrite : bool, optional
+            If True, recompute the initial density even if a file exists. Default is False.
+        energy_tracking : bool, optional
+            If True, initialize energy tracking and save convergence data. Default is True.
+        silent : bool, optional
+            If True, suppress logging output. Default is False.
+        continue_solving : bool, optional
+            If True, load existing solution files and continue solving algorithm.
+            If False, this function will terminate if a solution exists. Default is False.
+        Returns
+        -------
+        N : float
+            Total number of particles in the system.
+        rho : ndarray
+            Density profile on the grid.
+        converged : bool
+            Whether the solver converged to a solution.
+        Notes
+        -----
+        This method:
+        1. Calculates thermodynamic properties (temperature, chemical potential, fugacity).
+        2. Checks for existing solutions and loads them if available (unless rewrite).
+        3. Sets up the initial density profile.
+        4. Solves the self-consistent field equations using the internal solver.
+        5. Saves the solution and convergence history to disk.
+        The output files are named based on the chemical potential and temperature via get_file_suffix()
+        and are stored in the workdir.
+        """
         if silent: log_level = 3
         else: log_level = 2
         with log.section('PROGRAM', log_level, timer='Solve'):
@@ -359,11 +375,12 @@ class Program(object):
             log.dump('  chem. pot.  = %7.3f kJ/mol' %(chempot/kjmol))
             log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
 
+            self.file_suffix = get_file_suffix(chempot, self.fener.temperature)
+
             if energy_tracking:
-                convergence_fn = os.path.join(self.workdir,  "convergence_%7.5fkJmol_%7.5fK.txt" %(chempot/kjmol,self.fener.temperature/kelvin))
+                convergence_fn = os.path.join(self.workdir,  f'convergence_{self.file_suffix}.txt')
                 self.fener.init_tracking(convergence_fn)
 
-            self.file_suffix = get_file_suffix(chempot, self.fener.temperature)
             self.rho_fn = os.path.join(self.workdir, 'rho_%s.npy'%(self.file_suffix))
             if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite and not continue_solving:
                 log.dump('  skipping because solution found in file %s' %(self.rho_fn))
@@ -372,7 +389,7 @@ class Program(object):
                 converged = True
                 return N, rho, converged
             
-            self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
+            self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, temperature=self.fener.temperature, silent=silent)
             rho_old = self.rho0.copy()
             N, rho, converged = self.solver.solve(chempot, rho_old, log_level)
 
@@ -385,186 +402,4 @@ class Program(object):
 
             np.save(self.rho_fn, rho)
             return N, rho, converged
-
-    # def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):
-    #     '''This function calculates the reference chemical potential by solving an adsorption isotherm and
-    #         finding the chemical potential with the steepest incline.
-            
-    #         Parameters
-    #         ----------
-    #         chempots
-    #             A numpy array containing the chemical potentials for which the adsorption isotherm needs to be
-    #         calculated.
-    #         silent, optional
-    #             The `silent` parameter is a boolean flag that determines whether or not to print out progress
-    #         messages during the calculation. If `silent=True`, then no progress messages will be printed.
-    #         rewrite, optional
-    #             The `rewrite` parameter is a boolean flag that determines whether to overwrite existing files or
-    #         not.
-            
-    #         Returns
-    #         -------
-    #             The calculated reference chemical potential.
-    #     '''
-    #     # calculate the reference chemical potential
-    #     with log.section('PROGRAM', 1, timer='Initializing mu_ref'):
-    #         assert 'HybExtPot' in self.fener.part_names
-    #         log.dump('Calculating the reference chemical potential through calculating the adsorption isotherm')
-    #         fn=1e-6
-    #         numbers = np.empty_like(chempots)
-    #         for e, chempot in enumerate(chempots):
-    #             self.solve(chempot, Ninit=fn, rewrite=rewrite, silent=silent)
-    #             fn = Path(f'{self.workdir}/rho_{chempot/kjmol:#7.5f}kJmol_{self.temp:#7.5f}K.npy')
-    #             assert fn.is_file(), f'No file found at {str(fn)}'
-    #             numbers[e] = self.grid.integrate(np.load(fn))
-    #         deriv = np.gradient(numbers, chempots, edge_order=2) 
-    #         self.mu_ref = chempots[np.where(deriv==np.max(deriv))[0][0]]
-    #         log.dump(f'The reference chemical potential is calculated: {round(self.mu_ref/kjmol,ndigits=4)} kJ/mol')
-    #         return self.mu_ref
-
-    # def calculate_hybrid_potential(self, mu_ref, threshold, rewrite=False, chempots=None, silent=True, mse_version=False, site_version=False):
-    #     '''This function calculates a hybrid potential from two models, a forcefield and an ab initio input
-            
-    #         Parameters
-    #         ----------
-    #         mu_ref
-    #             The reference chemical potential used for convergence of the hybrid potential calculation. 
-    #         See function calculate_reference_chemical_potential()
-    #         threshold
-    #             The convergence threshold for the adsorption isotherm or mean squared error (MSE) when calculating
-    #         the hybrid potential.
-    #         rewrite, optional
-    #             A boolean parameter that determines whether to overwrite existing files or not. If set to True,
-    #         existing files will be overwritten. Default is False.
-    #         chempots
-    #             A list of chemical potentials at which to calculate the loadings for the hybrid potential.
-    #         silent, optional
-    #             A boolean parameter that determines whether or not to print log messages during the calculation of
-    #         the hybrid potential. If set to True, no log messages will be printed. If set to False, log messages
-    #         will be printed.
-    #         mse_version, optional
-    #             A boolean parameter that determines whether the convergence of the hybrid potential is checked
-    #         using the mean squared error of the new densities.
-    #         site_version, optional
-    #             A boolean parameter that determines whether the secondary external potential is initialized at
-    #         points designated as adsorption sites or at local maxima of the loading density. If site_version is
-    #         True, the secondary external potential is initialized at points designated as adsorption sites. If
-    #         site_version is False, the secondary external potential is
-    #     '''
-    #     with log.section('PROGRAM', 1, timer='Initializing hybrid potential'):
-    #         temp = self.fener.temperature
-    #         natom = self.system.guest.mol.natom
-    #         hyb_index = self.fener.part_names.index('HybExtPot')
-    #         Hybrid_External_Potential = self.fener.parts[hyb_index]
-    #         Hybrid_External_Potential.reset_potential(self.workdir)
-    #         fn = 1e-6
-            
-    #         if not hasattr(self, 'mask_site'):
-    #             self.calc_regions(range_cutoff=3*angstrom, energy_cutoff=0.2)
-
-                
-    #         loadings = np.empty_like(chempots)
-    #         for e, chempot in enumerate(chempots):
-    #             self.solve(chempot, Ninit=fn, rewrite=rewrite, silent=silent)
-    #             fn = Path(f'{self.workdir}/rho_{self.chempot/kjmol:#7.5f}kJmol_{self.temp:#7.5f}K.npy')
-    #             assert fn.is_file(), f'No file found at {str(fn)}'
-    #             loadings[e] = self.grid.integrate(np.load(fn))
-
-    #         if not site_version:
-    #             #The first points for the second forcefield are chosen as the local maxima of the density at the reference chemical potential
-    #             log.dump('Initialized the secondary external potential at points with a local maximum of the loading density')   
-    #             fn = Path(f'{self.workdir}/rho_{self.chempot/kjmol:#7.5f}kJmol_{self.temp:#7.5f}K.npy')
-    #             assert fn.is_file(), f'No file found at {str(fn)}'            
-    #             density = np.load(fn)
-    #             local_minima = find_local_maxima(density, self.grid.points[:,:,:,:-1])
-    #             Hybrid_External_Potential.update_potential(natom, local_minima)
-            
-    #         else:
-    #         # Using the distinction between site and empty space from above to determine the first points calculated with the second external potential
-    #             Hybrid_External_Potential.update_potential(natom, self.mask_site)
-    #             log.dump('Initialized the secondary external potential at points designited as adsorption sites')               
-
-    #         mean_square_error = 100
-    #         error = 100
-
-    #         percentages = []
-    #         perc = np.sum(Hybrid_External_Potential.sub_grid)/np.sum(Hybrid_External_Potential.sub_grid+~Hybrid_External_Potential.sub_grid)
-    #         perc_non_mof = np.sum(Hybrid_External_Potential.sub_grid)/np.sum(~self.mask_mof)
-    #         percentages.append([0,perc, perc_non_mof]) #count the percentage of points included in the subgrid
-            
-    #         errors = []
-
-    #         if mse_version:
-    #             log.dump('Using the mean squared error of the new densities to check for convergence')
-    #             log.dump("")
-    #             i=0
-    #             new_loadings = np.empty_like(chempots)
-    #             density = np.load('%s/rho_%4.5fkJmol_%3.0fK.npy' %(self.workdir,mu_ref/kjmol,temp/kelvin))
-    #             #mean squared error convergence
-    #             while mean_square_error>1e-10:
-    #                 for e, chempot in enumerate(chempots):
-    #                     self.solve(chempot, Ninit=fn, rewrite=rewrite, silent=silent)
-    #                     fn = Path(f'{self.workdir}/rho_{self.chempot/kjmol:#7.5f}kJmol_{self.temp:#7.5f}K.npy')
-    #                     assert fn.is_file(), f'No file found at {str(fn)}'
-    #                     new_loadings[e] = self.grid.integrate(np.load(fn))
-    #                 log.dump('New points have been added to the secondary external potential')
-    #                 self.solve(mu_ref, silent)                
-    #                 fn = Path(f'{self.workdir}/rho_{self.chempot/kjmol:#7.5f}kJmol_{self.temp:#7.5f}K.npy')
-    #                 assert fn.is_file(), f'No file found at {str(fn)}'            
-    #                 new_density = np.load(fn)
-    #                 mean_square_error = np.mean((density-new_density)**2)
-    #                 errors.append(mean_square_error)
-    #                 log.dump(f'The mean squared error is {mean_square_error}, threshold is {threshold}')
-    #                 density = new_density
-                    
-    #                 np.savetxt(self.workdir+f'/interm_loadings_{i}.csv', np.array([new_loadings, chempots]).T, delimiter=',', header='loading, chemical pot')
-    #                 np.save(self.workdir+f'/interm_loadings_{i}.npy', new_loadings)
-
-    #                 new_neighbours = Hybrid_External_Potential.add_neighbours(mask_mof=self.mask_mof)
-    #                 Hybrid_External_Potential.update_potential(natom, new_neighbours)
-    #                 i += 1
-
-    #                 perc = np.sum(Hybrid_External_Potential.sub_grid)/np.sum(Hybrid_External_Potential.sub_grid+~Hybrid_External_Potential.sub_grid)
-    #                 perc_non_mof = np.sum(Hybrid_External_Potential.sub_grid)/np.sum(~self.mask_mof)
-    #                 percentages.append([i, perc, perc_non_mof]) #count the percentage of points included in the subgrid
-                    
-    #                 log.dump('New points have been added to the secondary external potential')
-    #                 log.dump("")
-    #             log.dump('The loading density has converged, the hybrid potential has been calculated')
-
-    #         #adsorption isotherm convergence
-    #         else:
-    #             log.dump('Using the loadings of the adsorption isotherm as a metric for convergence')
-    #             log.dump("")
-    #             i=0
-    #             new_loadings = np.empty_like(chempots)
-    #             while error > threshold:
-    #                 for e, chempot in enumerate(chempots):
-    #                     self.solve(chempot, Ninit=fn, rewrite=rewrite, silent=silent)
-    #                     fn = Path(f'{self.workdir}/rho_{self.chempot/kjmol:#7.5f}kJmol_{self.temp:#7.5f}K.npy')
-    #                     assert fn.is_file(), f'No file found at {str(fn)}'
-    #                     new_loadings[e] = self.grid.integrate(np.load(fn))
-    #                 error = np.trapz(np.abs(loadings-new_loadings), chempots)
-    #                 errors.append(error)
-    #                 loadings = new_loadings.copy()
-    #                 np.savetxt(self.workdir+f'/interm_loadings_{i}.csv', np.array([loadings, chempots]).T, delimiter=',', header='loading, chemical pot')
-    #                 np.save(self.workdir+f'/interm_loadings_{i}.npy', loadings)
-
-    #                 new_neighbours = Hybrid_External_Potential.add_neighbours(mask_mof=self.mask_mof)
-    #                 Hybrid_External_Potential.update_potential(natom, new_neighbours)
-    #                 i+=1
-
-    #                 # print('new neighbours: ', new_neighbours)
-    #                 # print('Subgrid in the full ', Hybrid_External_Potential.sub_grid)            
-    #                 perc = np.sum(Hybrid_External_Potential.sub_grid)/np.sum(Hybrid_External_Potential.sub_grid+~Hybrid_External_Potential.sub_grid)
-    #                 perc_non_mof = np.sum(Hybrid_External_Potential.sub_grid)/np.sum(~self.mask_mof)
-    #                 percentages.append([i,perc, perc_non_mof]) #count the percentage of points included in the subgrid #count the percentage of points included in the subgrid
-    #                 log.dump(f'The error is {error}, threshold is {threshold}')
-    #                 log.dump('New points have been added to the secondary external potential')
-    #                 log.dump("")
-
-    #         np.savetxt(self.workdir+'/errors.csv', np.array([np.arange(i), errors]).T, delimiter=',', header='step, convergence')
-    #         np.savetxt(self.workdir+f'/hybrid_loadings.csv', np.array([loadings, chempots]).T, delimiter=',', header='loading, chemical pot')
-    #         np.savetxt(self.workdir+'/precentage_grid.csv', percentages, header='step, percentage, percentage non mof', delimiter=', ')
-    #         np.save(self.workdir+f'/hybrid_loadings.npy', loadings)
 

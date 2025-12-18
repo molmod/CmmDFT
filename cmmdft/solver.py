@@ -1,7 +1,4 @@
 #!/usr/bin/env python
-'''Tools to perform classical DFT simulations'''
-
-
 from __future__ import division
 
 import numpy as np, sys, os
@@ -25,28 +22,37 @@ class Solver(object):
 
     name = 'SOLVER'
 
-    def __init__(self, program, nsteps=250, threshold=1e-6, criterion='RIUE', a_tol=1e-6, r_tol=1e-4, min_iter=1,
-                  track_history=False):
+    def __init__(self, program, nsteps=500, threshold=1e-6, criterion='RIUE', 
+                 a_tol=1e-6, r_tol=1e-4, min_iter=1, track_history=False):
         """
-        Initialize the solver with the given parameters.
-        Parameters:
-        grid : object
-            The grid object used for the solver.
-        fener : object
-            The free energy object containing functionals.
+        Initialize the Solver.
+
+        Parameters
+        ----------
+        program : object
+            Program object that must provide `grid` and `fener` attributes used by the solver.
         nsteps : int, optional
-            The maximum number of steps for the solver (default is 250).
-        threshold : float, optional
-            The convergence threshold for the solver (default is 1e-6).
-        criterion : str, optional
-            The criterion for convergence ('RIUE', 'RES', or 'DER') (default is 'RIUE').
+            Maximum number of iterations (default 500).
+        threshold : float or list, optional
+            Convergence threshold(s) corresponding to the provided criterion(s).
+        criterion : str or list, optional
+            Convergence criterion name or list of names. 
+            Valid values are: 'RIUE' (Relative Integrated Unsigned Error), 'RES' (Residual error), 'DER' (Derivative error).
+            If a list is provided, multiple criteria will be checked for convergence.
         a_tol : float, optional
-            The absolute tolerance for convergence (default is 1e-6) only used for DER.
+            Absolute tolerance used when computing derivative norm in the DER criterion.
         r_tol : float, optional
-            The relative tolerance for convergence (default is 1e-4) only used for DER.
-        Raises:
+            Relative tolerance used when computing derivative norm in the DER criterion.
+        min_iter : int, optional
+            Minimum number of iterations before accepting convergence.
+        track_history : bool, optional
+            If True, the solver stores a per-step history array, containing convergence information.
+            This is saved as a .txt file in the output folder of the program.
+
+        Raises
+        ------
         AssertionError
-            If the criterion is not one of 'RIUE', 'RES', or 'DER'.
+            If an invalid criterion is provided or if multiple criteria are given with a mismatched threshold list.
         """
         self.grid = program.grid
         self.fener = program.fener
@@ -67,12 +73,6 @@ class Solver(object):
                 threshold = 1
             self.criterion = [criterion]
             self.threshold = [threshold]
-
-
-        self.mask = np.ones(self.grid.npoints, dtype=bool)
-        for part in self.fener.parts:
-            if 'ExtPot' in part.name:
-                self.mask = np.where(part.potential>50*boltzmann*self.fener.temperature, False, True)
             
         self.a_tol = a_tol
         self.r_tol = r_tol
@@ -89,7 +89,7 @@ class Solver(object):
 
     def _initiate_solving(self, chempot):
         """
-        Routine which is called before the solving starts to reset the solver if necessary.
+        Routine which is called before the solving starts to reset the solver.
         """
         self.fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
         self.chempot = chempot
@@ -101,7 +101,7 @@ class Solver(object):
             self.history = np.zeros((self.nsteps+1, 7)) 
 
     def _get_Omega(self, rho, krho):
-        with log.section(self.name, self.log_level, timer='Omega'):
+        with log.section(self.name, self.log_level, timer='Omega calculation'):
 
             N = self.grid.integrate(rho)
             rho_reg = self._clip_density(rho)
@@ -135,7 +135,7 @@ class Solver(object):
         return dO
 
     def _get_C1(self, rho, krho=None):
-        with log.section(self.name, self.log_level, timer='C1'):
+        with log.section(self.name, self.log_level, timer='Excess derivative'):
             if krho is None:
                 krho = self.grid.fft(rho)
             C1 = np.zeros(self.grid.npoints)
@@ -299,8 +299,6 @@ class Solver(object):
                 if self._check_convergence(rho_new, krho_new, C1_new, rho, N_new):
                     converged = True
                     break
-                # tconvstop = time.perf_counter()
-                # log.dump(f'Checking the convergence took {round(tconvstop-tconvstart,2)} seconds')
 
                 rho = rho_new.copy()
                 C1 = C1_new.copy()
@@ -353,36 +351,37 @@ class Picard(Solver):
 
     name = 'PICARD'
 
-    def __init__(self, program, nsteps=250, 
-                 alpha_mix=0.1, method='hybrid', break_nstep = 80, correction_factor=1, thresh=1*kjmol, **kwargs):
-        '''This function initializes the solver object for the program.
-        
+    def __init__(self, program, nsteps=500, 
+                 alpha_mix=0.1, method='hybrid', **kwargs):
+        """
+        Initialize a Picard solver.
+
         Parameters
         ----------
-        grid
-            The `grid` parameter in the `__init__` method is used to store a grid object, which likely
-        represents a grid or lattice structure for some computational calculations or simulations.
-        fener
-            The free energy object
-        nsteps
-            The max number of steps in the calculation process. Default is 250.
-        threshold
-           Convergence threshold. Default is 1e-6
-        alpha_mix
-           The mixing parameter for the Picard iterative scheme. Default is 0.1
-        method
-            String parameter that defines the method to be used in the solver. Choices are 'hybrid', 'static'
-        correction_factor, optional
-            Dampening value on all mixing parameters, used for unstable simulations
-        thresh
-            Threshold for choosing the SLSQP solver in the hybrid solver        
-        '''
+        program : object
+            Program object providing `grid` and `fener`.
+        nsteps : int, optional
+            Maximum number of iterations (default 500).
+        alpha_mix : float, optional
+            Default mixing parameter used in Picard updates.
+        method : {'hybrid', 'static'}, optional
+            Update strategy. 'hybrid' uses a line-search / alpha optimization,
+            'static' uses fixed mixing with alpha_mix.
+        **kwargs :
+            Additional keyword arguments forwarded to the base Solver.
+
+        Raises
+        ------
+        AssertionError
+            If an unknown `method` is provided.
+        """
+        
+
         super().__init__(program, nsteps, **kwargs)
 
         self.alpha_mix = alpha_mix
-        self.correction_factor = correction_factor
-        self.break_nstep = break_nstep
-        self.thresh = thresh
+        self.correction_factor = 1
+        self.thresh = 1*kjmol
 
         if method == 'hybrid':
             self.update_rho = self.update_rho_hybrid
@@ -433,24 +432,21 @@ class Picard(Solver):
                 max_pot = np.max(omegas)/kjmol    
 
             # check if the quadratic approximation is valid and if the SLSQP solver should be used
-            if alpha_opt <= 0 and max_pot-min_pot>self.thresh:
-                # log.dump('original alpha_opt: %5.5e'%alpha_opt)
-                tstart = time.time()
-                def calc_G_rho(alpha):
-                    rho_temp = (1-alpha)*rho + alpha*Grho
-                    krho_temp = self.grid.fft(rho_temp)#*self.grid.dr
-                    omega = self._get_Omega(rho_temp, krho_temp)
-                    return omega
+            if alpha_opt <= 0:
+                if max_pot-min_pot > self.thresh:
+                    def calc_G_rho(alpha):
+                        rho_temp = (1-alpha)*rho + alpha*Grho
+                        krho_temp = self.grid.fft(rho_temp)#*self.grid.dr
+                        omega = self._get_Omega(rho_temp, krho_temp)
+                        return omega
 
-                bounds = opt.Bounds(0.01*alpha_max, 0.9*alpha_max)
-                alpha_opt_new = opt.minimize(calc_G_rho, [self.alpha_mix*alpha_max], bounds=bounds, method='SLSQP', options= {'ftol':1e-8}).x
-                tstop = time.time() 
-                alpha_opt = alpha_opt_new
-                # log.dump('SLSQP alpha opt: %5.5e in %5.5fs'%(alpha_opt, tstop-tstart))
-
+                    bounds = opt.Bounds(0.01*alpha_max, 0.9*alpha_max)
+                    alpha_opt_new = opt.minimize(calc_G_rho, [self.alpha_mix*alpha_max], bounds=bounds, method='SLSQP', options= {'ftol':1e-8}).x
+                    alpha_opt = alpha_opt_new
+                else:
+                    alpha_opt = self.alpha_mix*alpha_max
             if alpha_opt <= 0 or np.isclose(alpha_opt,0):
                 alpha_opt = self.alpha_mix*alpha_max
-                # log.dump(f'Manually set the value of alpha_mix to: {alpha_opt*self.correction_factor}')
                 
             rho_new = (1-alpha_opt*self.correction_factor)*rho + alpha_opt*self.correction_factor*Grho
             rho_new = self._clip_density(rho_new)
@@ -472,23 +468,38 @@ class Anderson(Picard):
                  m=5, damping=0.3, delta=0.2, damping_max=0.8, damping_min=0.01, adaptive_damping=True, damping_factors=(1.5,0.5),
                    **kwargs):
         """
-        Initialize the solver with the given parameters.
-        Parameters:
-        grid : object
-            The grid object used for the solver.
-        fener : object
-            The fener object used for the solver.
+        Initialize an Anderson (or Hybrid-Anderson) solver.
+
+        Parameters
+        ----------
+        program : object
+            Program object providing `grid` and `fener`.
         nsteps : int, optional
-            The number of steps for the solver (default is 500).
-        method : str, optional
-            The method used for solving (default is 'hybridanderson').
+            Maximum number of iterations (default 500).
+        method : {'anderson', 'hybridanderson'}, optional
+            Anderson variant to use. 'hybridanderson' enables hybrid switching logic with Picard.
         m : int, optional
-            Number of previous rho and Grho saved for the Anderson method (default is 5).
+            Memory length: number of previous residuals/iterates to store.
+        damping : float, optional (default 0.2)
+            Initial damping (mixing) coefficient applied to Anderson updates.
         delta : float, optional
-            Threshold for choosing the Picard solver in the hybrid method (default is 0.01).
-        **kwargs : dict
-            Additional keyword arguments passed to the superclass initializer.
-        """
+            Threshold parameter used in hybrid switching decisions.
+        damping_max : float, optional (default 0.8)
+            Maximum allowed damping value.
+        damping_min : float, optional (default 0.01)
+            Minimum allowed damping value.
+        adaptive_damping : bool, optional
+            If True, adapt damping based on recent residual norms.
+        damping_factors : tuple(float, float), optional
+            Multiplicative factors (increase, decrease) used when adjusting damping.
+        **kwargs :
+            Additional keyword arguments forwarded to the Picard/Solver base class.
+
+        Notes
+        -----
+        The constructor stores the provided parameters as attributes. Anderson-specific
+        buffers (previous rhos/Grhos) are initialized in _initiate_solving.
+        """        
         
         super().__init__(program, nsteps, method=method, **kwargs)
         self.Anderson_method = method
@@ -548,7 +559,6 @@ class Anderson(Picard):
                     self.it_eps0 = self.it_eps
 
             AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true
-
             if AND_condition:
                 try:
                     rho_new, krho_new, C1_new = self.update_rho_Anderson()
@@ -578,7 +588,8 @@ class Anderson(Picard):
         
         bds = opt.Bounds(0,1)
         linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
-        alphas = opt.minimize(sum_res, np.full(mk,1/mk), method='SLSQP', tol=1e-15, bounds=bds, constraints=linear_constraint).x
+        alphas = opt.minimize(sum_res, np.full(mk,1/mk), method='SLSQP', tol=1e-10, bounds=bds, constraints=linear_constraint).x
+
 
         rho_result = np.einsum('i,ij->j', alphas, self.prev_rhos[-mk:]).reshape(self.grid.npoints)
         Grho_result = np.einsum('i,ij->j', alphas, self.prev_Grhos[-mk:]).reshape(self.grid.npoints)
@@ -601,7 +612,7 @@ class Fire(Solver):
 
     name = 'FIRE'
 
-    def __init__(self, program, nsteps=100, method='abc-fire', alpha=0.2, dt=0.02, **kwargs):
+    def __init__(self, program, nsteps=500, method='abc-fire', alpha=0.2, dt=0.02, **kwargs):
         """
         Initialize the solver with the given parameters.
         Parameters:
@@ -610,13 +621,13 @@ class Fire(Solver):
         fener : object
             The energy function or object to be used in the solver.
         nsteps : int, optional
-            The number of steps for the solver to run (default is 100).
+            The number of steps for the solver to run (default is 500).
         method : str, optional
-            The method to be used in the solver (default is 'abc-fire').
+            The method to be used in the solver (default is 'abc-fire'). Options are 'abc-fire' or 'fire'.
         alpha : float, optional
-            The initial alpha value for the solver (default is 0.15).
+            The initial alpha value for the solver (default is 0.2).
         dt : float, optional
-            The initial time step for the solver (default is 0.002).
+            The initial time step for the solver (default is 0.02).
         **kwargs : dict
             Additional keyword arguments to be passed to the parent class initializer.
         """
@@ -695,20 +706,45 @@ class QuasiNewton(Picard):
 
     name = 'QUASI_NEWTON'
 
-    def __init__(self, program, nsteps=100, m=10, method='bfgs', hybrid=True, delta=0.5,
+    def __init__(self, program, nsteps=500, m=10, method='bfgs', hybrid=True, delta=0.5,
                  alpha_init=0.05, c1=1e-4, c2=0.9, line_search='backtracking', n_line_search=10, trust_radius=1, verbose=True, **kwargs):
         """
-        Initialize the Quasi-Newton solver with the given parameters.
-        Parameters:
-        grid : object
-            The grid object used for the solver.
-        fener : object
-            The free energy object containing functionals.
+        Initialize a Quasi-Newton solver.
+
+        Parameters
+        ----------
+        program : object
+            Program object providing `grid` and `fener`.
         nsteps : int, optional
-            The number of steps for the solver (default is 100).
-        **kwargs : dict
-            Additional keyword arguments passed to the superclass initializer.
-        """
+            Maximum number of iterations (default 500).
+        m : int, optional
+            Memory size for limited-memory updates (default 10).
+        method : {'bfgs', 'broyden', 'cg'}, optional
+            Quasi-Newton update to use.
+        hybrid : bool, optional
+            If True, alternate between Picard and QN updates (default True).
+        delta : float, optional
+            Hybrid switching threshold parameter.
+        alpha_init : float, optional
+            Initial step length for line search heuristics.
+        c1, c2 : float, optional
+            Wolfe condition constants used by line-search procedures.
+        line_search : {'backtracking', 'quadratic', 'none'}, optional
+            Line-search strategy to use for QN steps.
+        n_line_search : int, optional
+            Maximum number of line-search iterations.
+        trust_radius : float or None, optional
+            Trust-region radius cap for QN steps (default 1).
+        verbose : bool, optional
+            If True, print diagnostic messages.
+        **kwargs :
+            Additional keyword arguments forwarded to Picard/Solver base classes.
+
+        Raises
+        ------
+        AssertionError
+            If an unsupported `method` or `line_search` is provided.
+        """        
         super().__init__(program, nsteps, method=method, **kwargs)
         self.shape = np.array(program.grid.npoints)
         self.n = np.prod(self.shape)
@@ -803,28 +839,6 @@ class QuasiNewton(Picard):
         dX = self.X[1:] - self.X[:-1]
         dG = self.G[1:] - self.G[:-1]
         return dX, dG
-  
-    def _check_restart(self, gk, do_restart=False):
-
-        if not do_restart and self.restart_period is not None and self.curr_step % self.restart_period == 0:
-            print(f"[Restart] Step {self.curr_step}, restarting...")
-            do_restart = True
-
-        # angle-based (use last dir if present)
-        if not do_restart and hasattr(self, 'd_prev_flat') and self.d_prev_flat is not None:
-            p_prev = self.d_prev_flat
-            cos_theta = -float(np.dot(p_prev, gk)) / (np.linalg.norm(p_prev)*np.linalg.norm(gk) + 1e-16)
-            if cos_theta < self.angle_restart_cos:
-                do_restart = True
-
-        # gradient-stagnation restart (requires previous gradient)
-        if not do_restart and hasattr(self, 'g_prev_flat') and self.g_prev_flat is not None:
-            g_prev = self.g_prev_flat
-            if np.linalg.norm(gk) > self.stagnation_restart_ratio * np.linalg.norm(g_prev):
-                do_restart = True
-            
-        if do_restart:
-            self._flush_history()
 
     def _find_direction(self, rho, g):
         """

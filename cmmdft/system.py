@@ -32,20 +32,6 @@ class System(object):
         self.host = host
         self.guest = guest
     
-    def add_hybrid_system(self, second_host):
-        '''This function adds a secondary host to the initial host system, with the condition that they have
-        the same position but different forcefields.
-        
-        Parameters
-        ----------
-        second_host
-            `second_host` is a parameter that represents a second host system that is being added to the
-        current system, this is also an instaance of the Host class
-        
-        '''
-        assert (second_host.mol.pos == self.host.mol.pos).all(), 'The secondary host must be the same system as the initial host, albeit with a different forcefield'
-        self.second_host = second_host
-    
     def copy(self):
         if hasattr(self, 'second_host'):
             syst = System(self.host.copy(), self.guest.copy())
@@ -54,7 +40,6 @@ class System(object):
         else:
             return System(self.host.copy(), self.guest.copy())
 
-    
 
 class Host(object):
     def __init__(self, name, cell):
@@ -92,6 +77,12 @@ class NanoporousHost(Host):
 
     
 class EmptyHost(Host):
+    """
+    Class defining an empty host system for bulk calculations.
+    Can also be used to define a host with custom cell/volume 
+    while specifying no host-guest interactions. 
+    (these can be added later through external potentials in the free_energy module)
+    """
     def __init__(self, name, cell=None, volume=None):
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Configuring empty space host')
@@ -107,6 +98,9 @@ class EmptyHost(Host):
 
 
 class Guest(object):
+    """
+    Class defining a guest molecule.
+    """
     def __init__(self, name, mass):
         self.name = name
         self.mass = mass
@@ -138,9 +132,16 @@ class Guest(object):
             else:
                 self.Rhs, self.Rhs_zero = self._calculate_hardsphere_radius(temperature, **kwargs)
                 log.dump('  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.Rhs/angstrom, 4.0/3.0*np.pi*self.Rhs**3/angstrom**3))
+    
+    def _set_temperature(self, temperature, **kwargs):
+        self.wavelength(temperature)
+        self.compute_hardsphere_radius(temperature, **kwargs)
                     
 
 class SphericalLJGuest(Guest):
+    """
+    Class defining a spherical Lennard-Jones guest molecule.
+    """
     def __init__(self, name, mass, sigma, epsilon):
         Guest.__init__(self, name, mass)
         self.sigma = sigma
@@ -159,7 +160,38 @@ class SphericalLJGuest(Guest):
 
 
 class NonSphericalGuest(Guest):
+    """
+    Class defining a non-spherical guest molecule.
+    """
     def __init__(self, name, chk, par):
+        """
+        Initialize a system object.
+
+        Parameters
+        ----------
+        name : str
+            The name of the system.
+        chk : str
+            Path to the chk file from which to read the guest system.
+        par : str
+            Path to the parameters file, in .txt format compatible with Yaff.
+
+        Attributes
+        ----------
+        mol : YaffSystem
+            The molecular system loaded from the chk file.
+        natom : int
+            The number of atoms in the system.
+        chk : str
+            Path to the chk file.
+        par : str
+            Path to the parameters file.
+
+        Notes
+        -----
+        The total mass of the system is calculated from the molecular masses if available.
+        Logs the initialization process and the file paths being used.
+        """
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Reading guest from %s with parameters from %s' %(chk, par))
             self.mol = YaffSystem.from_file(chk)
@@ -169,6 +201,8 @@ class NonSphericalGuest(Guest):
             mass = None
             if self.mol.masses is not None:
                 mass = self.mol.masses.sum()
+            else:
+                raise ValueError('Masses not defined in guest chk file, cannot compute total mass for NonSphericalGuest')
             Guest.__init__(self, name, mass)
 
     def copy(self):
@@ -178,6 +212,10 @@ class NonSphericalGuest(Guest):
         raise NotImplementedError('Using generic NonSphericalGuest class, cannot compute hardsphere radius, use DualModelGuest class')
 
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
+    """
+    Class defining a dual-model guest molecule, with both spherical LJ and non-spherical representations.
+    As introduced by Hong et al.: https://doi.org/10.1002/aic.17120
+    """
     def __init__(self, name, mass, sigma, epsilon, chk, par):
         SphericalLJGuest.__init__(self, name, mass, sigma, epsilon)
         NonSphericalGuest.__init__(self, name, chk, par)
@@ -191,7 +229,7 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
 
 
 class Grid(object):
-    def __init__(self, cell, npoints=None, spacing=0.25*angstrom):
+    def __init__(self, cell, npoints=None, spacing=0.25*angstrom, silent=False):
         """
             cell
                     an instance of a Yaff cell used for extracting the system dimensions.
@@ -206,7 +244,9 @@ class Grid(object):
                     determine the number of grid points if npoints is not 
                     given.
         """
-        with log.section('GRID', 2, timer='Initializing'):
+        if silent: log_level = 3
+        else: log_level = 2
+        with log.section('GRID', log_level, timer='Initializing'):
             log.dump('Initializing grid')
             self.cell = cell
             assert self.cell.nvec==3

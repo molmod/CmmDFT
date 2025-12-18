@@ -29,7 +29,7 @@ As [molmod](https://molmod.github.io/molmod/) and [yaff](https://github.com/molm
 
 # Terms of use
 
-CmmDFT is developed by Vic De Ridder at the Center for Molecular Modeling under supervision of prof. Louis Vanduyfhuys. Usage of ThermoLIB should be requested with prof. Vanduyfhuys.
+CmmDFT is developed by Louis Vanduyfhuys, Vic De Ridder and Steven Vandenbrande at the Center for Molecular Modeling under supervision of prof. Louis Vanduyfhuys. Usage of ThermoLIB should be requested with prof. Vanduyfhuys.
 
 Copyright (C) 2019 - 2024 Louis Vanduyfhuys <Louis.Vanduyfhuys@UGent.be>
 Center for Molecular Modeling (CMM), Ghent University, Ghent, Belgium; all rights reserved unless otherwise stated.

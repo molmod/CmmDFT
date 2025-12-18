@@ -13,7 +13,7 @@ from .system import System, Grid, NanoporousHost, SphericalLJGuest
 from .program import Program
 from .functionals import WDAVFunctional, ExternalPotential, FreeEnergy
 from .eos import VanderWaalsEOS, EquationOfState
-from .log import log
+from .log import log, version
 from .tools import selection_sort, bisect_left, make_supercell, convert_units, get_file_suffix, Document
 from .extpot_calculator import get_external_potential, read_pars_file
 
@@ -268,7 +268,7 @@ class Calculator(object):
 
         # simulation metadata
         block.set_pair('_simltn_date', datetime.datetime.now().strftime('%Y-%m-%d'))
-        block.set_pair('_simltn_code', f'CmmDFT-{self.program.version}')
+        block.set_pair('_simltn_code', f'CmmDFT-{version}')
         # block.set_pair('_simltn_code', f'custom')
 
         block.set_pair('_simltn_sampling', 'cDFT')

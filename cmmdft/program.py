@@ -13,7 +13,7 @@ from molmod.units import angstrom, kelvin, kjmol, bar
 from .functionals import FreeEnergy
 from .system import System, Grid
 from .solver import Solver, Picard, Anderson, NoSolutionError
-from .log import log
+from .log import log, version
 from .tools import find_local_maxima, find_neighbours, get_file_suffix
 __all__ = ['Program']
 
@@ -51,7 +51,7 @@ class Program(object):
         '''
         #Initializing       
 
-        self.version = '0.1'
+        self.version = version
         
         self.name_dict = {'prefix':prefix, 'hostname':hostname, 'guestname':guestname, 'ff_suffix':ff_suffix, 'funct_suffix':funct_suffix, 'grid_suffix':grid_suffix, 'suffix':suffix}
 

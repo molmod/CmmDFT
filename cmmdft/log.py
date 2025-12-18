@@ -9,7 +9,7 @@ import numpy, scipy, matplotlib
 
 __all__ = ['version', 'log']
 
-version = '0.1'
+version = '1.0'
 
 header = """
 ********************************************************************************

@@ -20,6 +20,9 @@
 # --
 """Lebedev Angular Grid Module.
 """
+# Modified by Vic De Ridder, 2024
+# Changes: Altered the way the .npz files are loaded to work in CmmDFT package structure
+
 
 import warnings
 
@@ -279,7 +282,6 @@ class AngularGrid(Grid):
             )
         # load npz file corresponding to the given degree & size
         filename = f"lebedev_{degree}_{size}.npz"
-        npz_file = os.path.join('lebedev', filename)
         
         longer_npz_file = os.path.join('CmmDFT', 'cmmdft', 'rotations', 'lebedev', filename)
         abs_longer_npz_file = os.path.abspath(longer_npz_file)

@@ -7,8 +7,8 @@ from scipy.special import logsumexp
 import getpass, datetime
 import json, zipfile, itertools
 
-from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom, amu
-from molmod.constants import boltzmann, avogadro
+from .units_constants import avogadro, planck, boltzmann, kjmol, bar, kelvin, joule, mol, angstrom, amu
+
 from yaff import log as ylog
 ylog.set_level(ylog.silent)
 

@@ -14,10 +14,11 @@ from scipy.special import logsumexp
 from .rotations.AngGrid import AngularGrid
 from .rotations._stroud_1969 import *
 
-from molmod.units import kjmol, angstrom, kcalmol, amu, gram, centimeter, parse_unit
-from molmod.constants import boltzmann
+from .units_constants import kjmol, bar, kelvin, angstrom, planck, boltzmann, parse_unit
+
 
 from yaff import System, ForceField, Parameters
+
 coefficients = np.array([
 [  1,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0],

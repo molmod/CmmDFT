@@ -12,10 +12,7 @@ from __future__ import division
 
 import numpy as np, os, copy, re
 from pathlib import Path
-from molmod.units import kjmol, angstrom
-from molmod.constants import planck, boltzmann
-
-import time
+from .units_constants import kjmol, planck, boltzmann
 
 from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell, effective_potential_Leb
 from .log import log
@@ -527,7 +524,7 @@ class PCSAFTFunctional(Functional):
     
     name = 'PCSAFT'
     
-    def __init__(self, grid, guest, sigma_smooth=None, debug=False):
+    def __init__(self, grid, guest, sigma_smooth=None, debug=False, hs_approx='exp'):
         """
         **Arguments:**
         
@@ -574,6 +571,7 @@ class PCSAFTFunctional(Functional):
         # self.sigma_smooth_factor = sigma_smooth
         self.psi = 1.3862
         self.debug = debug
+        self.hs_approx = hs_approx
 
     def copy(self, grid=None):
         pcsaft = type(self)(self.grid, self.guest)
@@ -584,7 +582,11 @@ class PCSAFTFunctional(Functional):
         self.beta = 1/(boltzmann*temperature)
         self.dhs = np.zeros(len(self.m))    
         for i in range(len(self.m)):
-            self.dhs[i] = self.sigma_mix[i,i]*(1-0.12*np.exp(-3*self.epsilon_mix[i,i]/boltzmann/temperature))
+            if self.hs_approx == 'exp':
+                self.dhs[i] = self.sigma_mix[i,i]*(1-0.12*np.exp(-3*self.epsilon_mix[i,i]/boltzmann/temperature))
+            elif self.hs_approx == 'bh':
+                Tt = boltzmann*temperature/self.epsilon_mix[i,i]
+                self.dhs[i] = self.sigma_mix[i,i]*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)
         # self.dhs[:] = np.array(self.guest._calculate_hardsphere_radius(temperature)[0])*2
         # self.sigma_smooth = self.sigma_smooth_factor*np.min(self.dhs)
         self._init_weight_functions()

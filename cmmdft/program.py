@@ -7,8 +7,7 @@ from __future__ import division
 import numpy as np, sys, os, time
 from pathlib import Path
 
-from molmod.constants import boltzmann
-from molmod.units import angstrom, kelvin, kjmol, bar
+from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom
 
 from .free_energy import FreeEnergy
 from .system import System, Grid, GuestMixture

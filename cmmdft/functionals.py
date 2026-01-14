@@ -186,7 +186,6 @@ class HardSphereFunctional(Functional):
         krho
             The density in reciprocal space
         """
-        rho = self.grid.ifftn(krho)
         # The scalar density functions
         kn0 = krho*self.scalar_weight_functions[0]
         n0 = self.grid.ifftn(kn0)

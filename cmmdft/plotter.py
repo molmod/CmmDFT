@@ -4,8 +4,8 @@ import os, sys, numpy as np, matplotlib.pyplot as pp
 from pathlib import Path
 import matplotlib.cm as cmap
 
-from molmod.units import kjmol, kelvin, bar, parse_unit, angstrom
-from molmod.constants import boltzmann
+from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, parse_unit
+
 from yaff import log as ylog
 ylog.set_level(ylog.silent)
 

@@ -9,8 +9,8 @@ from scipy.fft import fftn, ifftn
 from pathlib import Path
 import json
 
-from molmod.constants import boltzmann, planck
-from molmod.units import angstrom
+from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck
+
 from yaff import System as YaffSystem, Cell
 
 from .tools import hard_spheres_barker_henderson, get_ff

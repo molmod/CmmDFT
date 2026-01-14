@@ -9,8 +9,7 @@ from __future__ import division
 import numpy as np
 from scipy.optimize import brentq, root
 
-from molmod.units import kjmol, angstrom, kelvin, bar
-from molmod.constants import planck, boltzmann
+from .units_constants import kjmol, bar, kelvin, angstrom, planck, boltzmann
 
 from .log import log
 

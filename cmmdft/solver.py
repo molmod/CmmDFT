@@ -9,8 +9,7 @@ import matplotlib.pyplot as plt
 import time
 import scipy.optimize as opt
 
-from molmod.constants import boltzmann
-from molmod.units import angstrom, kjmol
+from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom
 
 from .log import log
 from .functionals import HardSphereFunctional

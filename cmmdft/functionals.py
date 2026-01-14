@@ -12,10 +12,7 @@ from __future__ import division
 
 import numpy as np, os, copy, re
 from pathlib import Path
-from molmod.units import kjmol, angstrom
-from molmod.constants import planck, boltzmann
-
-import time
+from .units_constants import kjmol, planck, boltzmann
 
 from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell, effective_potential_Leb
 from .log import log

@@ -3,10 +3,9 @@ from __future__ import division
 
 import numpy as np, os, copy, re
 from pathlib import Path
-from molmod.units import kjmol, angstrom
-from molmod.constants import planck, boltzmann
 from yaff import ForceField
 
+from molmod.units import kjmol, angstrom, boltzmann, planck
 
 from .tools import get_ff, merge_ffpar_files, write_LJ_pars_chk
 from .log import log
@@ -396,11 +395,11 @@ class FreeEnergy(object):
 
             self.add_part(corr)
 
-    def add_PCSAFT(self, sigma_smooth=0, **kwargs):
+    def add_PCSAFT(self, sigma_smooth=0, hs_approx='exp', **kwargs):
         """
             Adds a PC-SAFT functional for attractive and repulsive interaction contributions
         """
         with log.section('FREEENER', 2, timer='Initializing'):
             log.dump('Initializing PC-SAFT functional for attractive and repulsive interaction contribution')
-            PCSAFT = PCSAFTFunctional(self.grid, self.system.guest, sigma_smooth=sigma_smooth)
+            PCSAFT = PCSAFTFunctional(self.grid, self.system.guest, sigma_smooth=sigma_smooth, hs_approx=hs_approx, **kwargs)
             self.add_part(PCSAFT)

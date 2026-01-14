@@ -12,8 +12,7 @@ from scipy.optimize import brentq
 from .rotations.AngGrid import AngularGrid
 from .rotations._stroud_1969 import *
 
-from molmod.units import kjmol, angstrom, kcalmol, amu, gram, centimeter
-from molmod.constants import boltzmann
+from .units_constants import boltzmann, kjmol, angstrom, kcalmol, amu, gram, centimeter
 
 from yaff import System, ForceField, Parameters
 

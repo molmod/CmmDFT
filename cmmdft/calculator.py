@@ -7,10 +7,7 @@ from scipy.special import logsumexp
 import getpass, datetime
 import json, zipfile, itertools
 
-from .units_constants import avogadro, planck, boltzmann, kjmol, bar, kelvin, joule, mol, angstrom, amu
-
-from yaff import log as ylog
-ylog.set_level(ylog.silent)
+from .units_constants import avogadro, planck, boltzmann, kjmol, bar, kelvin, joule, mol, angstrom, amu, convert_units
 
 from .system import System, Grid, NanoporousHost, SphericalLJGuest
 from .program import Program
@@ -18,7 +15,7 @@ from .free_energy import FreeEnergy
 from .functionals import WDAVFunctional, ExternalPotential
 from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
-from .tools import selection_sort, bisect_left, make_supercell, convert_units, write_LJ_pars_chk, merge_ffpar_files, get_ff, get_file_suffix, Document
+from .tools import selection_sort, bisect_left, make_supercell, get_file_suffix, Document
 from .extpot_calculator import get_external_potential, get_system_data
 #log.set_level('silent')
 
@@ -394,13 +391,15 @@ class Calculator(object):
         #get the uptake and convert to the desired units
         if self.ncomp > 1:
             for i in range(self.ncomp):
-                cv_units = convert_units(self.guest.mass[i], np.sum(self.host.mol.masses), self.host.cell.volume)
+                mass = np.sum(self.host.atoms.get_masses()) * amu
+                cv_units = convert_units(self.guest.mass[i], mass, self.host.cell.volume)
                 factor = cv_units.conversion_factor('au/uc', loading_unit)
                 uptake_absolute[:,i] *= factor
                 if excess:
                     uptake_excess[:,i] *= factor
         else:
-            cv_units = convert_units(self.guest.mass, np.sum(self.host.mol.masses), self.host.cell.volume)
+            mass = np.sum(self.host.atoms.get_masses()) * amu
+            cv_units = convert_units(self.guest.mass, mass, self.host.cell.volume)
             factor = cv_units.conversion_factor('au/uc', loading_unit)
             uptake_absolute *= factor
             if excess:
@@ -666,8 +665,8 @@ class Calculator(object):
         if ring_indices is not None and diffusion_path is None:
             #calculate the distance from the ring through which the diffusion  takes place
             diffusion_path = np.empty((2,3))
-            center = np.mean(self.host.mol.pos[ring_indices], axis=0)
-            points = self.host.mol.pos[ring_indices] - center
+            center = np.mean(self.host.atoms.positions[ring_indices], axis=0)
+            points = self.host.atoms.positions[ring_indices] - center
             u, s, vh = np.linalg.svd(points)            
             diffusion_path[0] = center
             diffusion_path[1] = (vh[-1,:] + center)/np.linalg.norm(vh[-1,:] + center)

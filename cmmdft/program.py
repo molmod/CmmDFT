@@ -177,10 +177,10 @@ class Program(object):
             for i in range(points.shape[0]):
                 for j in range(points.shape[1]):
                     for k in range(points.shape[2]):
-                        distance = np.zeros(self.system.host.mol.pos.shape[0])
-                        for ii, atom in enumerate(self.system.host.mol.pos):
+                        distance = np.zeros(self.system.host.atoms.positions.shape[0])
+                        for ii, atom in enumerate(self.system.host.atoms.positions):
                             vec = points[i,j,k,:3] - atom
-                            self.system.host.mol.cell.mic(vec)
+                            vec = self.system.host.cell.mic(vec)
                             distance[ii] = np.linalg.norm(vec)
                         dist[i,j,k] = np.amin(distance)
             self.dis = dist
@@ -479,7 +479,6 @@ class Program(object):
             if not hasattr(self, 'mask_site'):
                 self.calc_regions(range_cutoff=3*angstrom, energy_cutoff=0.2)
 
-                
             loadings = np.empty_like(chempots)
             for e, chempot in enumerate(chempots):
                 self.solve(chempot, Ninit=fn, rewrite=rewrite, silent=silent)

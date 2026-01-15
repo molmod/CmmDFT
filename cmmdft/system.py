@@ -9,17 +9,86 @@ from scipy.fft import fftn, ifftn
 from pathlib import Path
 import json
 
-from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck
+from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck, amu
 
-from yaff import System as YaffSystem, Cell
+from ase import atoms
+from ase.io import read
 
-from .tools import hard_spheres_barker_henderson, get_ff
+from .tools import atoms_from_chk
 from .log import log
 
-__all__ = ['System', 
+__all__ = ['Cell','System', 
            'EmptyHost', 'NanoporousHost', 
            'Guest', 'NonSphericalGuest', 'GuestMixture', 'DualModelGuest', 'SphericalLJGuest', 
            'Grid']
+
+class Cell(object):
+    def __init__(self, rvecs):
+        self.rvecs = rvecs
+        self._update_cached_quantities()
+
+    def _update_cached_quantities(self):
+        self.a_vec, self.b_vec, self.c_vec = self.rvecs
+
+        # Lengths
+        a = np.linalg.norm(self.a_vec)
+        b = np.linalg.norm(self.b_vec)
+        c = np.linalg.norm(self.c_vec)
+
+        # Volume
+        self.volume = abs(np.linalg.det(self.rvecs))
+
+        # Angles (degrees)
+        alpha = self._angle(self.b_vec, self.c_vec)
+        beta  = self._angle(self.a_vec, self.c_vec)
+        gamma = self._angle(self.a_vec, self.b_vec)
+
+        self.lengths = a, b, c
+        self.angles = alpha, beta, gamma
+
+        self.parameters = self.lengths, self.angles
+
+        # Inverse matrix
+        self.inv_rvecs = np.linalg.inv(self.rvecs)
+
+    @staticmethod
+    def _angle(v1, v2):
+        """Return angle between two vectors in degrees."""
+        cosang = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+        cosang = np.clip(cosang, -1.0, 1.0)
+        return np.degrees(np.arccos(cosang))
+
+    def frac_to_cart(self, frac_coords):
+        """
+        Convert fractional coordinates to Cartesian coordinates.
+        """
+        frac_coords = np.asarray(frac_coords, dtype=float)
+        return frac_coords @ self.rvecs
+
+    def cart_to_frac(self, cart_coords):
+        """
+        Convert Cartesian coordinates to fractional coordinates.
+        """
+        cart_coords = np.asarray(cart_coords, dtype=float)
+        return cart_coords @ self.inv_rvecs
+
+    def mic(self, delta_cart):
+        """
+        Apply the minimum image convention to a displacement vector.
+        """
+        delta_cart = np.asarray(delta_cart, dtype=float)
+
+        if delta_cart.shape[-1] != 3:
+            raise ValueError("Last dimension must be of size 3")
+
+        # Cartesian -> fractional
+        delta_frac = delta_cart @ self.inv_rvecs
+
+        # Wrap into [-0.5, 0.5)
+        delta_frac -= np.round(delta_frac)
+
+        # Fractional -> Cartesian
+        return delta_frac @ self.rvecs     
 
 class System(object):
     def __init__(self, host, guest):
@@ -70,31 +139,38 @@ class Host(object):
 
     
 class NanoporousHost(Host):
-    def __init__(self, name, chk, par, ffname, shift=True):
+    def __init__(self, name, struct, par, ffname, shift=True):
         '''This function initializes a nanoporous host system
         
         Parameters
         ----------
         name
             The name of the system being initialized.
-        chk
-            The path to a .chk file containing the host structure information.
+        struct
+            The path to a structure file containing the host structure information. (uses ASE, also adapted for .chk)
         par
             The "par" parameter is .txt a file containing the force-field parameters
         '''
         with log.section('SYSTEM', 1, timer='Initializing'):
-            log.dump('Reading host structure from %s with parameters from %s' %(chk,par))
-            self.mol = YaffSystem.from_file(chk)
+            log.dump('Reading host structure from %s with parameters from %s' %(struct,par))
+            try:
+                self.atoms = read(struct)
+            except:
+                self.atoms = atoms_from_chk(struct)
             #shift molecule so that center of positions is the origin (as cDFT grid will be centered around this origin)
             if shift:
-                self.mol.pos -= self.mol.pos.sum(axis=0)/len(self.mol.pos) 
-            Host.__init__(self, name, self.mol.cell)
-            self.chk = chk
+                positions = self.atoms.get_positions()
+                positions -= positions.sum(axis=0)/len(positions)
+                self.atoms.set_positions(positions)
+            rvecs = np.array(self.atoms.get_cell())
+            cell = Cell(rvecs)
+            Host.__init__(self, name, cell)
+            self.struct = struct
             self.par = par
             self.ffname = ffname
     
     def copy(self):
-        return NanoporousHost(self.name, self.chk, self.par, self.ffname)
+        return NanoporousHost(self.name, self.struct, self.par, self.ffname)
 
     
 class EmptyHost(Host):
@@ -107,7 +183,7 @@ class EmptyHost(Host):
             elif isinstance(cell, np.ndarray):
                 cell = Cell(cell)
             else:
-                assert isinstance(cell, Cell), 'cell should be numpy array or yaff.pes.ext.Cell instance'
+                assert isinstance(cell, Cell), 'cell should be numpy array or Cell instance'
             Host.__init__(self, name, cell)
 
 
@@ -190,34 +266,34 @@ class SphericalLJGuest(Guest):
 
 
 class NonSphericalGuest(Guest):
-    def __init__(self, name, chk, par, ffname):
+    def __init__(self, name, struct, par, ffname):
         with log.section('SYSTEM', 1, timer='Initializing'):
-            log.dump('Reading guest from %s with parameters from %s' %(chk, par))
-            self.mol = YaffSystem.from_file(chk)
-            self.natom = self.mol.natom
-            self.chk = chk
+            log.dump('Reading guest from %s with parameters from %s' %(struct, par))
+            try:
+                self.atoms = read(struct)
+            except:
+                self.atoms = atoms_from_chk(struct)
+            self.natom = len(self.atoms)
+            self.struct = struct
             self.par = par
             mass = None
-            if self.mol.masses is not None:
-                mass = self.mol.masses.sum()
+            mass = self.atoms.get_masses().sum() * amu
             Guest.__init__(self, name, mass, ffname)
 
     def copy(self):
-        return type(self)(self.name, self.chk, self.par, self.ffname)
+        return type(self)(self.name, self.struct, self.par, self.ffname)
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
-        beta = 1/(boltzmann*temperature)
-        ff_int = get_ff(self.mol, self.mol, self.par, kwargs.get('rcut', 12*angstrom))
-        return hard_spheres_barker_henderson(beta, ff_int, natom=self.mol.natom, style=kwargs.get('style', 'su'))
+        raise NotImplementedError("NonSphericalGuest has no hardsphere definition, must use DualModelGuest")
 
 
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
-    def __init__(self, name, mass, sigma, epsilon, chk, par, ffname, m=1, hs_def='bh'):
-        NonSphericalGuest.__init__(self, name, chk, par, ffname)
+    def __init__(self, name, mass, sigma, epsilon, struct, par, ffname, m=1, hs_def='bh'):
+        NonSphericalGuest.__init__(self, name, struct, par, ffname)
         SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def)
 
     def copy(self):
-        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.chk, self.par, self.ffname, m=self.m, hs_def=self.hs_def)
+        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.struct, self.par, self.ffname, m=self.m, hs_def=self.hs_def)
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)
@@ -302,7 +378,7 @@ class Grid(object):
     def __init__(self, cell, npoints=None, spacing=0.25*angstrom, shift=True):
         """
             cell
-                    an instance of a Yaff cell used for extracting the system dimensions.
+                    an instance of a cell object used for extracting the system dimensions.
             
             npoints 
                     simple list with grid dimensions (assumes equal spacing 
@@ -318,7 +394,6 @@ class Grid(object):
             log.dump('Initializing grid')
             self.cell = cell
             self.shift = shift
-            assert self.cell.nvec==3
             if npoints is None:
                 lengths, angles = self.cell.parameters
                 self.npoints = [int(np.ceil(l/spacing)) for l in lengths]
@@ -351,7 +426,7 @@ class Grid(object):
             # Cartesian components of the real space grid
 
             #New order of einsum testen ab,aijk,ijkb
-            self.points[:,:,:,:3] = np.einsum('ab,aijk->ijkb', self.cell.rvecs, gridpoints) #TODO: (louis) not sure why it is ab,bijk->ijka and not ab,aijk->ijkb
+            self.points[:,:,:,:3] = np.einsum('ab,aijk->ijkb', self.cell.rvecs, gridpoints)
             # Norms of the vectors of the real space grid
             self.points[:,:,:,3] = np.sqrt(self.points[:,:,:,0]**2+self.points[:,:,:,1]**2+self.points[:,:,:,2]**2)
             # Fourier grid

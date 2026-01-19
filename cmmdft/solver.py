@@ -628,6 +628,35 @@ class Anderson(Picard):
         linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
         alphas = opt.minimize(sum_res, np.full(mk,1/mk), method='SLSQP', tol=1e-15, bounds=bds, constraints=linear_constraint).x
 
+        # tstart=time.perf_counter()
+        # R = residuals
+        # G = R @ R.T
+        # eps = 1e-12
+        # G_reg = G + eps * np.eye(mk)
+
+        # def obj(alps):
+        #     return alps @ G_reg @ alps
+
+        # def grad(alps):
+        #     return 2 * G_reg @ alps
+
+        # bds = opt.Bounds(0, 1)
+        # constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
+
+        # res = opt.minimize(
+        #     obj,
+        #     x0=np.full(mk, 1/mk),
+        #     jac=grad,
+        #     method='SLSQP',
+        #     bounds=bds,
+        #     constraints=constraint,
+        #     tol=1e-15
+        # )
+
+        # alphas = res.x
+        # tstop=time.perf_counter()
+        # log.dump(f'Anderson alphas: {alphas}; in {round(tstop-tstart,4)} seconds')
+
         rho_result = np.einsum('i,ij->j', alphas, self.prev_rhos[-mk:]).reshape(self.rho_shape)
         Grho_result = np.einsum('i,ij->j', alphas, self.prev_Grhos[-mk:]).reshape(self.rho_shape)
 

@@ -1303,6 +1303,7 @@ class PCSAFT_EOS(EquationOfState):
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
         if self.CS_HS:
+            print('Carnahan-Starling hard sphere contribution used')
             fhs = self.CS.excess_free_energy_particle(rho)/kT
         else:
             fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)

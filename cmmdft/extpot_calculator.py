@@ -15,9 +15,12 @@ from .rotations.AngGrid import AngularGrid
 from .rotations._stroud_1969 import *
 
 from .units_constants import kjmol, bar, kelvin, angstrom, planck, boltzmann, parse_unit
+from .tools import load_chk
+from .system import Cell
 
+from .parameters import Parameters
 
-from yaff import System, ForceField, Parameters
+from collections import defaultdict
 
 coefficients = np.array([
 [  1,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
@@ -203,29 +206,28 @@ def get_external_potential(points, host_data, FF_dict, sigmaff, epsilonff, cutof
     """
     host_pos = host_data[0]
     ffatype_ids = host_data[3]
-    rvecs = host_data[-1]
+    rvecs = host_data[-2]
+    cell = Cell(rvecs)
+    atom_groups = host_data[-1]
 
-    host_pos = host_data[0]
-    ffatype_ids = host_data[3]
-    rvecs = host_data[-1]
 
     Vext = np.zeros(points.shape[:-1])
     X, Y, Z = points.T
     L = np.linalg.norm(rvecs, axis=1)
-    
     for i, atom_id in enumerate(ffatype_ids):
-        sigma, epsilon = FF_dict[atom_id]
+        sigma, epsilon = FF_dict[atom_id]    
+
         sigma_mixed = 0.5*(sigma + sigmaff)
         epsilon_mixed = np.sqrt(epsilon * epsilonff)
-        
         rx = X - host_pos[i,0]
         ry = Y - host_pos[i,1]
-        rz = Z - host_pos[i,2]
+        rz = Z - host_pos[i,2]        
 
         # apply minimum image convention
-        rx -= L[0]*(rx/L[0]).round() #periodic BC
-        ry -= L[1]*(ry/L[1]).round() #periodic BC
-        rz -= L[2]*(rz/L[2]).round() #periodic BC
+        rx, ry, rz = cell.mic(np.array([rx, ry, rz]).T).T
+        # rx -= L[0]*(rx/L[0]).round() #periodic BC
+        # ry -= L[1]*(ry/L[1]).round() #periodic BC
+        # rz -= L[2]*(rz/L[2]).round() #periodic BC
 
         R = np.sqrt(rx**2 + ry**2 + rz**2+1e-3) # to avoid zero
         pots = lennard_jones(R, sigma_mixed, epsilon_mixed, cutoff=cutoff)  # (N,)
@@ -649,7 +651,7 @@ def effective_potential(guest, position_shift, interpolator_dict, beta, limit_po
     else:
         return -np.log(total_potential)/beta
 
-def effective_potential_vectorized(guest_data, position_shifts, epot_generator_dict, beta, rotations, weights, limit_potential=1e+4*kjmol):
+def effective_potential_vectorized(position_shifts, guest_data, epot_generator_dict, beta, rotations, weights, limit_potential=1e+4*kjmol):
     position_shifts = position_shifts#.astype(np.float32)  # (m, 3)
     #beta = np.float32(beta)
 
@@ -663,14 +665,13 @@ def effective_potential_vectorized(guest_data, position_shifts, epot_generator_d
     ffatypes = guest_data[2]
     ffatype_ids = guest_data[3]
 
-
     # Broadcast neutral positions and COMs
     neutral_pos = pos[None, :, :] + position_shifts[:, None, :]  # (m, natom, 3)
     COMs = np.sum(neutral_pos * masses[None, :, :], axis=1) / total_mass  # (m, 3)
     rel_pos = neutral_pos - COMs[:, None, :]  # (m, natom, 3)
               # (11, 3, 3)
 
-    # Apply all nrot rotations to all positions
+    # # Apply all nrot rotations to all positions
     rotated = np.einsum('rij,mnj->mnri', rotations, rel_pos) + COMs[:, None, None, :]  # (m, natom, nrot, 3)
     # Interpolate by atom type
     pot = np.zeros((m, natom, nrot))
@@ -689,13 +690,75 @@ def effective_potential_vectorized(guest_data, position_shifts, epot_generator_d
     
     # sum over atoms of the molecule
     pot = np.sum(pot, axis=1)  # (m, nrot)
-
+    
     log_sum = logsumexp(-beta*pot, b=weights, axis=1)  # (m,)
 
     result = -log_sum / beta  # (m,)
 
     result = np.where(np.isinf(result), limit_potential, result)
-    result = np.where(np.isnan(result), limit_potential, result)
+
+    return result  # shape: (m,)
+
+def effective_potential_vectorized2(position_shifts, guest_data, epot_generator_dict, beta, rotations, weights, limit_potential=1e+4*kjmol):
+    position_shifts = position_shifts#.astype(np.float32)  # (m, 3)
+    #beta = np.float32(beta)
+
+    m = position_shifts.shape[0]
+    nrot = rotations.shape[0] 
+
+    pos = guest_data[0] #.astype(np.float32)                # (natom, 3)
+    natom = guest_data[4]
+    masses = guest_data[1].reshape(natom, 1)#.astype(np.float32)
+    total_mass = np.sum(masses)
+    ffatypes = guest_data[2]
+    ffatype_ids = guest_data[3]
+
+    # Broadcast neutral positions and COMs
+    neutral_pos = pos[None, :, :] + position_shifts[:, None, :]  # (m, natom, 3)
+    COMs = np.sum(neutral_pos * masses[None, :, :], axis=1) / total_mass  # (m, 3)
+    rel_pos = neutral_pos - COMs[:, None, :]  # (m, natom, 3)
+              # (11, 3, 3)
+
+    # --- Allocate per-rotation potential accumulator
+    pot_rot = np.zeros((m, nrot))  # (m, nrot)
+
+    # --- Loop over rotations (memory-cheap)
+    for r in range(nrot):
+        R = rotations[r]  # (3, 3)
+
+        # Rotate all atoms for this rotation
+        # rel_pos: (m, natom, 3)
+        # rotated: (m, natom, 3)
+        rotated = rel_pos @ R.T + COMs[:, None, :]
+
+        # Accumulate potential for this rotation
+        pot_r = np.zeros(m)
+        for atom_type_id in set(ffatype_ids):
+            indices = [i for i, t in enumerate(ffatype_ids) if t == atom_type_id]
+            if not indices:
+                continue
+
+            generator = epot_generator_dict[ffatypes[atom_type_id]]
+            # Extract all atoms of this type at once
+            # coords: (m, n_atoms_of_type, 3)
+            coords = rotated[:, indices, :]
+
+            # Flatten only atoms (not rotations)
+            coords = coords.reshape(-1, 3)  # (m * n_atoms_of_type, 3)
+
+            vals = generator(coords)  # (m * n_atoms_of_type,)
+
+            # Sum contributions from atoms of this type
+            pot_r += vals.reshape(m, -1).sum(axis=1)
+
+        pot_rot[:, r] = pot_r
+
+    # --- Boltzmann-weighted rotational average
+    log_sum = logsumexp(-beta * pot_rot, b=weights, axis=1)
+
+    result = -log_sum / beta  # (m,)
+
+    result = np.where(np.isinf(result), limit_potential, result)
 
     return result  # shape: (m,)
 
@@ -717,16 +780,16 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
     """
 
 
-    position_shift = points.reshape(-1,3)
+    position_shift = points.reshape(-1,3).astype(np.float32)
     potentials_flat = []
 
     # Generate rotations and weights
     R1, weights1 = generate_rotation_matrix(degree, 3)          # (50, 3, 3), (50,)
     R2, weights2 = generate_rotation_matrix(degree, 2)          # (11, 3, 3) - Fixed dimension
 
-    combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3)  # (nrot, 3, 3)
-    expanded_weights = np.repeat(weights1*weights2, len(R2))   # (nrot,)
-
+    combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3).astype(np.float32)  # (nrot, 3, 3)
+    expanded_weights = np.repeat(weights1*weights2, len(R2)).astype(np.float32)   # (nrot,)
+    
     nrot = len(expanded_weights)
     max_size_shift_rot = max_size/nrot
     if len(position_shift) > max_size_shift_rot:
@@ -734,7 +797,7 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
     else:
         position_shift_split = [position_shift]
     for part_positions in position_shift_split:
-        potentials_flat.append(effective_potential_vectorized(guest_data, part_positions, epot_generator_dict, beta, combined_rot, expanded_weights))
+        potentials_flat.append(effective_potential_vectorized2(part_positions, guest_data, epot_generator_dict, beta, combined_rot, expanded_weights))
 
     potentials_flat = np.concatenate(potentials_flat)
     potential = potentials_flat.reshape(points.shape[:-1])
@@ -817,16 +880,21 @@ def read_pars_file_dict(pars_file):
 
 def get_system_data(chk_fn, pars_file):
     """ Read system data from a checkpoint file """
-    syst = System.from_file(chk_fn)
-    pos = syst.pos
-    masses = syst.masses
-    ffatypes = list(syst.ffatypes)
-    ffatype_ids = syst.ffatype_ids
-    if hasattr(syst, 'cell'):
-        if syst.cell is not None:
-            rvecs = syst.cell.rvecs
-        else:
-            rvecs = np.zeros((3, 3))
+    kwargs = load_chk(chk_fn)
+    pos = kwargs['pos']
+    masses = kwargs['masses']
+    ffatypes = list(kwargs['ffatypes'])
+    ffatype_ids = kwargs['ffatype_ids']
+    natom = len(pos)
+
+    atom_groups = defaultdict(list)
+    for i, t in enumerate(ffatype_ids):
+        atom_groups[t].append(i)
+    
+    if 'rvecs' in kwargs.keys():
+        rvecs = kwargs['rvecs']
+    else:
+        rvecs = np.zeros((3, 3))
 
     """ Read parameters from a pars file """
     LJpar = Parameters.from_file(pars_file).sections['LJ']
@@ -846,4 +914,4 @@ def get_system_data(chk_fn, pars_file):
 
     
     # return (jnp.array(pos), jnp.array(masses), ffatypes, jnp.array(ffatype_ids), syst.natom, jnp.array(rvecs)), jnp.array(FF_dict)
-    return (pos, masses, ffatypes, ffatype_ids, syst.natom, rvecs), FF_dict
+    return (pos, masses, ffatypes, ffatype_ids, natom, rvecs, atom_groups), FF_dict

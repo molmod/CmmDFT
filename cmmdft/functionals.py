@@ -1,12 +1,4 @@
 #!/usr/bin/env python
-'''
-Functionals appearing in the grand potential, which is used in classical DFT
-simulations.
-
-NOTE: For significant performance improvements, consider using the JAX-accelerated
-      versions in functionals_jax.py, especially for large systems or when using
-      GPU acceleration. The JAX versions are drop-in replacements with identical APIs.
-'''
 
 from __future__ import division
 
@@ -14,7 +6,6 @@ import numpy as np, os, copy, re
 from pathlib import Path
 from .units_constants import kjmol, planck, boltzmann, angstrom
 
-from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell, effective_potential_Leb
 from .log import log
 from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS, SumOfEOS
@@ -22,7 +13,7 @@ from .extpot_calculator import get_system_data, get_external_potential_dict, get
 
 __all__ = [
     'Functional', 'HardSphereFunctional', 'PCSAFTFunctional',
-    'MFAFunctional', 'MFAFunctionalMixture', 'CoarsenedFunctional',
+    'MFAFunctional', 'MFAFunctionalMixture',
     'ExternalPotential', 'LDAFunctional',
     'WDAVFunctional', 
 ]
@@ -84,7 +75,7 @@ class HardSphereFunctional(Functional):
         if m is None:
             self.m = np.ones(len(Rhs), dtype=np.float64)
         else:
-            self.m = np.array(m, dtype=np.float64)
+            self.m = np.atleast_1d(m)
             if len(self.m) != len(self.R):
                 raise ValueError("Length of m should be equal to length of Rhs")
         
@@ -183,7 +174,6 @@ class HardSphereFunctional(Functional):
         krho
             The density in reciprocal space
         """
-        rho = self.grid.ifftn(krho)
         # The scalar density functions
         kn0 = krho*self.scalar_weight_functions[0]
         n0 = self.grid.ifftn(kn0)
@@ -1092,64 +1082,6 @@ class MFAFunctionalMixture(MFAFunctional):
                         dF[k] += self.grid.ifftn(krho[i]*self.kpotential[i,k])*self.grid.cell.volume
                 return dF
 
-class CoarsenedFunctional(MFAFunctional):
-    
-    name = 'COARSE'
-    
-    def __init__(self, grid, ff, degree=9, limit_potential=0, style='sb'):
-        """
-        **Arguments:**
-        
-        grid
-            An instance of Grid, see system.py
-        
-        """
-        self.grid = grid
-        self.potential = None
-        self.kpotential = None
-        self.ff = ff
-        self.degree = degree
-        self.limit_potential = limit_potential
-        self.style = style   
-
-    def copy(self, grid=None):
-        if grid is None: grid = self.grid.copy()
-        return type(self)(grid, self.ff, self.degree, self.limit_potential, self.style)
-
-    def generate_potential(self, rmin, temperature, natom=1):
-        """
-        Generates an interparticle potential to be used in MFA functional, where the interaction is rotationally average
-
-        Parameters
-        ----------
-        ff : yaff force field object
-        rmin : distance
-            Potential at points closer than this distance are set to limit_potential.
-        temperature : scalar
-        natom : The number of atoms in the guest molecule. The default is 1.
-        limit_potential : The default is 0.
-
-
-        """
-        with log.section('FREEENER', 2, timer='CoarsePot init'):        
-            assert natom>1
-            self.potential = np.zeros(self.grid.points.shape[:3]) + self.limit_potential
-            for r in np.unique(self.grid.points[:,:,:,3].round(decimals=4)):
-                if r<rmin: continue
-                mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
-                if self.style == 'su':
-                    pre_potential = spherical_potential_semi_boltz(self.ff, r, natom, 1/boltzmann/temperature, degree = self.degree)
-                elif self.style == 'bo':
-                    pre_potential = spherical_potential_boltz(self.ff, r, natom, 1/boltzmann/temperature, degree = self.degree)
-                elif self.style == 'ave':
-                    pre_potential = spherical_potential_ave(self.ff, r, natom, degree = self.degree)
-
-                if pre_potential > 0:
-                    self.potential[mask] = 0
-                else:
-                    self.potential[mask] = pre_potential
-            self.kpotential = self.grid.fftn(self.potential) 
-
 
 class ExternalPotential(Functional):
 
@@ -1245,13 +1177,6 @@ class ExternalPotential(Functional):
         
         Parameters
         ----------
-        ff
-            `ff` is an instance of a yaff ff.
-        natom
-            The number of atoms in the system.
-        positive, optional
-            A boolean parameter that determines whether only positive potential values should be stored in the
-        potential array. If set to True, any potential value less than or equal to zero will be set to zero.
         
         '''
 

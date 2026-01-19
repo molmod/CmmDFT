@@ -6,9 +6,6 @@ import matplotlib.cm as cmap
 
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, parse_unit
 
-from yaff import log as ylog
-ylog.set_level(ylog.silent)
-
 from .system import System, Grid
 from .free_energy import FreeEnergy
 from .log import log

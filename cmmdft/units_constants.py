@@ -149,9 +149,7 @@ shorthands = {
 class convert_units(object):
     def __init__(self, mass_guest, mass_host, volume_host):
         """
-        ff_guest: a yaff System of the guest gas molecule
-
-        ff_host: a yaff System of the host unit cell
+        
         """
         rho_stp = (mass_guest/amu)*1e-3/22.414 #g/cm**3
         rho_host = (mass_host/gram)/(volume_host/centimeter**3) #g/cm**3

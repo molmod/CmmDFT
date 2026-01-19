@@ -45,14 +45,14 @@ def bisect_left(a, x, lo=0, hi=None, *, key=None):
     if key is None:
         while lo < hi:
             mid = (lo + hi) // 2
-            if a[mid] < x:
+            if (a[mid] < x).all():
                 lo = mid + 1
             else:
                 hi = mid
     else:
         while lo < hi:
             mid = (lo + hi) // 2
-            if key(a[mid]) < x:
+            if (key(a[mid]) < x).all():
                 lo = mid + 1
             else:
                 hi = mid
@@ -67,6 +67,16 @@ def get_file_suffix(chempot, temp):
     else:
         file_suff = f'{chempot/kjmol:#7.5f}kJmol_{temp:#7.5f}K'
     return file_suff
+
+def get_chempot_key(chempot):
+    if hasattr(chempot, '__iter__'):
+        chempot_key = ''
+        for mu in chempot:
+            chempot_key += f'{mu:#0.8f}_'
+        chempot_key = chempot_key[:-1]
+    else:
+        chempot_key = f'{mu:#0.8f}'
+    return chempot_key
 
 # def calculate_along_diffusion(ff, grid, ring_indices, natom, step_dist, cvs_limits=None, beta=1/boltzmann/300, degree=9):
 #     '''

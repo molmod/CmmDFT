@@ -5,7 +5,7 @@ import numpy as np, os, copy, re
 from pathlib import Path
 from yaff import ForceField
 
-from molmod.units import kjmol, angstrom, boltzmann, planck
+from .units_constants import kjmol, angstrom, boltzmann, planck
 
 from .tools import get_ff, merge_ffpar_files, write_LJ_pars_chk
 from .log import log

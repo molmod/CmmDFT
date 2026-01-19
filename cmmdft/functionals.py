@@ -12,7 +12,7 @@ from __future__ import division
 
 import numpy as np, os, copy, re
 from pathlib import Path
-from .units_constants import kjmol, planck, boltzmann
+from .units_constants import kjmol, planck, boltzmann, angstrom
 
 from .tools import get_ff, merge_ffpar_files, spherical_potential_boltz, spherical_potential_semi_boltz, spherical_potential_ave, effective_potential_precalc, write_LJ_pars_chk, make_supercell, effective_potential_Leb
 from .log import log
@@ -967,7 +967,6 @@ class MFAFunctional(Functional):
         if cutoff is not None:
             cutoff_mask = self.grid.points[:,:,:,3]>cutoff
             shift = 4*epsilon*((sigma/cutoff)**12 - (sigma/cutoff)**6)
-            print(shift/boltzmann)
             self.potential[cutoff_mask] = shift
             self.potential[mask] -= shift
 

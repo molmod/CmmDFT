@@ -152,7 +152,7 @@ coefficients = np.array([
 
 
 __all__ = ['Interpolator', 'effective_potential', 'effective_potential_vectorized', 
-           'generate_rotation_matrix', 'generate_effective_potential', 'get_external_potential', 'get_external_potential_derivatives',
+           'generate_rotation_matrix', 'generate_effective_potential', 'precalculate_effective_potential', 'get_external_potential', 'get_external_potential_derivatives',
            'get_interpolator_dict', 'get_external_potential_dict', 'get_system_data']
 
 def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):    
@@ -700,7 +700,7 @@ def effective_potential_vectorized(guest_data, position_shifts, epot_generator_d
     return result  # shape: (m,)
 
 
-def generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=11, max_size=1e+3):
+def generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=11, max_size=5e+6):
     """
     Generate the effective potential for a guest molecule in a grid.
     
@@ -727,16 +727,28 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
     combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3)  # (nrot, 3, 3)
     expanded_weights = np.repeat(weights1*weights2, len(R2))   # (nrot,)
 
-    if len(position_shift) > max_size:
-        position_shift_split = np.array_split(position_shift, np.shape(position_shift)[0]//max_size)
+    nrot = len(expanded_weights)
+    max_size_shift_rot = max_size/nrot
+    if len(position_shift) > max_size_shift_rot:
+        position_shift_split = np.array_split(position_shift, np.shape(position_shift)[0]//max_size_shift_rot)
     else:
         position_shift_split = [position_shift]
     for part_positions in position_shift_split:
         potentials_flat.append(effective_potential_vectorized(guest_data, part_positions, epot_generator_dict, beta, combined_rot, expanded_weights))
 
     potentials_flat = np.concatenate(potentials_flat)
-    potential = potentials_flat.reshape(points.shape[0], points.shape[1], points.shape[2])
+    potential = potentials_flat.reshape(points.shape[:-1])
     return potential
+
+def precalculate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=11, max_size=5e+6, max_pot=200*kjmol):
+    potential = generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=3)
+    potential_mask = potential <  max_pot
+    redo_positions = points[potential_mask]
+    
+    redo_potential = generate_effective_potential(redo_positions, beta, guest_data, epot_generator_dict, degree=degree, max_size=max_size)
+    potential[potential_mask] = redo_potential
+    return potential
+
 
 def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_method='tricubic'):
     """

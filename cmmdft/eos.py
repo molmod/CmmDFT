@@ -817,7 +817,6 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
        
     def derivative_excess_free_energy_particle(self, rho):
         rho, rho_sum, x = self._get_fractional_coefficients(rho)
-        print(rho_sum)
         self._set_mixture_parameters(x, self.temperature)
         if self.homogenous:
             return super().derivative_excess_free_energy_particle(rho_sum)

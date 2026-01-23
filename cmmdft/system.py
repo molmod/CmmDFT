@@ -188,7 +188,7 @@ class EmptyHost(Host):
 
 
 class Guest(object):
-    def __init__(self, name, mass, ffname):
+    def __init__(self, name, mass, ffname=''):
         self.name = name
         self.mass = mass
         self.preset_Rhs = None
@@ -244,7 +244,7 @@ class Guest(object):
                     
 
 class SphericalLJGuest(Guest):
-    def __init__(self, name, mass, sigma, epsilon, ffname, m=1, hs_def='bh'):
+    def __init__(self, name, mass, sigma, epsilon, ffname='', m=1, hs_def='bh'):
         Guest.__init__(self, name, mass, ffname)
         self.sigma = sigma
         self.epsilon = epsilon
@@ -266,7 +266,7 @@ class SphericalLJGuest(Guest):
 
 
 class NonSphericalGuest(Guest):
-    def __init__(self, name, struct, par, ffname):
+    def __init__(self, name, struct, par, ffname=''):
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Reading guest from %s with parameters from %s' %(struct, par))
             try:
@@ -288,7 +288,7 @@ class NonSphericalGuest(Guest):
 
 
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
-    def __init__(self, name, mass, sigma, epsilon, struct, par, ffname, m=1, hs_def='bh'):
+    def __init__(self, name, mass, sigma, epsilon, struct, par, ffname='', m=1, hs_def='bh'):
         NonSphericalGuest.__init__(self, name, struct, par, ffname)
         SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def)
 

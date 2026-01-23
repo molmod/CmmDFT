@@ -792,11 +792,13 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
     
     nrot = len(expanded_weights)
     max_size_shift_rot = max_size/nrot
+    print(max_size_shift_rot)
     if len(position_shift) > max_size_shift_rot:
         position_shift_split = np.array_split(position_shift, np.shape(position_shift)[0]//max_size_shift_rot)
     else:
         position_shift_split = [position_shift]
     for part_positions in position_shift_split:
+        print(len(position_shift)*nrot)
         potentials_flat.append(effective_potential_vectorized2(part_positions, guest_data, epot_generator_dict, beta, combined_rot, expanded_weights))
 
     potentials_flat = np.concatenate(potentials_flat)
@@ -806,9 +808,7 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
 def precalculate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=11, max_size=5e+6, max_pot=200*kjmol):
     potential = generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=3)
     potential_mask = potential <  max_pot
-    print(np.sum(potential_mask)/np.product(potential.shape))
     redo_positions = points[potential_mask]
-    print(redo_positions.shape)
     
     redo_potential = generate_effective_potential(redo_positions, beta, guest_data, epot_generator_dict, degree=degree, max_size=max_size)
     potential[potential_mask] = redo_potential

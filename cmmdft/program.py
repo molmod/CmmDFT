@@ -171,19 +171,15 @@ class Program(object):
         if rewrite:
             dist_file.unlink()
         if not dist_file.is_file():
-            grid_pos = self.grid.copy()
-            points = grid_pos.points
-            dist = np.zeros(self.grid.npoints)
-            for i in range(points.shape[0]):
-                for j in range(points.shape[1]):
-                    for k in range(points.shape[2]):
-                        distance = np.zeros(self.system.host.atoms.positions.shape[0])
-                        for ii, atom in enumerate(self.system.host.atoms.positions):
-                            vec = points[i,j,k,:3] - atom
-                            vec = self.system.host.cell.mic(vec)
-                            distance[ii] = np.linalg.norm(vec)
-                        dist[i,j,k] = np.amin(distance)
-            self.dis = dist
+            atom_pos = self.system.host.atoms.positions
+            points = self.grid.points[...,:3]
+            points_flat = points.reshape(-1, 3)
+            vec = points_flat[:, np.newaxis, :] - atom_pos[np.newaxis, :, :]
+            vec = self.system.host.cell.mic(vec)
+            distances = np.linalg.norm(vec, axis=-1)
+            min_distances = np.amin(distances, axis=-1)
+            self.dis = min_distances.reshape(self.grid.npoints)
+
             np.save(dist_file, self.dis)
         else:
             self.dis = np.load(dist_file)         
@@ -583,4 +579,3 @@ class Program(object):
             np.savetxt(self.workdir+f'/hybrid_loadings.csv', np.array([loadings, chempots]).T, delimiter=',', header='loading, chemical pot')
             np.savetxt(self.workdir+'/precentage_grid.csv', percentages, header='step, percentage, percentage non mof', delimiter=', ')
             np.save(self.workdir+f'/hybrid_loadings.npy', loadings)
-

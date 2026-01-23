@@ -26,7 +26,7 @@ class Calculator(object):
         Class to extract all information from a program instance required to compute properties derivable
         from the density (such as the loading and contributions to the free energy).
     """
-    def __init__(self, program, label=None):
+    def __init__ (self, program, label=None):
         self.program = program
         self.name_dict = program.name_dict
         self.workdir = program.workdir
@@ -158,7 +158,7 @@ class Calculator(object):
 
         dens_list = [f.name for f in self.workdir.iterdir() if f.name.startswith('rho') and f.name.endswith(f'{temperature:#7.5f}K.npy')]
         chempots = np.array([np.array(rx.findall(f), dtype=float) for f in dens_list])*kjmol
-        return selection_sort(chempots)
+        return np.sort(chempots, axis=0)
 
     def get_helium_fraction(self, temperature, cutoff=12*angstrom):
         """
@@ -915,15 +915,6 @@ class Calculator(object):
             omega = self.grand_potential(temp, chempot)
             chempot_key = get_chempot_key(chempot)
 
-            if self.ncomp > 1:
-                header = ''
-                for c in range(self.ncomp):
-                    header += f'chempot {self.guest.names[c]} [kJ/mol], '
-                for c in range(self.ncomp):
-                    header += f'loading {self.guest.names[c]} [molecules/uc], '
-                header += 'grand potential [Eh/uc]'
-            else:
-                header = 'chempot [kJ/mol], loading [molecules/uc], grand potential [Eh/uc]'
             if fn is None:
                 fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.npz'
 
@@ -940,17 +931,29 @@ class Calculator(object):
                     loadings[index] = n
                     omegas[index] = omega.real
                 else: 
-                    mu_sorted = selection_sort(chempots)
+                    if len(chempots) > 1:
+                        mu_sorted = np.sort(chempots, axis=0)
+                    else:
+                        mu_sorted = chempots
                     if (chempot > mu_sorted[-1]).all():
                         chempots = np.vstack((chempots, chempot))
                         loadings = np.vstack((loadings, n))
                         omegas = np.vstack((omegas, omega))
+                    elif np.isclose(chempot, mu_sorted[-1]).all():
+                        index = len(chempots) -1
+                        chempots[index] = chempot
+                        loadings[index] = n
+                        omegas[index] = omega.real
+                    elif (chempot < mu_sorted[0]).all():
+                        chempots = np.vstack((chempot, chempots))
+                        loadings = np.vstack((n, loadings))
+                        omegas =   np.vstack((omega.real, omegas))
 
                     else:
                         index = bisect_left(mu_sorted, chempot)
                         if self.ncomp != 1:
-                            chempots = np.vstack([chempots[:,:index], chempot, chempots[:,index:]])
-                            loadings = np.vstack([loadings[:,:index], n, loadings[:,index:]])
+                            chempots = np.vstack([chempots[:index], chempot, chempots[index:]])
+                            loadings = np.vstack([loadings[:index], n, loadings[index:]])
                             omegas =   np.vstack([omegas[:index], omega.real, omegas[index:]])
                         else:
                             chempots = np.vstack([chempots[:index], chempot, chempots[index:]])
@@ -992,7 +995,7 @@ class Calculator(object):
                 ind = list_chems.index(float("%4.5f"%(chempot/kjmol))) + 1
                 chems = np.array(list_chems[:ind])*kjmol
             else:
-                int_chems = selection_sort(np.array(chempots))
+                int_chems = np.sort(np.array(chempots), axis=0)
                 i = bisect_left(int_chems, chempot)
                 chems = int_chems[:i+1]
             assert chems.shape[0] > 0, f'No chemical potentials lower than {chempot/kjmol}kJ/mol found, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
@@ -1061,6 +1064,83 @@ class Calculator(object):
             log.dump(f'Calculated the free energy profile and saved at {fn}')
             np.savetxt(fn, data.T, delimiter=',', header = 'cv,density,grand canonical potential,free energy')        
         
+    def find_subdirectories(self):
+        base_dir = self.workdir.parent
+        subdirs = [d for d in base_dir.iterdir() if d.is_dir()]
+        self.dir_list = [d for d in subdirs if str(d.name).isnumeric()]
+
+    def average_rho(self, chempots, temperature, *args, **kwargs):
+        with log.section('CALCULATOR', 2, timer=None):
+            if not hasattr(self, 'dir_list'):
+                self.find_subdirectories()
+            
+            if not hasattr(chempots, '__iter__'):
+                chempots = [chempots]
+            if not hasattr(temperature, '__iter__'):
+                temperature = [temperature]        
+            
+            for chempot in chempots:
+                for temp in temperature:
+                    results = np.empty((len(self.dir_list),self.ncomp,) + tuple(self.grid.npoints))
+                    file_suffix = get_file_suffix(chempot, temp)
+                    for e, directory in enumerate(self.dir_list):
+                        rho_fn = directory / f'rho_{file_suffix}.npy'
+                        assert rho_fn.is_file(), f'No density found for {temp}K and {chempot/kjmol}kJ/mol in {directory}'
+                        results[e] = np.load(rho_fn)
+                    avg_rho = np.mean(results, axis=0)
+                    fn = self.workdir / f'rho_{file_suffix}.npy'
+                    np.save(fn, avg_rho) 
+        
+    def average_projected_density(self, chempots, temperature):
+        with log.section('CALCULATOR', 2, timer=None):
+            if not hasattr(self, 'dir_list'):
+                self.find_subdirectories()
+            
+            if not hasattr(chempots, '__iter__'):
+                chempots = [chempots]
+            if not hasattr(temperature, '__iter__'):
+                temperature = [temperature]        
+            
+            for chempot in chempots:
+                for temp in temperature:
+                    file_suffix = get_file_suffix(chempot, temp)
+                    q_list = []
+                    n_list = []
+                    for directory in self.dir_list:
+
+                        proj_fn = directory / f'projected_density_{file_suffix}.csv'
+                        assert proj_fn.is_file(), f'No projected density found for {temp}K and {chempot/kjmol}kJ/mol in {directory}'
+                        proj_data = np.loadtxt(proj_fn, delimiter=',', skiprows=1).T
+                        q_list.append(proj_data[0])
+                        n_list.append(proj_data[1])
+
+                    avg_q_list = np.mean(np.array(q_list), axis=0)
+                    avg_n_list = np.mean(np.array(n_list), axis=0)
+                    data = np.vstack((avg_q_list, avg_n_list)).T
+                    fn = self.workdir / f'projected_density_{file_suffix}.csv'
+                    np.savetxt(fn, data, delimiter=',', header = 'cv, density')
+            
+            for temp in temperature:
+                loadings = np.empty((len(self.dir_list), len(chempots), self.ncomp))
+                omegas = np.empty((len(self.dir_list), len(chempots), 1))
+                for e, directory in enumerate(self.dir_list):
+                    dens_omega_fn = directory / f'loading_grand_potential_{temp:#7.5f}K.npz'
+                    assert dens_omega_fn.is_file(), f'No loading and grand potential found for {temp}K in {directory}'
+
+                    dens_omega_list = np.load(dens_omega_fn)
+                    mu_list = dens_omega_list['mu']
+                    prev_loadings = dens_omega_list['loading']
+                    prev_omegas = dens_omega_list['omega']
+                    for i, chempot in enumerate(chempots):
+                        diff = mu_list - chempot
+                        index = np.where(np.isclose(diff,0))
+                        loadings[e,i,:] = prev_loadings[index]
+                        omegas[e,i] = prev_omegas[index[0][0]]
+                avg_loadings = np.mean(loadings, axis=0)
+                avg_omegas = np.mean(omegas, axis=0)
+                fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.npz'
+                np.savez(fn, mu=chempots, loading=avg_loadings, omega=avg_omegas)
+
     def contribution_approximation(self, temp, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, pert_size=1e-5, symmetric=False, fn=None):
         '''This function calculates and saves projected contributions based on a perturbation of the density 
         and free energy calculations.

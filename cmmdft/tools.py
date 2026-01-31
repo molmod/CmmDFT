@@ -75,7 +75,7 @@ def get_chempot_key(chempot):
             chempot_key += f'{mu:#0.8f}_'
         chempot_key = chempot_key[:-1]
     else:
-        chempot_key = f'{mu:#0.8f}'
+        chempot_key = f'{chempot:#0.8f}'
     return chempot_key
 
 # def calculate_along_diffusion(ff, grid, ring_indices, natom, step_dist, cvs_limits=None, beta=1/boltzmann/300, degree=9):
@@ -354,25 +354,25 @@ class Loop(object):
         for key, column in zip(self.keys, columns):
             self.data[key] = column
 
-from ase import Atoms
+# from ase import Atoms
 
-def atoms_from_chk(chk_file):
-    allowed_keys = [
-        'numbers', 'pos', 'scopes', 'scope_ids', 'ffatypes',
-        'ffatype_ids', 'bonds', 'rvecs', 'charges', 'radii',
-        'valence_charges', 'dipoles', 'radii2', 'masses',
-    ]
-    kwargs = {}
-    for key, value in load_chk(chk_file).items():
-        if key in allowed_keys:
-            kwargs.update({key: value})
-    if 'rvecs' in kwargs.keys():
-        return Atoms(numbers=kwargs['numbers'],
-                    positions=kwargs['pos'],
-                    cell=kwargs['rvecs'])
-    else:
-        return Atoms(numbers=kwargs['numbers'],
-                    positions=kwargs['pos'])
+# def atoms_from_chk(chk_file):
+#     allowed_keys = [
+#         'numbers', 'pos', 'scopes', 'scope_ids', 'ffatypes',
+#         'ffatype_ids', 'bonds', 'rvecs', 'charges', 'radii',
+#         'valence_charges', 'dipoles', 'radii2', 'masses',
+#     ]
+#     kwargs = {}
+#     for key, value in load_chk(chk_file).items():
+#         if key in allowed_keys:
+#             kwargs.update({key: value})
+#     if 'rvecs' in kwargs.keys():
+#         return Atoms(numbers=kwargs['numbers'],
+#                     positions=kwargs['pos'],
+#                     cell=kwargs['rvecs'])
+#     else:
+#         return Atoms(numbers=kwargs['numbers'],
+#                     positions=kwargs['pos'])
     
 
 def load_chk(filename):

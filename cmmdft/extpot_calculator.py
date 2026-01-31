@@ -5,6 +5,7 @@ Tools required for the CDFT program
 
 from __future__ import division
 
+import os
 import numpy as np
 from itertools import product
 from functools import partial
@@ -16,7 +17,7 @@ from .rotations._stroud_1969 import *
 
 from .units_constants import kjmol, bar, kelvin, angstrom, planck, boltzmann, parse_unit
 from .tools import load_chk
-from .system import Cell
+from .system import Cell, Grid
 
 from .parameters import Parameters
 
@@ -253,7 +254,7 @@ def get_external_potential_derivatives(points, host_data, FF_dict, sigmaff, epsi
     """
     host_pos = host_data[0]
     ffatype_ids = host_data[3]
-    rvecs = host_data[-1]
+    rvecs = host_data[-2]
 
     Vext = np.zeros(len(points))
     dVdx = np.zeros(len(points))
@@ -487,7 +488,6 @@ class Interpolator:
         self.grid_values = grid_values  # (8, Nx, Ny, Nz) or (Nx, Ny, Nz)
         self.origin = np.array(grid_origin)
         self.spacing = np.array(grid_spacing)
-        self.coeff = coefficients
 
         self.tricubic = self.tricubic_interpolation
         self.trilinear = self.trilinear_interpolation
@@ -784,14 +784,13 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
     potentials_flat = []
 
     # Generate rotations and weights
-    R1, weights1 = generate_rotation_matrix(degree, 3)          # (50, 3, 3), (50,)
-    R2, weights2 = generate_rotation_matrix(degree, 2)          # (11, 3, 3) - Fixed dimension
+    R1, weights1 = generate_rotation_matrix(degree, 3)
+    R2, weights2 = generate_rotation_matrix(degree, 2)
 
     combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3).astype(np.float32)  # (nrot, 3, 3)
     expanded_weights = np.repeat(weights1*weights2, len(R2)).astype(np.float32)   # (nrot,)
     
-    nrot = len(expanded_weights)
-    max_size_shift_rot = max_size/nrot
+    max_size_shift_rot = max_size
     if len(position_shift) > max_size_shift_rot:
         position_shift_split = np.array_split(position_shift, np.shape(position_shift)[0]//max_size_shift_rot)
     else:
@@ -847,7 +846,7 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, chk_g
     - external_potential_dict: Dictionary of external potentials for each atom type.
     """
     
-    host_data, FF_dict_host = get_system_data(chk_host, pars_file_host)
+    host_data, FF_dict_host = get_system_data(chk_host, pars_file_host, position_shift=True)
     guest_data, FF_dict_guest = get_system_data(chk_guest, pars_file_guest)
     guest_ffatypes = guest_data[2]
 
@@ -864,6 +863,36 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, chk_g
         
     return external_potential_dict
 
+def interpolate_effective_potential(beta, points, hostpar, struct_host, guestpar, struct_guest, tmp_epot_dr, 
+                                    tmp_spacing=0.15*angstrom, cutoff=12*angstrom, position_shift=True, 
+                                    degree=11, int_method='tricubic', remove_tmp=True):
+        
+        host_data, ff_dict = get_system_data(struct_host, hostpar, position_shift=position_shift)
+        guest_data, guest_ff_dict = get_system_data(struct_guest, guestpar)
+        
+        cell = Cell(host_data[-2])
+        epot_grid = Grid(cell, spacing=tmp_spacing)
+        epot_fn_dict = {}
+        for atom in range(len(guest_ff_dict)):
+            part_epot_fn = os.path.join(tmp_epot_dr, f'eff_pot_{atom}_ZIF8_derivs.npy')
+            atom_name = guest_data[2][atom]
+            sigmaff, epsilonff = guest_ff_dict[atom]
+            tmp_points = epot_grid.points[...,:3].reshape(-1,3)
+            epot = get_external_potential_derivatives(tmp_points, host_data, ff_dict, sigmaff, epsilonff, epot_grid.spacings, cutoff=cutoff).reshape((8, )+ tuple(epot_grid.npoints))
+            np.save(part_epot_fn, epot)
+            epot_fn_dict[atom_name] = part_epot_fn
+
+        int_dict = get_interpolator_dict(epot_fn_dict, points, np.array([0.15, 0.15, 0.15])*angstrom, int_method=int_method)
+        int_eff_pot = precalculate_effective_potential(points, beta, guest_data, int_dict, degree=degree)
+
+        if remove_tmp:
+            for atom in range(len(guest_ff_dict)):
+                atom_name = guest_data[2][atom]
+                part_epot_fn = epot_fn_dict[atom_name]
+                if os.path.exists(part_epot_fn):
+                    os.remove(part_epot_fn)
+            
+        return int_eff_pot
 
 def read_pars_file_dict(pars_file):
     """ Read parameters from a pars file """
@@ -878,10 +907,12 @@ def read_pars_file_dict(pars_file):
         FF_dict[atom] = (sigma, epsilon)
     return FF_dict
 
-def get_system_data(chk_fn, pars_file):
+def get_system_data(chk_fn, pars_file, position_shift=False):
     """ Read system data from a checkpoint file """
     kwargs = load_chk(chk_fn)
     pos = kwargs['pos']
+    if position_shift:
+        pos -= np.mean(pos, axis=0)
     masses = kwargs['masses']
     ffatypes = list(kwargs['ffatypes'])
     ffatype_ids = kwargs['ffatype_ids']

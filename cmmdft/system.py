@@ -11,10 +11,13 @@ import json
 
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck, amu
 
-from ase import atoms
-from ase.io import read
+# from ase import atoms
+# from ase.io import read
 
-from .tools import atoms_from_chk
+from yaff import log as ylog, System as YaffSystem
+ylog.set_level(ylog.silent)
+
+# from .tools import atoms_from_chk
 from .log import log
 
 __all__ = ['Cell','System', 
@@ -139,7 +142,7 @@ class Host(object):
 
     
 class NanoporousHost(Host):
-    def __init__(self, name, struct, par, ffname, shift=True):
+    def __init__(self, name, struct, par, ffname='', shift=True):
         '''This function initializes a nanoporous host system
         
         Parameters
@@ -153,16 +156,19 @@ class NanoporousHost(Host):
         '''
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Reading host structure from %s with parameters from %s' %(struct,par))
-            try:
-                self.atoms = read(struct)
-            except:
-                self.atoms = atoms_from_chk(struct)
+            # try:
+            #     self.atoms = read(struct)
+            # except:
+            #     self.atoms = atoms_from_chk(struct)
+            self.atoms = YaffSystem.from_file(struct)
             #shift molecule so that center of positions is the origin (as cDFT grid will be centered around this origin)
             if shift:
-                positions = self.atoms.get_positions()
-                positions -= positions.sum(axis=0)/len(positions)
-                self.atoms.set_positions(positions)
-            rvecs = np.array(self.atoms.get_cell())
+                # positions = self.atoms.get_positions()
+                # positions -= positions.sum(axis=0)/len(positions)
+                # self.atoms.set_positions(positions)
+                self.atoms.pos -= self.atoms.pos.sum(axis=0)/len(self.atoms.pos)
+            # rvecs = np.array(self.atoms.get_cell())
+            rvecs = self.atoms.cell.rvecs
             cell = Cell(rvecs)
             Host.__init__(self, name, cell)
             self.struct = struct
@@ -188,7 +194,7 @@ class EmptyHost(Host):
 
 
 class Guest(object):
-    def __init__(self, name, mass, ffname):
+    def __init__(self, name, mass, ffname=''):
         self.name = name
         self.mass = mass
         self.preset_Rhs = None
@@ -244,7 +250,7 @@ class Guest(object):
                     
 
 class SphericalLJGuest(Guest):
-    def __init__(self, name, mass, sigma, epsilon, ffname, m=1, hs_def='bh'):
+    def __init__(self, name, mass, sigma, epsilon, ffname='', m=1, hs_def='bh'):
         Guest.__init__(self, name, mass, ffname)
         self.sigma = sigma
         self.epsilon = epsilon
@@ -266,18 +272,19 @@ class SphericalLJGuest(Guest):
 
 
 class NonSphericalGuest(Guest):
-    def __init__(self, name, struct, par, ffname):
+    def __init__(self, name, struct, par, ffname=''):
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Reading guest from %s with parameters from %s' %(struct, par))
-            try:
-                self.atoms = read(struct)
-            except:
-                self.atoms = atoms_from_chk(struct)
-            self.natom = len(self.atoms)
+            # try:
+            #     self.atoms = read(struct)
+            # except:
+            #     self.atoms = atoms_from_chk(struct)
+            self.atoms = YaffSystem.from_file(struct)
+            self.natom = len(self.atoms.pos)
             self.struct = struct
             self.par = par
             mass = None
-            mass = self.atoms.get_masses().sum() * amu
+            mass = self.atoms.masses.sum()
             Guest.__init__(self, name, mass, ffname)
 
     def copy(self):
@@ -288,7 +295,7 @@ class NonSphericalGuest(Guest):
 
 
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
-    def __init__(self, name, mass, sigma, epsilon, struct, par, ffname, m=1, hs_def='bh'):
+    def __init__(self, name, mass, sigma, epsilon, struct, par, ffname='', m=1, hs_def='bh'):
         NonSphericalGuest.__init__(self, name, struct, par, ffname)
         SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def)
 
@@ -433,20 +440,14 @@ class Grid(object):
             self.kpoints = np.zeros(list(self.npoints)+[4])
             kgrid = [np.fft.fftfreq(self.npoints[alpha],d=self.spacings[alpha]) for alpha in range(3)]
             gridpoints = np.meshgrid(kgrid[0],kgrid[1],kgrid[2], indexing='ij')
-            #NIEUWE VERANDERING: 2*pi toegevoegd bij de kpoints
+
             for alpha in range(3):
                 self.kpoints[:,:,:,alpha] = 2*np.pi*gridpoints[alpha] #TODO: (louis) could be condensed using np.einsum('aijk->ijka', gridpoints)
             self.kpoints[:,:,:,3] = np.sqrt(self.kpoints[:,:,:,0]**2+self.kpoints[:,:,:,1]**2+self.kpoints[:,:,:,2]**2)
-            # Indication of even and odd grid points, even means sum of indexes is even
-            #ADDED Louis: commented out lines below for testing
-            #self.parity = np.zeros(self.npoints,dtype=int)
-            #i,j,k = np.unravel_index(np.arange(np.prod(self.npoints)),self.npoints)
-            #self.parity[i,j,k] = (-1)**(i+j+k)
-            
-            #ADDED Louis: something needed in the fft functions defined below
+
             self.scalprod = self.kpoints[:,:,:,0]*self.spacings[0]*self.npoints[0] + self.kpoints[:,:,:,1]*self.spacings[1]*self.npoints[1] + self.kpoints[:,:,:,2]*self.spacings[2]*self.npoints[2]
 
-            # Lanczos kernel for the Fourier transform, if needed to mitigate gibbs phenomenon in yukawa potential and weightfunctions
+            # Lanczos kernel for the Fourier transform, to mitigate gibbs phenomenon due to fft
             kcut = 2*np.pi/np.array(self.spacings)
             self.sigma_lanczos = np.sinc(self.kpoints[:,:,:,0]/kcut[0])*np.sinc(self.kpoints[:,:,:,1]/kcut[1])*np.sinc(self.kpoints[:,:,:,2]/kcut[2])
 

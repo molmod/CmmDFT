@@ -203,6 +203,10 @@ class FreeEnergy(object):
                 epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, **kwargs)
                 log.dump('loading external potential from %s' %fn)
                 epot.load_potential(fn)  
+                sym_fn = self.workdir / 'ExtPots'
+                if not sym_fn.is_symlink():
+                    sym_fn.symlink_to(epot_dr.absolute())    
+
             else:
                 if save_fn is not None:
                     fn = Path(save_fn)
@@ -221,9 +225,6 @@ class FreeEnergy(object):
                         fn = epot_dr / f'epot.npy'
                     #create a symlink to the potential directory so everything is in one place
                     sym_fn = self.workdir / 'ExtPots'
-                    if not sym_fn.is_symlink():
-                        sym_fn.symlink_to(epot_dr.absolute())    
-
                 epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, **kwargs)
 
                 if not os.path.isfile(fn) or self.overwrite or rewrite:

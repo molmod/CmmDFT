@@ -158,7 +158,7 @@ class Calculator(object):
 
         dens_list = [f.name for f in self.workdir.iterdir() if f.name.startswith('rho') and f.name.endswith(f'{temperature:#7.5f}K.npy')]
         chempots = np.array([np.array(rx.findall(f), dtype=float) for f in dens_list])*kjmol
-        return selection_sort(chempots)
+        return np.sort(chempots, axis=0)
 
     def get_helium_fraction(self, temperature, cutoff=12*angstrom):
         """
@@ -735,7 +735,7 @@ class Calculator(object):
         '''
         with log.section('CALCULATOR', 2, timer='projecting density'):
             if self.ncomp == 1:
-                chempot_str = f'{chempot_str/kjmol:#7.5f}'
+                chempot_str = f'{chempot/kjmol:#7.5f}'
             
             else:
                 chempot_str = ''
@@ -915,15 +915,6 @@ class Calculator(object):
             omega = self.grand_potential(temp, chempot)
             chempot_key = get_chempot_key(chempot)
 
-            if self.ncomp > 1:
-                header = ''
-                for c in range(self.ncomp):
-                    header += f'chempot {self.guest.names[c]} [kJ/mol], '
-                for c in range(self.ncomp):
-                    header += f'loading {self.guest.names[c]} [molecules/uc], '
-                header += 'grand potential [Eh/uc]'
-            else:
-                header = 'chempot [kJ/mol], loading [molecules/uc], grand potential [Eh/uc]'
             if fn is None:
                 fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.npz'
 
@@ -940,17 +931,29 @@ class Calculator(object):
                     loadings[index] = n
                     omegas[index] = omega.real
                 else: 
-                    mu_sorted = selection_sort(chempots)
+                    if len(chempots) > 1:
+                        mu_sorted = np.sort(chempots, axis=0)
+                    else:
+                        mu_sorted = chempots
                     if (chempot > mu_sorted[-1]).all():
                         chempots = np.vstack((chempots, chempot))
                         loadings = np.vstack((loadings, n))
                         omegas = np.vstack((omegas, omega))
+                    elif np.isclose(chempot, mu_sorted[-1]).all():
+                        index = len(chempots) -1
+                        chempots[index] = chempot
+                        loadings[index] = n
+                        omegas[index] = omega.real
+                    elif (chempot < mu_sorted[0]).all():
+                        chempots = np.vstack((chempot, chempots))
+                        loadings = np.vstack((n, loadings))
+                        omegas =   np.vstack((omega.real, omegas))
 
                     else:
                         index = bisect_left(mu_sorted, chempot)
                         if self.ncomp != 1:
-                            chempots = np.vstack([chempots[:,:index], chempot, chempots[:,index:]])
-                            loadings = np.vstack([loadings[:,:index], n, loadings[:,index:]])
+                            chempots = np.vstack([chempots[:index], chempot, chempots[index:]])
+                            loadings = np.vstack([loadings[:index], n, loadings[index:]])
                             omegas =   np.vstack([omegas[:index], omega.real, omegas[index:]])
                         else:
                             chempots = np.vstack([chempots[:index], chempot, chempots[index:]])
@@ -992,7 +995,8 @@ class Calculator(object):
                 ind = list_chems.index(float("%4.5f"%(chempot/kjmol))) + 1
                 chems = np.array(list_chems[:ind])*kjmol
             else:
-                int_chems = selection_sort(np.array(chempots))
+                int_chems = np.sort(np.array(chempots), axis=0)
+                int_chems = np.array(chempots)
                 i = bisect_left(int_chems, chempot)
                 chems = int_chems[:i+1]
             assert chems.shape[0] > 0, f'No chemical potentials lower than {chempot/kjmol}kJ/mol found, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
@@ -1058,8 +1062,15 @@ class Calculator(object):
             else: 
                 fn = self.workdir / fn
 
+            header = 'cv'
+            if self.ncomp == 1:
+                header = 'cv, density, grand canonical potential, free energy'
+            else:
+                for name in ['density', 'grand canonical potential', 'free energy']:
+                    for c in range(self.ncomp):
+                        header += f', {name} {self.guest.names[c]}'
             log.dump(f'Calculated the free energy profile and saved at {fn}')
-            np.savetxt(fn, data.T, delimiter=',', header = 'cv,density,grand canonical potential,free energy')        
+            np.savetxt(fn, data.T, delimiter=',', header = header)        
         
     def contribution_approximation(self, temp, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, pert_size=1e-5, symmetric=False, fn=None):
         '''This function calculates and saves projected contributions based on a perturbation of the density 

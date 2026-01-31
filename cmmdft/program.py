@@ -57,7 +57,6 @@ class Program(object):
 
         if not workdir.is_dir():
             workdir.mkdir(parents=True, exist_ok=True)
-            print('Created work directory %s' %workdir)  
 
         if silent:
             log.set_level('silent')
@@ -272,8 +271,19 @@ class Program(object):
                     elif isinstance(Ninit, np.ndarray):
                         if Ninit.ndim == 1:
                             assert len(Ninit) == self.system.guest.nspecies, 'Ninit must have the same length as the number of components'
-                            Ninit = np.array([Ninit[i]*np.ones(self.grid.npoints) for i in range(self.system.guest.nspecies)])
-                            self.rho0 = Ninit
+                            Ninit_grid = np.array([Ninit[i]*np.ones(self.grid.npoints) for i in range(self.system.guest.nspecies)])
+                            index = None
+                            for partname in self.fener.part_names:
+                                if 'ExtPot' in partname:
+                                    index = self.fener.part_names.index(partname)
+                            if index is not None:
+                                epot_data = self.fener.parts[index].potential
+                                epot_pos = np.maximum(epot_data, 0)
+                                self.rho0 = Ninit_grid*np.exp(-epot_pos/boltzmann/Temp)
+                                log.dump('Setting initial guess for density at %.3e and %.3e per cellvolume in pores' %(Ninit[0], Ninit[1]))
+                            else:
+                                log.dump('Setting initial guess for density at %.3e and %.3e per cellvolume' %(Ninit[0]*self.system.host.cell.volume, Ninit[1]*self.system.host.cell.volume))
+                                self.rho0 = Ninit_grid
                         else:
                             assert Ninit.shape == tuple(rho_shape), 'Ninit must have the same shape as the grid'
                             log.dump('Setting initial guess for density from array')

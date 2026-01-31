@@ -490,7 +490,7 @@ class Anderson(Picard):
 
     name = 'ANDERSON'
 
-    def __init__(self, program, nsteps=100, method='hybridanderson', 
+    def __init__(self, program, nsteps=100, method='hybridanderson', minimize_method='SLSQP',
                  m=5, damping=0.3, delta=0.1, damping_max=0.8, damping_min=0.01, adaptive_damping=True,
                    **kwargs):
         """
@@ -522,6 +522,8 @@ class Anderson(Picard):
         self.adaptive_damping = adaptive_damping
         self.damping_factors = (1.2,0.6)
         self.delta = delta
+        self.minimize_method = minimize_method
+        self.opt_alphas_time = []
 
     def _initiate_solving(self, chempot):
         """
@@ -594,9 +596,17 @@ class Anderson(Picard):
                     self.it_eps0 = self.it_eps
 
             AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true or self.curr_step > 10
-
             if AND_condition:
-                rho_new, krho_new, C1_new = self.update_rho_Anderson()
+                if self.minimize_method == 'SLSQP':
+                    rho_new, krho_new, C1_new = self.update_rho_Anderson()
+                elif self.minimize_method == 'ANA':
+                    rho_new, krho_new, C1_new = self.update_rho_Anderson_analytical()
+                elif self.minimize_method == 'SLSQP_new':
+                    rho_new, krho_new, C1_new = self.update_rho_Anderson_slsqp_fast()
+                elif self.minimize_method == 'LSQ':
+                    rho_new, krho_new, C1_new = self.update_rho_Anderson_lsq()
+
+
                 Grho_new = self.get_new_rho(C1_new, self.fugacity)
                 self.And_true = True
 
@@ -619,7 +629,7 @@ class Anderson(Picard):
     def update_rho_Anderson(self):
         mk = min(self.curr_step, self.m)
         residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
-
+        t0 = time.time()
         def sum_res(alps):
             combined = np.einsum('i,ij->j', alps, residuals)
             return np.linalg.norm(combined)
@@ -627,38 +637,13 @@ class Anderson(Picard):
         bds = opt.Bounds(0,1)
         linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
         alphas = opt.minimize(sum_res, np.full(mk,1/mk), method='SLSQP', tol=1e-15, bounds=bds, constraints=linear_constraint).x
+        print(alphas)
+        t1 = time.time()
+        print(f'Time to optimize alphas {t1-t0:0.5f}')
+        self.opt_alphas_time.append(t1-t0)
 
-        # tstart=time.perf_counter()
-        # R = residuals
-        # G = R @ R.T
-        # eps = 1e-12
-        # G_reg = G + eps * np.eye(mk)
-
-        # def obj(alps):
-        #     return alps @ G_reg @ alps
-
-        # def grad(alps):
-        #     return 2 * G_reg @ alps
-
-        # bds = opt.Bounds(0, 1)
-        # constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
-
-        # res = opt.minimize(
-        #     obj,
-        #     x0=np.full(mk, 1/mk),
-        #     jac=grad,
-        #     method='SLSQP',
-        #     bounds=bds,
-        #     constraints=constraint,
-        #     tol=1e-15
-        # )
-
-        # alphas = res.x
-        # tstop=time.perf_counter()
-        # log.dump(f'Anderson alphas: {alphas}; in {round(tstop-tstart,4)} seconds')
-
-        rho_result = np.einsum('i,ij->j', alphas, self.prev_rhos[-mk:]).reshape(self.rho_shape)
-        Grho_result = np.einsum('i,ij->j', alphas, self.prev_Grhos[-mk:]).reshape(self.rho_shape)
+        rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
+        Grho_result = (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
 
         if self.adaptive_damping: 
             rho_new, krho_new = self._get_damping_coefficient(rho_result, Grho_result)
@@ -670,6 +655,166 @@ class Anderson(Picard):
         C1_new = self._get_C1(rho_new, krho_new)
         return rho_new, krho_new, C1_new
 
+    def update_rho_Anderson_analytical(self):
+        mk = min(self.curr_step, self.m)
+        residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
+        t0 = time.time()
+        
+        # Compute Gram matrix: R^T R
+        gram = residuals @ residuals.T
+        
+        # Add small regularization for numerical stability
+        gram += 1e-10 * np.eye(mk)
+        
+        # Solve: (R^T R) α = 1, with α summing to 1
+        ones = np.ones(mk)
+        alphas = np.linalg.solve(gram, ones)
+        alphas /= alphas.sum()  # Normalize to sum to 1
+
+        print(alphas)
+        
+        # Project to [0,1] if needed (usually not necessary)
+        alphas = np.clip(alphas, 0, 1)
+        alphas /= alphas.sum()
+        
+        print(alphas)
+        t1 = time.time()
+
+        print(f'Time to optimize alphas {t1-t0:0.5f}')
+        self.opt_alphas_time.append(t1-t0)
+        rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
+        Grho_result = (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
+
+        if self.adaptive_damping: 
+            rho_new, krho_new = self._get_damping_coefficient(rho_result, Grho_result)
+        else:
+            rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
+            rho_new = self._clip_density(rho_new)
+            krho_new = self.grid.fftn(rho_new)
+
+        C1_new = self._get_C1(rho_new, krho_new)
+        return rho_new, krho_new, C1_new
+    
+    def update_rho_Anderson_slsqp_fast(self):
+        mk = min(self.curr_step, self.m)
+        residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
+        
+        t0 = time.time()
+        
+        # Precompute Gram matrix for faster objective evaluation
+        gram = residuals @ residuals.T
+        
+        def sum_res_fast(alphas):
+            return np.sqrt(alphas @ gram @ alphas)
+        
+        def jac_fast(alphas):
+            return (gram @ alphas) / (np.sqrt(alphas @ gram @ alphas) + 1e-15)
+        
+        bds = opt.Bounds(0, 1)
+        linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
+        
+        result = opt.minimize(
+            sum_res_fast, 
+            np.full(mk, 1/mk), 
+            method='SLSQP',
+            jac=jac_fast,  # Provide analytical gradient
+            bounds=bds, 
+            constraints=linear_constraint,
+            options={'ftol': 1e-15, 'maxiter': 200}
+        )
+        alphas = result.x
+        
+        print(alphas)
+        t1 = time.time()
+        print(f'Time to optimize alphas {t1-t0:0.5f}')
+        self.opt_alphas_time.append(t1-t0)
+
+        rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
+        Grho_result = (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
+
+        if self.adaptive_damping: 
+            rho_new, krho_new = self._get_damping_coefficient(rho_result, Grho_result)
+        else:
+            rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
+            rho_new = self._clip_density(rho_new)
+            krho_new = self.grid.fftn(rho_new)
+
+        C1_new = self._get_C1(rho_new, krho_new)
+        return rho_new, krho_new, C1_new
+    
+    def update_rho_Anderson_lsq(self):
+        mk = min(self.curr_step, self.m)
+        residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
+        
+        t0 = time.time()
+        
+        # We want to minimize ||residuals.T @ alphas||^2
+        # subject to: sum(alphas) = 1, 0 <= alphas <= 1
+        
+        # Convert equality constraint to bounds by solving a reduced problem
+        # Use the last variable to enforce sum = 1
+        if mk == 1:
+            alphas = np.array([1.0])
+        else:
+            # Solve for first (mk-1) variables, set last one to enforce sum=1
+            A_reduced = residuals[:-1].T - residuals[-1:].T
+            b = np.zeros(residuals.shape[1])
+            
+            # Bounds: if alpha_i is in [0,1], and sum=1, then:
+            # alpha_i in [max(0, 1-(mk-1)), min(1, 1-0)] for first mk-1
+            lower = np.zeros(mk-1)
+            upper = np.ones(mk-1)
+            
+            result = opt.lsq_linear(A_reduced, b, bounds=(lower, upper), 
+                                    method='bvls', tol=1e-12, max_iter=200)
+            
+            alphas_reduced = result.x
+            alphas = np.append(alphas_reduced, 1 - alphas_reduced.sum())
+            
+            # Safety check
+            if alphas[-1] < -1e-10 or alphas[-1] > 1 + 1e-10:
+                # Fallback to original SLSQP
+                print("Warning: constraint violation, using SLSQP fallback")
+                alphas = self._slsqp_fallback(residuals, mk)
+        
+        print(alphas)
+        t1 = time.time()
+        print(f'Time to optimize alphas {t1-t0:0.5f}')
+        self.opt_alphas_time.append(t1-t0)
+
+        rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
+        Grho_result = (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
+
+        if self.adaptive_damping: 
+            rho_new, krho_new = self._get_damping_coefficient(rho_result, Grho_result)
+        else:
+            rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
+            rho_new = self._clip_density(rho_new)
+            krho_new = self.grid.fftn(rho_new)
+
+        C1_new = self._get_C1(rho_new, krho_new)
+        return rho_new, krho_new, C1_new
+
+    def _slsqp_fallback(self, residuals, mk):
+        """Fallback to original SLSQP if needed"""
+        gram = residuals @ residuals.T
+        
+        def sum_res_fast(alphas):
+            return np.sqrt(alphas @ gram @ alphas)
+        
+        bds = opt.Bounds(0, 1)
+        linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
+        
+        result = opt.minimize(
+            sum_res_fast, 
+            np.full(mk, 1/mk), 
+            method='SLSQP',
+            bounds=bds, 
+            constraints=linear_constraint,
+            options={'ftol': 1e-12}
+        )
+        return result.x    
+        
 class Fire(Solver):
     """
     Fast Inertial Relaxation Engine (FIRE) solver

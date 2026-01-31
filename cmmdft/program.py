@@ -306,13 +306,13 @@ class Program(object):
     def set_solver(self, solver):
         '''This function sets the solver for a program.'''
         with log.section('PROGRAM', 1, timer='Initializing'):
-            assert isinstance(solver, Solver), "solver is not an instance of Solver, aborting!"
+            # assert isinstance(solver, Solver), "solver is not an instance of Solver, aborting!"
             self.solver = solver
             log.dump('Solver set to %s' %solver.name)
 
     def cascade_solver(self, solvers, chempot, **kwargs):
         '''This function attempts to solve the system using a cascade of solvers.'''
-        with log.section('PROGRAM', 1, timer='Initializing'):
+        with log.section('PROGRAM', 1, timer=None):
             for solver in solvers:
                 self.set_solver(solver)
                 try:
@@ -376,7 +376,7 @@ class Program(object):
 
             if energy_tracking:
                 convergence_fn = os.path.join(self.workdir,  "convergence%s.txt" %(self.file_suffix))
-                self.fener.init_tracking(convergence_fn)
+                self.fener.init_tracking(convergence_fn, rewrite=rewrite)
 
             self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.file_suffix))
             if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite and not continue_solving:

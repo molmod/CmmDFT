@@ -25,27 +25,103 @@ __all__ = [
 ]
 
 class EquationOfState(object):
+    """
+    Base equation of state class providing fundamental thermodynamic properties.
+    
+    This class defines the interface for computing thermodynamic quantities
+    such as chemical potential, pressure, fugacity, and free energy derivatives
+    from density and temperature. Subclasses implement specific EOS models.
+    
+    Attributes
+    ----------
+    mass : float
+        Molecular mass in atomic units (amu).
+    temperature : float, optional
+        Current temperature in Kelvin.
+    wvl : float
+        Thermal de Broglie wavelength.
+    ncomp : int
+        Number of components (default 1 for pure substances).
+    P_ref : float, optional
+        Reference pressure in bar.
+    T_ref : float, optional
+        Reference temperature in Kelvin.
+    rho_ref : float, optional
+        Reference density in 1/A^3.
+    mu_ref : float, optional
+        Reference chemical potential in Hartree.
+    """
 
     def __init__(self, mass):
+        """
+        Initialize the base EquationOfState.
+
+        Parameters
+        ----------
+        mass : float
+            Molecular mass in atomic units (amu).
+        """
         self.mass = mass
         self.temperature = None
         self.ncomp = 1
     
-    @classmethod
-    def from_guest(cls, guest):
-        raise NotImplementedError
-    
     def set_temperature(self, temperature):
+        """
+        Set the temperature and compute thermal properties.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        None
+        """
         self.temperature = temperature
         self.wvl = planck/np.sqrt(2*np.pi*self.mass*boltzmann*temperature)
     
     def set_reference_state(self, P_ref=1*bar):
+        """
+        Set reference state for fugacity calculations.
+
+        Parameters
+        ----------
+        P_ref : float, optional
+            Reference pressure in bar, default 1 bar.
+
+        Returns
+        -------
+        None
+        """
         self.P_ref = P_ref
         self.T_ref = self.temperature
         self.rho_ref = self.solve_densities_from_pressures([P_ref])[0][0]
         self.mu_ref = self.compute_chempot(self.rho_ref)        
 
-    def compute_chempot(self, rho=None, temperature=None, pressure=None):
+    def compute_chempot(self, rho=None, pressure=None, temperature=None):
+        """
+        Compute the chemical potential, input can be density or pressure
+
+        Parameters
+        ----------
+        rho : float or array-like, optional
+            Density in atomic units.
+        pressure : float or array-like, optional
+            Pressure in au.
+        temperature : float, optional
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        float or ndarray
+            Chemical potential in atomic units (Hartree).
+
+        Raises
+        ------
+        ValueError
+            If neither rho nor pressure is provided.
+        """
         
         if temperature is not None:
             s_temp = getattr(self, 'temperature', None)
@@ -55,6 +131,7 @@ class EquationOfState(object):
         if rho is not None:    
             kT = boltzmann*self.temperature
             return kT*np.log(self.wvl**3*rho) + self.derivative_excess_free_energy_volume(rho)
+        
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
             rho = np.nanmin(rho, axis=1)
@@ -63,7 +140,29 @@ class EquationOfState(object):
             raise ValueError('Either rho or pressure must be provided')
     
     
-    def compute_excess_chempot(self, rho=None, temperature=None, pressure=None):
+    def compute_excess_chempot(self, rho=None, pressure=None, temperature=None):
+        """
+        Compute the excess chemical potential (non-ideal contribution), input can be densities or pressures
+
+        Parameters
+        ----------
+        rho : float or array-like, optional
+            Density in au.
+        pressure : float or array-like, optional
+            Pressure in au.
+        temperature : float, optional
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        float or ndarray
+            Excess chemical potential in atomic units (Hartree).
+
+        Raises
+        ------
+        ValueError
+            If neither rho nor pressure is provided.
+        """
         
         if temperature is not None:
             s_temp = getattr(self, 'temperature', None)
@@ -80,7 +179,29 @@ class EquationOfState(object):
         else:
             raise ValueError('Either rho or pressure must be provided')
     
-    def compute_pressure(self, rho=None, temperature=None, chempot=None):
+    def compute_pressure(self, rho=None, chempot=None, temperature=None):
+        """
+        Compute the pressure.
+
+        Parameters
+        ----------
+        rho : float or array-like, optional
+            Density in au.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+
+        temperature : float, optional
+            Temperature in Kelvin.
+        Returns
+        -------
+        float or ndarray
+            Pressure in au.
+
+        Raises
+        ------
+        ValueError
+            If neither rho nor chempot is provided.
+        """
         
         if temperature is not None:
             s_temp = getattr(self, 'temperature', None)
@@ -98,7 +219,32 @@ class EquationOfState(object):
             raise ValueError('Either rho or chemical potential must be provided')
 
     def compute_fugacity(self, temperature=None, rho=None, chempot=None, pressure=None, P_ref=1*bar):
-        
+        """
+        Compute the fugacity, calculated at a given temperature. Inputs can be densities, pressures or chemical potentials.
+
+        Parameters
+        ----------
+        temperature : float, optional
+            Temperature in Kelvin.
+        rho : float or array-like, optional
+            Density in au.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure in au.
+        P_ref : float, optional
+            Reference pressure in au, default 1 bar.
+
+        Returns
+        -------
+        float or ndarray
+            Fugacity in au.
+
+        Raises
+        ------
+        ValueError
+            If insufficient parameters are provided.
+        """        
         if temperature is not None:
             s_temp = getattr(self, 'temperature', None)
             if s_temp != temperature:
@@ -131,11 +277,36 @@ class EquationOfState(object):
         raise NotImplementedError
     
     def excess_free_energy_volume(self, rho):
+        """
+        Compute excess free energy per volume.
+
+        Parameters
+        ----------
+        rho : float or array-like
+            Density.
+
+        Returns
+        -------
+        float or ndarray
+            Excess free energy per volume.
+        """
         "Returns the excess free energy per volume"
         return rho*self.excess_free_energy_particle(rho)
     
     def free_energy_volume(self, rho):
-        "Returns the free energy per volume"
+        """
+        Compute total free energy per volume (ideal + excess).
+
+        Parameters
+        ----------
+        rho : float or array-like
+            Density.
+
+        Returns
+        -------
+        float or ndarray
+            Free energy per volume.
+        """
         return self.excess_free_energy_volume(rho) + boltzmann*self.temperature*rho*(np.log(self.wvl**3*rho)-1)
     
     def derivative_excess_free_energy_particle(self, rho):
@@ -165,16 +336,44 @@ class EquationOfState(object):
         return value
      
     def get_rough_density_grid(self, npoints):
-        "Get a rough logarithmic grid in density in a range that is practically accessible"
+        """
+        Generate a rough logarithmic density grid for numerical operations.
+
+        Parameters
+        ----------
+        npoints : int
+            Number of grid points.
+
+        Returns
+        -------
+        ndarray
+            Density grid, spanning practical density range.
+        """
         return np.logspace(-10,0,npoints)/angstrom**3
     
-    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000):
+    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000):    
         """
-            Solve EOS for density as function of chemical potential at fixed (given) temperature in a given density interval. For this we need to solve the following equation for rho
+        Solve EOS for density as function of chemical potential at fixed temperature.
 
-            ..math:: \mu = k_B T\ln(\rho\Lambda^3) + f^N_{ex}(\rho,T) + \rho\frac{\partial f^N_{ex}}{\partial \rho}(\rho,T)
-        
-            This is done by first defining a rough grid of densities for which the corresponding chemical potential is computed according to the above equation. This rough grid is used to bracket possible solutions who are then fed into the brentq routine of scipy.optimize to find all solutions.
+        Solves the equation: ..math:: \mu = k_B T\ln(\rho\Lambda^3) + f^N_{ex}(\rho,T) + \rho\frac{\partial f^N_{ex}}{\partial \rho}(\rho,T)
+        This is done by first defining a rough grid of densities for which the corresponding chemical potential is computed according to the above equation. This rough grid is used to bracket possible solutions who are then fed into the brentq routine of scipy.optimize to find all solutions.
+        Parameters
+        ----------
+        chempots : float or array-like
+            Chemical potential(ies) in atomic units (Hartree).
+        n_rough_gridpoints : int, optional
+            Number of grid points for bracketing solutions, default 1000.
+
+        Returns
+        -------
+        ndarray
+            Density solutions, shape (len(chempots), n_branches). Branches correspond
+            to distinct phases (gas, liquid, solid); unused branches are NaN.
+
+        Raises
+        ------
+        ValueError
+            If more than 3 branches (phases) are found.
         """
         #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
         rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
@@ -209,11 +408,27 @@ class EquationOfState(object):
 
     def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000):
         """
-            Solve EOS for density as function of pressure at fixed (given) temperature in a given density interval. For this we need to solve the following equation for rho
+        Solve EOS for density as function of pressure at fixed temperature.
 
-            ..math:: p = k_B T\rho + \rho^2\frac{\partial^2 f^N_{ex}}{\partial \rho^2}(\rho,T)
-        
-            This is done by first defining a rough grid of densities for which the corresponding pressure is computed according to the above equation. This rough grid is used to bracket possible solutions who are then fed into the brentq routine of scipy.optimize to find all solutions.
+        Solves the equation: ..math:: p = k_B T\rho + \rho^2\frac{\partial^2 f^N_{ex}}{\partial \rho^2}(\rho,T)
+        This is done by first defining a rough grid of densities for which the corresponding pressure is computed according to the above equation. This rough grid is used to bracket possible solutions who are then fed into the brentq routine of scipy.optimize to find all solutions.
+        Parameters
+        ----------
+        pressures : float or array-like
+            Pressure(ies) in bar.
+        n_rough_gridpoints : int, optional
+            Number of grid points for bracketing solutions, default 10000.
+
+        Returns
+        -------
+        ndarray
+            Density solutions, shape (len(pressures), n_branches). Branches correspond
+            to distinct phases; unused branches are NaN.
+
+        Raises
+        ------
+        ValueError
+            If more than 3 branches (phases) are found.
         """
         #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
         rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
@@ -247,16 +462,34 @@ class EquationOfState(object):
 
     def find_critical_point(self, rho_scale=1.0/angstrom**3, T_scale=kelvin, p_scale=kjmol/angstrom, rho_red_init=0.0005, T_red_init=300, rho_red_upper=np.inf, T_red_upper=np.inf):
         """
-            Critical point is defined as the point where both dP/dV and d2P/dV2 are zero. In terms of the excess free energy per volume, this criterion becomes:
+        Critical point is defined as the point where both dP/dV and d2P/dV2 are zero. In terms of the excess free energy per volume, this criterion becomes:
 
-                rho    \frac{\partial^2 f_V}{\partial \rho^2} &= -kT
-                \rho^2 \frac{\partial^3 f_V}{\partial \rho^3} &=  kT
-            
-            rho_scale and T_scale   determine how the reduced density and temperature are computed, i.e. rho_red = rho/rho_scale and similar for temperature
-            *_red_init              determine the initial value for the reduced properties in the iterative solving procedure
-            *_red_upper             determine the upper limit for the reduced critical properties, i.e. if temp or density is above its allowed value, no 
-                                    critical point will be returned
-        """
+            rho    \frac{\partial^2 f_V}{\partial \rho^2} &= -kT
+            \rho^2 \frac{\partial^3 f_V}{\partial \rho^3} &=  kT
+
+        Parameters
+        ----------
+        rho_scale : float, optional
+            Density scaling factor for reduced units.
+        T_scale : float, optional
+            Temperature scaling factor for reduced units.
+        p_scale : float, optional
+            Pressure scaling factor for reduced units.
+        rho_red_init : float, optional
+            Initial guess for reduced density.
+        T_red_init : float, optional
+            Initial guess for reduced temperature.
+        rho_red_upper : float, optional
+            Upper limit for reduced critical density.
+        T_red_upper : float, optional
+            Upper limit for reduced critical temperature.
+
+        Returns
+        -------
+        tuple
+            (rho_crit, T_crit, p_crit): Critical density, temperature, and pressure.
+            Returns (NaN, NaN, NaN) if no critical point is found.
+        """        
         with log.section('EOS', 2, timer="Initializing"):
             log.dump('Computing critical point ...')
             #define vector function with 2 components and dependent on density and temperature whose root is the critical point:
@@ -288,17 +521,58 @@ class EquationOfState(object):
             return rho_crit, T_crit, p_crit 
 
 class EOS_MIX(EquationOfState):
-    def __init__(self, ncomp, homogenous=True, homogenous_fraction=None):
+    """
+    Base class for mixture equation of state models.
+    
+    Handles homogeneous and non-homogeneous mixtures with multiple components.
+
+    homogeneous mixtures assume the same composition everywhere, while non-homogeneous mixture can vary. As the mixture fraction is set beforehand, the state of a homogeneous mixture is defined by a single density, whereas ncomp densities are needed to define a non-homogeneous state.
+    
+    Attributes
+    ----------
+    ncomp : int
+        Number of components in the mixture.
+    homogeneous : bool
+        If True, treat as homogeneous mixture (constant composition).
+    homogeneous_fraction : ndarray
+        Mole fractions for homogeneous mixtures, shape (ncomp,).
+    """
+    def __init__(self, ncomp, homogeneous=True, homogeneous_fraction=None):
+        """
+        Initialize the mixture EOS.
+
+        Parameters
+        ----------
+        ncomp : int
+            Number of components.
+        homogeneous : bool, optional
+            If True, treat as homogeneous mixture, default True.
+        homogeneous_fraction : array-like, optional
+            Mole fractions; defaults to equal fractions if None.
+        """
         self.ncomp = ncomp
-        self.homogenous = homogenous
-        if homogenous_fraction is None:
-            self.homogenous_fraction = np.ones(ncomp)/ncomp
+        self.homogeneous = homogeneous
+        if homogeneous_fraction is None:
+            self.homogeneous_fraction = np.ones(ncomp)/ncomp
         else:
-            assert len(homogenous_fraction) == ncomp, 'homogenous_fraction and sigma must have the same length'
-            self.homogenous_fraction = homogenous_fraction/np.sum(homogenous_fraction)
+            assert len(homogeneous_fraction) == ncomp, 'homogeneous_fraction and sigma must have the same length'
+            self.homogeneous_fraction = homogeneous_fraction/np.sum(homogeneous_fraction)
 
     def _get_fractional_coefficients(self, rho):
-        if self.homogenous:
+        """
+        Compute fractional coefficients for mixture density distribution.
+
+        Parameters
+        ----------
+        rho : float or array-like
+            Total density.
+
+        Returns
+        -------
+        tuple
+            (rho, rho_sum, x): Component densities, total density, and mole fractions.
+        """
+        if self.homogeneous:
             rho_sum = np.atleast_1d(rho)
             if isinstance(rho, list):
                 rho = np.array(rho)
@@ -306,10 +580,10 @@ class EOS_MIX(EquationOfState):
                 rho = np.ones((self.ncomp,) + rho.shape)*rho_sum
             else:
                 rho = np.ones((self.ncomp,1))*rho_sum
-            rho = self.homogenous_fraction[:,None]*rho
+            rho = self.homogeneous_fraction[:,None]*rho
             x = np.zeros((self.ncomp,) + rho_sum.shape)
 
-            x = np.full_like(rho.T, self.homogenous_fraction).T
+            x = np.full_like(rho.T, self.homogeneous_fraction).T
         else:
             assert rho.shape[0]==self.ncomp, 'For a mixture, rho should be an array with shape (ncomp, ...)'
             rho_sum = np.sum(rho, axis=0)
@@ -317,10 +591,52 @@ class EOS_MIX(EquationOfState):
         return rho, rho_sum, x        
 
     def _drhoi_excess_free_energy_particle(self, rho):
+        """
+        Compute derivative of excess free energy per particle w.r.t. component density.
+
+        Parameters
+        ----------
+        rho : float or array-like
+            Density.
+
+        Returns
+        -------
+        ndarray
+            Derivative array, shape (ncomp, ...).
+
+        Raises
+        ------
+        NotImplementedError
+            Must be implemented by subclasses.
+        """
         raise NotImplementedError
 
-    def compute_chempot(self, rho=None, temperature=None, pressure=None):
-        assert self.homogenous, 'Chemical potential calculation only supported for homogenous mixtures'        
+    def compute_chempot(self, rho=None, pressure=None, temperature=None):
+        """
+        Compute chemical potentials for mixture components, from densities of pressures.
+
+        Parameters
+        ----------
+        rho : float or array-like, optional
+            Density.
+        pressure : float or array-like, optional
+            Pressure in au.
+        temperature : float, optional
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        ndarray
+            Chemical potentials in atomic units (Hartree), shape (ncomp, ...).
+
+        Raises
+        ------
+        AssertionError
+            If homogenous=False.
+        ValueError
+            If neither rho nor pressure is provided.
+        """
+        assert self.homogeneous, 'Chemical potential calculation only supported for homogeneous mixtures'        
 
         if temperature is not None:
             s_temp = getattr(self, 'temperature', None)
@@ -340,8 +656,32 @@ class EOS_MIX(EquationOfState):
         else:
             raise ValueError('Either rho or pressure must be provided')
         
-    def compute_excess_chempot(self, rho=None, temperature=None, pressure=None):
-        assert self.homogenous, 'Chemical potential calculation only supported for homogenous mixtures'
+    def compute_excess_chempot(self, rho=None, pressure=None, temperature=None):
+        """
+        Compute excess chemical potentials for mixture components, from densities of pressures.
+
+        Parameters
+        ----------
+        rho : float or array-like, optional
+            Density.
+        pressure : float or array-like, optional
+            Pressure in bar.
+        temperature : float, optional
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        ndarray
+            Excess chemical potentials in atomic units (Hartree), shape (ncomp, ...).
+
+        Raises
+        ------
+        AssertionError
+            If homogenous=False.
+        ValueError
+            If neither rho nor pressure is provided.
+        """
+        assert self.homogeneous, 'Chemical potential calculation only supported for homogeneous mixtures'
         if temperature is not None:
             s_temp = getattr(self, 'temperature', None)
             if s_temp != temperature:
@@ -356,8 +696,32 @@ class EOS_MIX(EquationOfState):
             rho = np.nanmin(rho, axis=1)
             return self.compute_excess_chempot(rho=rho, temperature=self.temperature)
     
-    def compute_pressure(self, rho=None, temperature=None, chempot=None):
-        assert self.homogenous, 'Pressure calculation only supported for homogenous mixtures'
+    def compute_pressure(self, rho=None, chempot=None, temperature=None):
+        """
+        Compute total pressure of the mixture, from densities of chemical potentials.
+
+        Parameters
+        ----------
+        rho : float or array-like, optional
+            Density.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+        temperature : float, optional
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        float or ndarray
+            Pressure.
+
+        Raises
+        ------
+        AssertionError
+            If homogenous=False.
+        ValueError
+            If neither rho nor chempot is provided.
+        """
+        assert self.homogeneous, 'Pressure calculation only supported for homogeneous mixtures'
         
         if temperature is not None:
             s_temp = getattr(self, 'temperature', None)
@@ -374,7 +738,25 @@ class EOS_MIX(EquationOfState):
             return self.compute_pressure(rho=rho, temperature=self.temperature)
     
     def compute_partial_pressure(self, rho):
-        assert self.homogenous, 'Partial pressure calculation only supported for homogenous mixtures'
+        """
+        Compute partial pressures for mixture components.
+
+        Parameters
+        ----------
+        rho : float or array-like
+            Density.
+
+        Returns
+        -------
+        ndarray
+            Partial pressures, shape (ncomp, ...).
+
+        Raises
+        ------
+        AssertionError
+            If homogenous=False.
+        """
+        assert self.homogeneous, 'Partial pressure calculation only supported for homogeneous mixtures'
         kT = boltzmann*self.temperature
         rho_orig = rho.copy()
         mu_res = self.compute_excess_chempot(rho)
@@ -384,11 +766,26 @@ class EOS_MIX(EquationOfState):
     
     def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000, excess_only=False):
         """
-            Solve EOS for density as function of chemical potential at fixed (given) temperature in a given density interval. For this we need to solve the following equation for rho
+        Solve EOS for density as function of chemical potential at fixed temperature.
 
-            ..math:: \mu = k_B T\ln(\rho\Lambda^3) + f^N_{ex}(\rho,T) + \rho\frac{\partial f^N_{ex}}{\partial \rho}(\rho,T)
-        
-            This is done by first defining a rough grid of densities for which the corresponding chemical potential is computed according to the above equation. This rough grid is used to bracket possible solutions who are then fed into the brentq routine of scipy.optimize to find all solutions.
+        Parameters
+        ----------
+        chempots : float or array-like
+            Chemical potential(ies) in atomic units (Hartree).
+        n_rough_gridpoints : int, optional
+            Number of grid points for bracketing solutions, default 1000.
+        excess_only : bool, optional
+            If True, use excess chemical potential only, default False.
+
+        Returns
+        -------
+        ndarray
+            Density solutions, shape (len(chempots), n_branches).
+
+        Raises
+        ------
+        ValueError
+            If more than 3 branches (phases) are found.
         """
         #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
         rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
@@ -434,11 +831,41 @@ class EOS_MIX(EquationOfState):
 class SumOfEOS(EquationOfState):
     """
     Class representing the sum of multiple equations of state.
+    
+    Used to combine different EOS models (e.g., hard sphere + dispersion).
+    
+    Attributes
+    ----------
+    list_eos : list of EquationOfState
+        List of EOS objects to sum.
+    factors : list of float
+        Scaling factors for each EOS in the sum.
+    name : str
+        Identifier for the combined EOS.
     """
     
     name = 'SumOfEOS'
 
     def __init__(self, mass, list_eos, factors=None):
+        """
+        Initialize the sum of multiple EOS.
+
+        Parameters
+        ----------
+        mass : float
+            Molecular mass in atomic units (amu).
+        list_eos : list of EquationOfState
+            List of EOS objects to sum.
+        factors : list of float, optional
+            Scaling factors for each EOS; defaults to [1.0, 1.0, ...].
+
+        Raises
+        ------
+        AssertionError
+            If list_eos is not a list or contains fewer than 2 objects.
+        AssertionError
+            If factors length does not match list_eos length.
+        """
         assert isinstance(list_eos, list), 'list_eos argument should be a list'
         assert len(list_eos)>1, 'list_eos should contain more than 1 eos'
         if factors is None:
@@ -450,11 +877,32 @@ class SumOfEOS(EquationOfState):
         self.factors = factors
 
     def set_temperature(self, temperature):
+        """
+        Set temperature for all combined EOS.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+        """
         for eos in self.list_eos:
             eos.set_temperature(temperature)
         EquationOfState.set_temperature(self, temperature)
 
     def excess_free_energy_particle(self, rho):
+        """
+        Compute sum of excess free energies per particle.
+
+        Parameters
+        ----------
+        rho : float or array-like
+            Density.
+
+        Returns
+        -------
+        float or ndarray
+            Sum of excess free energies per particle.
+        """
         result = rho*0.0
         for eos, factor in zip(self.list_eos, self.factors):
             result += factor*eos.excess_free_energy_particle(rho)
@@ -480,10 +928,34 @@ class SumOfEOS(EquationOfState):
 
 
 class VanderWaalsEOS(EquationOfState):
+    """
+    Van der Waals equation of state.
+    
+    Simple two-parameter model with repulsive (b) and attractive (a) terms.
+    
+    Attributes
+    ----------
+    a : float
+        Attractive parameter
+    b : float
+        Repulsive parameter
+    name : str
+        Identifier 'vdW'.
+    """
     
     name = 'vdW'
     
     def __init__(self, a, b):
+        """
+        Initialize Van der Waals EOS.
+
+        Parameters
+        ----------
+        a : float
+            Attractive parameter.
+        b : float
+            Eigenvolume.
+        """
         EquationOfState.__init__(self)
         self.a = a
         self.b = b     
@@ -505,15 +977,49 @@ class VanderWaalsEOS(EquationOfState):
         return 2*kT*self.b**3/(1.0-self.b*rho)**3
     
 class ModifiedBenedictWebbRubinEOS(EquationOfState):
+    """
+    Modified Benedict-Webb-Rubin (MBWR) equation of state.
+    
+    Accurate EOS for non-associating fluids over wide ranges of density and temperature.
+    Parameters from http://dx.doi.org/10.1080/00268979300100411
+    
+    Attributes
+    ----------
+    sigma : float
+        Lennard-Jones sigma parameter in Angstrom.
+    epsilon : float
+        Lennard-Jones epsilon parameter in Hartree.
+    sigma_3 : float
+        Sigma cubed.
+    x1-x32 : float
+        Regression coefficients from literature.
+    a : list of float
+        Temperature-dependent a coefficients.
+    b : list of float
+        Temperature-dependent b coefficients.
+    gamma : float
+        Shape parameter for Gaussian functionals.
+    name : str
+        Identifier 'MBWR'.
+    """
     
     name = 'MBWR'
-    
-    """
-    The functional form and all parameters figuring in these expressions are
-    taken from http://dx.doi.org/10.1080/00268979300100411
-    """
-    
+
     def __init__(self, mass, sigma, epsilon, logging = False):
+        """
+        Initialize MBWR EOS.
+
+        Parameters
+        ----------
+        mass : float
+            Molecular mass in atomic units (amu).
+        sigma : float
+            Lennard-Jones sigma in Angstrom.
+        epsilon : float
+            Lennard-Jones epsilon in Hartree.
+        logging : bool, optional
+            If True, log warnings about accuracy, default False.
+        """
         EquationOfState.__init__(self, mass)
         self.sigma = sigma
         self.sigma_3 = sigma**3
@@ -523,6 +1029,21 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
 
     @classmethod
     def from_guest(cls, guest, **kwargs):
+        """
+        Create MBWR EOS from a guest species object, defined in system.py.
+
+        Parameters
+        ----------
+        guest : SphericalLJGuest
+            Guest molecule with mass, sigma, epsilon.
+        **kwargs
+            Additional keyword arguments.
+
+        Returns
+        -------
+        ModifiedBenedictWebbRubinEOS
+            Instance of MBWR EOS.
+        """
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
@@ -565,10 +1086,25 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         self.gamma = 3.0
     
     def set_temperature(self, temperature):
+        """
+        Set temperature and update coefficients.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+        """
         EquationOfState.set_temperature(self, temperature)
         self._set_coefficients()
     
     def _set_coefficients(self):
+        """
+        Compute temperature-dependent a and b coefficients.
+
+        Returns
+        -------
+        None
+        """
         Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
     
         Tr_1 = Tr**(-1)
@@ -672,20 +1208,29 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         return dddAr*self.epsilon        
 
     def get_rough_density_grid(self, npoints):
-        "Define rough density grid (for use in solve_densities) based on reduced units and knowledge of the MBWR EOS"
+        """
+        Define rough density grid based on reduced units for MBWR.
+
+        Parameters
+        ----------
+        npoints : int
+            Number of grid points.
+
+        Returns
+        -------
+        ndarray
+            Density grid.
+        """
         return np.logspace(-10,0,npoints)*1.5/self.sigma_3
 
     def find_critical_point(self):
         """
-            Critical point is defined as the point where both dP/dV and d2P/dV2 are zero. In terms of the excess free energy per volume, this criterion becomes:
+        Find the critical point for MBWR EOS. See EquationOfState.find_critical_point
 
-                rho    \frac{\partial^2 f_V}{\partial \rho^2} &= -kT
-                \rho^2 \frac{\partial^3 f_V}{\partial \rho^3} &=  kT
-            
-            rho_scale and T_scale   determine how the reduced density and temperature are computed, i.e. rho_red = rho/rho_scale and similar for temperature
-            *_red_init              determine the initial value for the reduced properties in the iterative solving procedure
-            *_red_upper             determine the upper limit for the reduced critical properties, i.e. if temp or density is above its allowed value, no 
-                                    critical point will be returned
+        Returns
+        -------
+        tuple
+            (rho_crit, T_crit, p_crit): Critical density, temperature, and pressure.
         """
         rho_scale, T_scale, p_scale = 1./self.sigma_3, self.epsilon/boltzmann, self.epsilon/self.sigma_3
         rho_red_init, T_red_init = 0.3, 1.3
@@ -693,14 +1238,48 @@ class ModifiedBenedictWebbRubinEOS(EquationOfState):
         return EquationOfState.find_critical_point(self, rho_scale=rho_scale, T_scale=T_scale, p_scale=p_scale, rho_red_init=rho_red_init, T_red_init=T_red_init, rho_red_upper=rho_red_upper, T_red_upper=T_red_upper)
 
 class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
+    """
+    MBWR equation of state for homogeneous mixtures.
+    
+    Extends MBWR to handle multicomponent systems with mixing rules.
+    
+    Attributes
+    ----------
+    sigma_list : ndarray
+        Array of sigma parameters, shape (ncomp,).
+    epsilon_list : ndarray
+        Array of epsilon parameters, shape (ncomp,).
+    sigma_mix : ndarray
+        Binary sigma mixing matrix, shape (ncomp, ncomp).
+    epsilon_mix : ndarray
+        Binary epsilon mixing matrix, shape (ncomp, ncomp).
+    """
 
-    def __init__(self, mass, sigma, epsilon, homogenous=True, x=None, logging = False):
+    def __init__(self, mass, sigma, epsilon, homogeneous=True, x=None, logging = False):
+        """
+        Initialize MBWR mixture EOS.
+
+        Parameters
+        ----------
+        mass : ndarray
+            Molecular masses, shape (ncomp,).
+        sigma : array-like
+            Sigma parameters for components, shape (ncomp,).
+        epsilon : array-like
+            Epsilon parameters for components, shape (ncomp,).
+        homogenous : bool, optional
+            If True, treat as homogeneous mixture, default True.
+        x : array-like, optional
+            Mole fractions, shape (ncomp,).
+        logging : bool, optional
+            If True, log warnings about accuracy, default False.
+        """        
         sigma = np.array(sigma)
         epsilon = np.array(epsilon)
         mass = np.array(mass)
         super().__init__(mass, sigma=sigma, epsilon=epsilon, logging=logging)
         ncomp = len(sigma)    
-        EOS_MIX.__init__(self, ncomp, homogenous, x)
+        EOS_MIX.__init__(self, ncomp, homogeneous, x)
         self.sigma_list = sigma
         self.epsilon_list = epsilon
 
@@ -712,17 +1291,31 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
         x = guest.fractions
         return cls(mass, sigma, epsilon, x=x, **kwargs)
 
-    def set_temperature(self, temperature, rho=None):
-        self.temperature = temperature
+    def set_temperature(self, temperature):
+        EOS_MIX.set_temperature(self, temperature)
 
     def _set_mixture_parameters(self, x, temperature):
+        """
+        Compute the (temperature dependent) mixture parameters from composition, sets the temperature
+
+        Parameters
+        ----------
+        x : ndarray
+            Mole fractions, shape (ncomp, ...).
+        temperature : float
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        None
+        """
         self.x = x/np.sum(x, axis=0)
         sigma = self.sigma_list
         epsilon = self.epsilon_list
         #compute mixture parameters
         self.sigma_mix = np.zeros((self.ncomp,self.ncomp))
         self.epsilon_mix = np.zeros((self.ncomp,self.ncomp))
-        if self.homogenous:
+        if self.homogeneous:
             self.sigma_3 = 0
             self.epsilon = 0
         else:
@@ -742,6 +1335,21 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
         super().set_temperature(temperature)
         
     def _set_mixing_derivatives(self, rho_sum, x):
+        """
+        Compute mixing derivatives for MBWR mix EOS.
+
+        Parameters
+        ----------
+        rho_sum : float or array-like
+            Total density.
+        x : ndarray
+            Mole fractions.
+
+        Returns
+        -------
+        tuple
+            (d_sigma3, d_epsilon): Derivatives of sigma3 and epsilon.
+        """
         d_sigma3 = np.zeros_like(x)
         d_epsilon = np.zeros_like(x)
 
@@ -763,7 +1371,12 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
 
     def _get_derivative_coefficients(self):
         """
-        Coefficients derived towards the reduced temperature
+        Compute derivatives of a and b coefficients w.r.t. reduced temperature.
+
+        Returns
+        -------
+        tuple
+            (da_dTr, db_dTr): Lists of derivative coefficients.
         """
         Tr = boltzmann*self.temperature/self.epsilon #reduced temperature
         Tr_1 = Tr**(-1)
@@ -793,6 +1406,25 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
         return da_dTr, db_dTr
 
     def dAr_drhoi(self, rho_sum, x, d_sigma3, d_epsilon):
+        """
+        Compute derivative of reduced excess free energy w.r.t. component density.
+
+        Parameters
+        ----------
+        rho_sum : float or array-like
+            Total density.
+        x : ndarray
+            Mole fractions.
+        d_sigma3 : ndarray
+            Derivative of sigma3.
+        d_epsilon : ndarray
+            Derivative of epsilon.
+
+        Returns
+        -------
+        ndarray
+            Derivative array, shape (ncomp, ...).
+        """
         rhor = self.sigma_3*rho_sum #reduced density
         da_dTr, db_dTr = self._get_derivative_coefficients()
         
@@ -818,7 +1450,7 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
     def derivative_excess_free_energy_particle(self, rho):
         rho, rho_sum, x = self._get_fractional_coefficients(rho)
         self._set_mixture_parameters(x, self.temperature)
-        if self.homogenous:
+        if self.homogeneous:
             return super().derivative_excess_free_energy_particle(rho_sum)
         else:
             d_sigma3, d_epsilon = self._set_mixing_derivatives(rho_sum, x)
@@ -828,7 +1460,7 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
             return A_eps + dA
     
     def derivative2_excess_free_energy_particle(self, rho):
-        if self.homogenous:
+        if self.homogeneous:
             rho, rho_sum, x = self._get_fractional_coefficients(rho)
             self._set_mixture_parameters(x, self.temperature)
             return super().derivative2_excess_free_energy_particle(rho_sum)
@@ -836,7 +1468,7 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
             raise NotImplementedError('Second derivative of MBWR mixture EOS not implemented')
     
     def derivative3_excess_free_energy_particle(self, rho):
-        if self.homogenous:
+        if self.homogeneous:
             rho, rho_sum, x = self._get_fractional_coefficients(rho)
             self._set_mixture_parameters(x, self.temperature)
             return super().derivative3_excess_free_energy_particle(rho_sum)
@@ -844,7 +1476,7 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
             raise NotImplementedError('Third derivative of MBWR mixture EOS not implemented')
 
     def _drhoi_excess_free_energy_particle(self, rho):
-        assert self.homogenous, 'Only homogenous mixtures are supported for derivative calculation' 
+        assert self.homogeneous, 'Only homogeneous mixtures are supported for derivative calculation' 
         rho, rho_sum, x = self._get_fractional_coefficients(rho)
         self._set_mixture_parameters(x, self.temperature)            
         d_sigma3, d_epsilon = self._set_mixing_derivatives(rho_sum, x)
@@ -854,20 +1486,55 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
 
     def get_rough_density_grid(self, npoints):
         "Define rough density grid (for use in solve_densities) based on reduced units and knowledge of the MBWR EOS"
-        self._set_mixture_parameters(self.homogenous_fraction, self.temperature)
+        self._set_mixture_parameters(self.homogeneous_fraction, self.temperature)
         return np.logspace(-10,0,npoints)*1.5/self.sigma_3
 
 class CarnahanStarlingEOS(EquationOfState):
+    """
+    Carnahan-Starling hard-sphere equation of state.
     
+    Accurate model for hard-sphere fluids based on the Carnahan-Starling approximation.
+    Computes excess free energy and its derivatives with respect to density.
+    
+    Attributes
+    ----------
+    sigma : float
+        Lennard-Jones sigma parameter in Angstrom.
+    epsilon : float
+        Lennard-Jones epsilon parameter in Hartree.
+    m : float
+        Segment number (default 1 for monomers).
+    m_mix : float
+        Segment number for mixture (used in derivative calculations).
+    R : float
+        Hard-sphere radius, temperature-dependent.
+    eta : float
+        Packing fraction eta = m * (4/3) * pi * R^3 * rho.
+    hs_approx : str
+        Hard-sphere approximation method ('exp' or polynomial).
+    name : str
+        Identifier 'CS'.
+    """
+
     name = 'CS'
-    """
-        R
-            The radius of the hard sphere particles
-            
-        Compressibility = eta*rho
-    """
     
     def __init__(self, mass, sigma, epsilon, m=1, hs_approx='exp'):
+        """
+        Initialize Carnahan-Starling EOS.
+
+        Parameters
+        ----------
+        mass : float
+            Molecular mass in atomic units (amu).
+        sigma : float
+            Lennard-Jones sigma in Angstrom.
+        epsilon : float
+            Lennard-Jones epsilon in Hartree.
+        m : float, optional
+            Segment number, default 1.
+        hs_approx : str, optional
+            Hard-sphere approximation, 'exp' or polynomial, default 'exp'.
+        """
         EquationOfState.__init__(self, mass)
         self.sigma = sigma
         self.epsilon = epsilon
@@ -877,13 +1544,40 @@ class CarnahanStarlingEOS(EquationOfState):
 
     @classmethod
     def from_guest(cls, guest, **kwargs):
+        """
+        Create Carnahan-Starling EOS from a guest species object.
+
+        Parameters
+        ----------
+        guest : SphericalLJGuest
+            Guest molecule with mass, sigma, epsilon, and optional m.
+        **kwargs
+            Additional keyword arguments.
+
+        Returns
+        -------
+        CarnahanStarlingEOS
+            Instance of Carnahan-Starling EOS.
+        """
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
         m = getattr(guest, 'm', 1)
         return cls(mass, sigma, epsilon, m=m, **kwargs)
 
-    def set_temperature(self, temperature, **kwargs):
+    def set_temperature(self, temperature):
+        """
+        Set temperature and compute temperature-dependent parameters.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+        Returns
+        -------
+        None
+            Sets self.R and self.eta.
+        """
         super().set_temperature(temperature)
         beta = 1/(boltzmann*temperature)
         Tt = 1/beta/self.epsilon
@@ -894,7 +1588,19 @@ class CarnahanStarlingEOS(EquationOfState):
         self.eta = self.m*4/3*np.pi*self.R**3
     
     def get_rough_density_grid(self, npoints):
-        "Get a rough logarithmic grid in density in a range that is practically accessible"
+        """
+        Generate a rough logarithmic density grid in accessible range.
+
+        Parameters
+        ----------
+        npoints : int
+            Number of grid points.
+
+        Returns
+        -------
+        ndarray
+            Logarithmic density grid spanning practical range.
+        """
         log_start = -10
         log_end = np.log(angstrom**3/self.eta)/np.log(10)-0.01
         return np.logspace(log_start, log_end, npoints)/angstrom**3
@@ -920,17 +1626,56 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
     
     name = 'CSMIX'
     """
-        R
-            The radius of the hard sphere particles
-            
-        Compressibility = eta*rho
+    Carnahan-Starling EOS for homogeneous mixtures.
+    
+    Extends Carnahan-Starling to handle multicomponent systems with composition-dependent parameters.
+    
+    Attributes
+    ----------
+    sigma : ndarray
+        Array of sigma parameters, shape (ncomp,).
+    epsilon : ndarray
+        Array of epsilon parameters, shape (ncomp,).
+    m : ndarray
+        Array of segment numbers, shape (ncomp,).
+    R : ndarray
+        Array of hard-sphere radii, shape (ncomp,).
+    eta : float or array-like
+        Packing fraction, computed from mole fractions.
+    m_mix : float or array-like
+        Mixture segment number.
+    name : str
+        Identifier 'CSMIX'.
     """
    
-    def __init__(self, mass, sigma, epsilon, m=None, homogenous=True, homogenous_fraction=None):
+    def __init__(self, mass, sigma, epsilon, m=None, homogeneous=True, homogeneous_fraction=None):
+        """
+        Initialize Carnahan-Starling mixture EOS.
+
+        Parameters
+        ----------
+        mass : float
+            Molecular mass (for single component reference).
+        sigma : array-like
+            Sigma parameters for components, shape (ncomp,).
+        epsilon : array-like
+            Epsilon parameters for components, shape (ncomp,).
+        m : array-like, optional
+            Segment numbers for components; defaults to ones.
+        homogeneous : bool, optional
+            If True, treat as homogeneous mixture, default True.
+        homogeneous_fraction : array-like, optional
+            Mole fractions for homogeneous mixture.
+
+        Raises
+        ------
+        AssertionError
+            If sigma and epsilon lengths do not match.
+        """        
         assert len(sigma)==len(epsilon), 'sigma and m should have the same length'
         CarnahanStarlingEOS.__init__(self, mass, sigma, epsilon)
         ncomp = len(sigma)    
-        EOS_MIX.__init__(self, ncomp, homogenous, homogenous_fraction)
+        EOS_MIX.__init__(self, ncomp, homogeneous, homogeneous_fraction)
         if m is None:
             m = np.ones(ncomp)
         else:
@@ -939,14 +1684,44 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
 
     @classmethod
     def from_guest(cls, guest, **kwargs):
+        """
+        Create Carnahan-Starling mixture EOS from a guest species object.
+
+        Parameters
+        ----------
+        guest : GuestMixture
+            Guest molecule with sigma, epsilon, m, and fractions.
+        **kwargs
+            Additional keyword arguments.
+
+        Returns
+        -------
+        CarnahanStarlingMixEOS
+            Instance of Carnahan-Starling mixture EOS.
+        """
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
         m = getattr(guest, 'm', np.ones(len(sigma)))
         x = getattr(guest, 'fractions', None)
-        return cls(mass, sigma, epsilon, m=m, homogenous_fraction=x, **kwargs)
+        return cls(mass, sigma, epsilon, m=m, homogeneous_fraction=x, **kwargs)
     
     def set_temperature(self, temperature, **kwargs):
+        """
+        Set temperature and compute temperature-dependent hard-sphere radius.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+        **kwargs
+            Additional keyword arguments (unused).
+
+        Returns
+        -------
+        None
+            Sets self.R for all components.
+        """
         EquationOfState.set_temperature(self, temperature)
         beta = 1/(boltzmann*temperature)
         Tt = 1/beta/self.epsilon
@@ -954,11 +1729,39 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
         self.R = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))/2
     
     def _set_mixture_parameters(self, x):
+        """
+        Compute mixture-dependent eta and m_mix from mole fractions.
+
+        Parameters
+        ----------
+        x : ndarray
+            Mole fractions, shape (ncomp, ...).
+
+        Returns
+        -------
+        None
+            Sets self.eta and self.m_mix.
+        """
         factor = self.m*4/3*np.pi*self.R**3
         self.eta = np.einsum('i...,i->...', x, factor)
         self.m_mix = np.einsum('i...,i->...', x, self.m)
 
     def _set_mixing_derivatives(self, rho_sum, x):
+        """
+        Compute derivatives of mixture parameters w.r.t. composition.
+
+        Parameters
+        ----------
+        rho_sum : float or array-like
+            Total density.
+        x : ndarray
+            Mole fractions, shape (ncomp, ...).
+
+        Returns
+        -------
+        tuple
+            (deta, dm_drhoi): Derivatives of eta and m_mix w.r.t. component densities.
+        """
         deta = np.zeros_like(x)
         for k in range(self.ncomp):
             deta[k] += self.m[k]*self.R[k]**3 
@@ -976,7 +1779,7 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
         return super().excess_free_energy_particle(rho_sum)
     
     def _drhoi_excess_free_energy_particle(self, rho):
-        assert self.homogenous, 'Only homogenous mixtures are supported for derivative calculation' 
+        assert self.homogeneous, 'Only homogeneous mixtures are supported for derivative calculation' 
         rho, rho_sum, x = self._get_fractional_coefficients(rho)
         self._set_mixture_parameters(x)
         da_deta = super().derivative_excess_free_energy_particle(rho_sum)/self.eta
@@ -995,7 +1798,7 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
         self._set_mixture_parameters(x)
         
         dF = super().derivative_excess_free_energy_particle(rho_sum)
-        if self.homogenous:
+        if self.homogeneous:
             return dF
         else:
             deta, dm_drhoi = self._set_mixing_derivatives(rho_sum, x)
@@ -1004,6 +1807,19 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
             return (deta*rho_sum/self.eta + 1)*dF + ahs/self.m_mix*dm_drhoi
 
 class MFAEOS(EquationOfState):
+    """
+    Mean-Field Approximation (MFA) equation of state.
+    
+    Simple model with linear density dependence; represents pure attractive interactions
+    without hard-sphere repulsion.
+    
+    Attributes
+    ----------
+    a : float
+        Attractive parameter in energy units.
+    name : str
+        Identifier 'MFA'.
+    """
     
     name = 'MFA'
     
@@ -1018,6 +1834,21 @@ class MFAEOS(EquationOfState):
 
     @classmethod
     def from_guest(cls, guest, **kwargs):
+        """
+        Create MFA EOS from a guest species object.
+
+        Parameters
+        ----------
+        guest : SphericalLJGuest
+            Guest molecule with sigma and epsilon.
+        **kwargs
+            Additional keyword arguments.
+
+        Returns
+        -------
+        MFAEOS
+            Instance of MFA EOS.
+        """
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
@@ -1036,13 +1867,60 @@ class MFAEOS(EquationOfState):
         return 0
     
 class MFAMixEOS(MFAEOS, EOS_MIX):
+    """
+    MFA equation of state for homogeneous mixtures.
+    
+    Extends MFA to handle multicomponent systems with binary interaction parameters.
+    
+    Attributes
+    ----------
+    sigma : ndarray
+        Array of sigma parameters, shape (ncomp,).
+    epsilon : ndarray
+        Array of epsilon parameters, shape (ncomp,).
+    aij : ndarray
+        Binary interaction matrix, shape (ncomp, ncomp).
+    kij : ndarray
+        Interaction correction matrix, shape (ncomp, ncomp).
+    a : float or array-like
+        Mixture attractive parameter.
+    x : ndarray
+        Normalized mole fractions.
+    name : str
+        Identifier 'MFAMIX'.
+    """
 
     name = 'MFAMIX'
 
-    def __init__(self, mass, sigma, epsilon, aij=None, kij=None, homogenous=True, homogenous_fraction=None):
+    def __init__(self, mass, sigma, epsilon, aij=None, kij=None, homogeneous=True, homogeneous_fraction=None):
+        """
+        Initialize MFA mixture EOS.
+
+        Parameters
+        ----------
+        mass : float
+            Molecular mass.
+        sigma : array-like
+            Sigma parameters, shape (ncomp,).
+        epsilon : array-like
+            Epsilon parameters, shape (ncomp,).
+        aij : ndarray, optional
+            Binary interaction matrix; computed from sigma, epsilon, kij if None.
+        kij : ndarray, optional
+            Correction matrix; defaults to zeros.
+        homogeneous : bool, optional
+            If True, treat as homogeneous mixture, default True.
+        homogeneous_fraction : array-like, optional
+            Mole fractions.
+
+        Raises
+        ------
+        AssertionError
+            If aij or kij shapes are incorrect.
+        """        
         EquationOfState.__init__(self, mass)
         ncomp = len(sigma)    
-        EOS_MIX.__init__(self, ncomp, homogenous, homogenous_fraction)
+        EOS_MIX.__init__(self, ncomp, homogeneous, homogeneous_fraction)
         self.sigma = np.array(sigma)
         self.epsilon = np.array(epsilon)
         assert len(sigma)==len(epsilon), 'sigma and m should have the same length'
@@ -1072,7 +1950,7 @@ class MFAMixEOS(MFAEOS, EOS_MIX):
         m = getattr(guest, 'm', np.ones(len(sigma)))
         x = getattr(guest, 'fractions', None)
         kij = getattr(guest, 'kij', None)
-        return cls(mass, sigma, epsilon, m=m, homogenous_fraction=x, kij=kij, **kwargs)
+        return cls(mass, sigma, epsilon, m=m, homogeneous_fraction=x, kij=kij, **kwargs)
 
     def _set_mixture_parameters(self, x):
         self.x = x/np.sum(x, axis=0)
@@ -1102,8 +1980,38 @@ class MFAMixEOS(MFAEOS, EOS_MIX):
         return self.a + da*rho_sum
 
 class MFMT_MFA_EOS(EquationOfState):
+    """
+    Combined Mean-Field Theory and Carnahan-Starling EOS.
+    
+    Hybrid model combining MFA (dispersion) with Carnahan-Starling (hard-sphere) contributions,
+    weighted by a scaling factor.
+    
+    Attributes
+    ----------
+    MFA : MFAEOS
+        MFA instance for dispersion.
+    MFMT : CarnahanStarlingEOS
+        Carnahan-Starling instance for hard-sphere.
+    a_fact : float
+        Weighting factor for MFA contribution.
+    """
     
     def __init__(self, mass, sigma, epsilon, a_fact = None):
+        """
+        Initialize combined MFMT-MFA EOS.
+
+        Parameters
+        ----------
+        mass : float
+            Molecular mass in atomic units.
+        sigma : float
+            Lennard-Jones sigma.
+        epsilon : float
+            Lennard-Jones epsilon.
+        a_fact : float, optional
+            Weighting factor; computed from sigma and epsilon if None.
+        """
+
         EquationOfState.__init__(self,mass)
         self.MFA = MFAEOS(mass, sigma=sigma, epsilon=epsilon)
         Rhs = lambda T : sigma*(1+0.2977*T*boltzmann/epsilon)/(1+0.33163*T*boltzmann/epsilon+0.0010477*(T*boltzmann/epsilon)**2)/2
@@ -1153,8 +2061,55 @@ b_constants = np.array([
 ])
 
 class PCSAFT_EOS(EquationOfState):
+    """
+    Perturbed Chain Statistical Associating Fluid Theory (PC-SAFT) EOS.
+    
+    Advanced model combining hard-sphere, chain, and dispersion contributions
+    for accurate representation of real fluids.
+    
+    Attributes
+    ----------
+    sigma : float
+        Lennard-Jones sigma in Angstrom.
+    epsilon : float
+        Lennard-Jones epsilon in Hartree.
+    m : float
+        Segment number.
+    dhs : float
+        Temperature-dependent hard-sphere diameter.
+    m2_eps_sig3 : float
+        Reduced dispersion parameter (m^2 * epsilon * sigma^3).
+    m2_eps2_sig3 : float
+        Reduced squared dispersion parameter.
+    CS_HS : bool
+        If True, use Carnahan-Starling for hard-sphere contribution.
+    hs_approx : str
+        Hard-sphere approximation method.
+    name : str
+        Identifier 'PCSAFT'.
+    """
+
+    name = 'PCSAFT'
 
     def __init__(self, mass, sigma, epsilon, m, CS_HS=False, hs_approx='exp'):
+        """
+        Initialize PC-SAFT EOS.
+
+        Parameters
+        ----------
+        mass : float
+            Molecular mass in atomic units (amu).
+        sigma : float
+            Lennard-Jones sigma in Angstrom.
+        epsilon : float
+            Lennard-Jones epsilon in Hartree.
+        m : float
+            Segment number.
+        CS_HS : bool, optional
+            If True, use Carnahan-Starling for hard-sphere, default False.
+        hs_approx : str, optional
+            Hard-sphere approximation, 'exp' or polynomial, default 'exp'.
+        """        
         EquationOfState.__init__(self, mass)
         self.sigma = sigma
         self.epsilon = epsilon
@@ -1170,6 +2125,21 @@ class PCSAFT_EOS(EquationOfState):
 
     @classmethod
     def from_guest(cls, guest, **kwargs):
+        """
+        Create PC-SAFT EOS from a guest species object.
+
+        Parameters
+        ----------
+        guest : SphericalLJGuest
+            Guest with mass, sigma, epsilon, and optional m.
+        **kwargs
+            Additional keyword arguments.
+
+        Returns
+        -------
+        PCSAFT_EOS
+            Instance of PC-SAFT EOS.
+        """
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
@@ -1177,6 +2147,19 @@ class PCSAFT_EOS(EquationOfState):
         return cls(mass, sigma, epsilon, m=m, **kwargs)
 
     def set_temperature(self, temperature):
+        """
+        Set temperature and compute temperature-dependent parameters.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        None
+            Sets dhs, m2_eps_sig3, m2_eps2_sig3, wvl.
+        """
         self.temperature = temperature
         self.m2_eps_sig3 = self.m**2*(self.epsilon/boltzmann/temperature)*self.sigma**3
         self.m2_eps2_sig3 = self.m**2*(self.epsilon/boltzmann/temperature)**2*self.sigma**3
@@ -1191,6 +2174,19 @@ class PCSAFT_EOS(EquationOfState):
             self.CS.set_temperature(temperature)
     
     def _get_a_and_b(self, m):
+        """
+        Compute a and b coefficients for dispersion integral from universal constants.
+
+        Parameters
+        ----------
+        m : float
+            Segment number.
+
+        Returns
+        -------
+        tuple
+            (ai, bi): Coefficient arrays, shape (7,) each.
+        """
         ai = np.zeros(7)
         for i in range(7):
             ai[i] = a_constants[i,0] + a_constants[i,1]*(m - 1)/m + a_constants[i,2]*(m-1)*(m-2)/m**2
@@ -1200,6 +2196,21 @@ class PCSAFT_EOS(EquationOfState):
         return ai, bi
     
     def _get_I1_I2_C1(self, eta, m):
+        """
+        Compute I1, I2, and C1 integrals for a given packing fraction and segment number.
+
+        Parameters
+        ----------
+        eta : float or array-like
+            Packing fraction.
+        m : float
+            Segment number.
+
+        Returns
+        -------
+        tuple
+            (I1, I2, C1): Integral values.
+        """
         I1 = 0.0
         I2 = 0.0
         C1 = 0.0
@@ -1213,7 +2224,21 @@ class PCSAFT_EOS(EquationOfState):
 
     def _get_dI1_dI2_dC1(self, eta, m, C1):
         """
-        Derivatives of I1, I2 and C1 with respect to eta
+        Compute derivatives of I1, I2, C1 w.r.t. packing fraction.
+
+        Parameters
+        ----------
+        eta : float or array-like
+            Packing fraction.
+        m : float
+            Segment number.
+        C1 : float or array-like
+            C1 value (from _get_I1_I2_C1).
+
+        Returns
+        -------
+        tuple
+            (dI1deta, dI2deta, dC1deta): Derivatives.
         """
         dI1deta = 0.0
         dI2deta = 0.0
@@ -1226,11 +2251,47 @@ class PCSAFT_EOS(EquationOfState):
         return dI1deta, dI2deta, dC1
 
     def _get_gammaii(self, zeta2, zeta3, dhs):
+        """
+        Compute gamma_ii cavity correlation function for component i.
+
+        Parameters
+        ----------
+        zeta2 : float or array-like
+            Zeta2 (second order density moment).
+        zeta3 : float or array-like
+            Zeta3 (third order density moment).
+        dhs : float
+            Hard-sphere diameter.
+
+        Returns
+        -------
+        float or array-like
+            Gamma_ii value.
+        """
         z3_1 = 1/(1-zeta3)
         z2d = dhs*zeta2
         return z2d*z3_1*z3_1*(z2d*z3_1 * 0.5 + 1.5) + z3_1
 
     def _get_dgammaii(self, zeta2, zeta3, rho, dhs):
+        """
+        Compute derivatives of gamma_ii w.r.t. zeta moments.
+
+        Parameters
+        ----------
+        zeta2 : float or array-like
+            Zeta2.
+        zeta3 : float or array-like
+            Zeta3.
+        rho : float or array-like
+            Density (used for normalization).
+        dhs : float
+            Hard-sphere diameter.
+
+        Returns
+        -------
+        tuple
+            (dgammaii_dzeta2, dgammaii_dzeta3): Derivatives.
+        """
         z3_1 = 1/(1-zeta3)
         z2d = dhs*zeta2
         dgammaii_dzeta2 = dhs*z3_1*z3_1*(z2d*z3_1 + 1.5) # dzeta2
@@ -1238,6 +2299,19 @@ class PCSAFT_EOS(EquationOfState):
         return dgammaii_dzeta2, dgammaii_dzeta3
     
     def _get_zeta(self, rho):
+        """
+        Compute zeta density moments from density.
+
+        Parameters
+        ----------
+        rho : float or array-like
+            Density.
+
+        Returns
+        -------
+        tuple
+            (zeta0, zeta1, zeta2, zeta3): Density moments.
+        """
         rho = np.clip(rho, 1e-20, None)
         zeta0 = np.pi/6*self.m*rho
         zeta1 = np.pi/6*self.m*self.dhs**1*rho
@@ -1246,19 +2320,50 @@ class PCSAFT_EOS(EquationOfState):
         return zeta0, zeta1, zeta2, zeta3
 
     def _get_eta(self, rho):
+        """
+        Compute packing fraction eta from density.
+
+        Parameters
+        ----------
+        rho : float or array-like
+            Density.
+
+        Returns
+        -------
+        float or array-like
+            Packing fraction.
+        """
         return np.pi/6*self.m*self.dhs**3*rho
     
     def get_rough_density_grid(self, npoints):
-        "Get a rough logarithmic grid in density in a range that is practically accessible"
+        """
+        Generate a logarithmic density grid for practically accessible range.
+
+        Parameters
+        ----------
+        npoints : int
+            Number of grid points.
+
+        Returns
+        -------
+        ndarray
+            Density grid.
+        """
         log_start = -10
         log_end = np.min(np.log(angstrom**3/(np.pi/6*self.m*self.dhs**3))/np.log(10)-0.01)
         return np.logspace(log_start, log_end, npoints)/angstrom**3
 
     def _hard_sphere_contribution(self, zeta0, zeta1, zeta2, zeta3):
+        """
+        Compute hard-sphere free energy contribution from zeta moments.
+        """
         z3_1 = (1-zeta3)
         return (3*zeta1*zeta2/z3_1 + zeta2**3/zeta3/z3_1**2 + (zeta2**3/zeta3**2-zeta0)*np.log(z3_1))/zeta0
     
     def _derivative_hard_sphere_contribution(self, rho, zeta0, zeta1, zeta2, zeta3):
+        """
+        Compute density derivative of hard-sphere contribution.
+        """
         rho_dF_hs = -self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3) - np.log(1-zeta3) # dzeta0
         rho_dF_hs += (zeta1/zeta0)*3*zeta2/(1-zeta3) # dzeta1
         rho_dF_hs += (zeta2/zeta0)*(3*zeta1/(1-zeta3) + 3*zeta2**2/(1-zeta3)**2/zeta3 + 3*zeta2**2/zeta3**2*np.log(1-zeta3)) # dzeta2
@@ -1266,12 +2371,18 @@ class PCSAFT_EOS(EquationOfState):
         return rho_dF_hs/rho
     
     def _chain_contribution(self, zeta2, zeta3):
+        """
+        Compute chain free energy contribution from zeta moments.
+        """
         dhs = self.dhs
         m = self.m
         gammaii = self._get_gammaii(zeta2, zeta3, dhs)
         return -(m-1)*np.log(gammaii)
 
     def _derivative_chain_contribution(self, rho, zeta2, zeta3):
+        """
+        Compute density derivative of chain contribution.
+        """
         dhs = self.dhs
         m = self.m
         gammaii = self._get_gammaii(zeta2, zeta3, dhs)
@@ -1281,12 +2392,18 @@ class PCSAFT_EOS(EquationOfState):
         return rho_dF_chain
     
     def _dispersion_contribution(self, rho, eta):
+        """
+        Compute dispersion free energy contribution.
+        """
         I1, I2, C1 = self._get_I1_I2_C1(eta, self.m_mix)
         a1 = -2*np.pi*rho*self.m2_eps_sig3*I1
         a2 = -np.pi*rho*self.m_mix*self.m2_eps2_sig3*C1*I2
         return a1 + a2    
 
     def _derivative_dispersion_contribution(self, rho, eta):
+        """
+        Compute density derivative of dispersion contribution.
+        """
         I1, I2, C1 = self._get_I1_I2_C1(eta, self.m_mix)
         dI1deta, dI2deta, dC1 = self._get_dI1_dI2_dC1(eta, self.m_mix, C1)
         deta_drho = self._get_eta(1.0)
@@ -1330,10 +2447,64 @@ class PCSAFT_EOS(EquationOfState):
 
 
 class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
+    
+    """
+    PC-SAFT EOS for homogeneous mixtures.
+    
+    Extends PC-SAFT to handle multicomponent systems with binary interaction parameters (kij).
+    
+    Attributes
+    ----------
+    mass : ndarray
+        Array of molecular masses, shape (ncomp,).
+    sigma : ndarray
+        Array of sigma parameters, shape (ncomp,).
+    epsilon : ndarray
+        Array of epsilon parameters, shape (ncomp,).
+    m : ndarray
+        Array of segment numbers, shape (ncomp,).
+    x : ndarray
+        Mole fractions, shape (ncomp,).
+    kij : ndarray
+        Binary interaction correction matrix, shape (ncomp, ncomp).
+    m_mix : float
+        Mixture segment number.
+    sigma_mix : ndarray
+        Binary sigma mixing matrix, shape (ncomp, ncomp).
+    epsilon_mix : ndarray
+        Binary epsilon mixing matrix, shape (ncomp, ncomp).
+    m2_eps_sig3 : float
+        Reduced mixture dispersion parameter.
+    m2_eps2_sig3 : float
+        Reduced squared mixture dispersion parameter.
+    """
+
+    name = "PCSAFTMIX"
     def __init__(self, mass, sigma, epsilon, m, x, kij=None, CS_HS=False):
         """
-        PC-SAFT EOS, consisting of hard-chain, dispersion and hard sphere
-        Extended for homogoneous mixtures
+        Initialize PC-SAFT mixture EOS.
+
+        Parameters
+        ----------
+        mass : array-like
+            Molecular masses, shape (ncomp,).
+        sigma : array-like
+            Sigma parameters, shape (ncomp,).
+        epsilon : array-like
+            Epsilon parameters, shape (ncomp,).
+        m : array-like
+            Segment numbers, shape (ncomp,).
+        x : array-like
+            Mole fractions, shape (ncomp,).
+        kij : ndarray, optional
+            Binary interaction corrections, shape (ncomp, ncomp); defaults to zeros.
+        CS_HS : bool, optional
+            If True, use Carnahan-Starling for hard-sphere, default False.
+
+        Raises
+        ------
+        AssertionError
+            If shape constraints are violated.
         """
         self.mass = np.array(mass) # molecule masses
         self.sigma = np.array(sigma)
@@ -1341,7 +2512,7 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         self.m = np.array(m) # segment numbers
         self.x = np.array(x) # mole fractions
         self.ncomp = len(x) # number of components
-        EOS_MIX.__init__(self, self.ncomp, homogenous=True, homogenous_fraction=self.x)
+        EOS_MIX.__init__(self, self.ncomp, homogeneous=True, homogeneous_fraction=self.x)
         if kij is None:
             self.kij = np.zeros((self.ncomp,self.ncomp))
         else:
@@ -1352,10 +2523,23 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         assert self.m.shape == (self.ncomp,), 'm should be a list/array with length equal to number of components'
         self.CS_HS = CS_HS
         if CS_HS:
-            self.CS = CarnahanStarlingMixEOS(self.mass, self.sigma, self.epsilon, m=m, homogenous=True, homogenous_fraction=self.x)
+            self.CS = CarnahanStarlingMixEOS(self.mass, self.sigma, self.epsilon, m=m, homogeneous=True, homogeneous_fraction=self.x)
     
     @classmethod
     def from_guest(cls, guest):
+        """
+        Create PC-SAFT mixture EOS from a guest species object.
+
+        Parameters
+        ----------
+        guest : MulticomponentGuest
+            Guest with mass, sigma, epsilon, m, fractions, and optional k_inter.
+
+        Returns
+        -------
+        PCSAFT_MIX_EOS
+            Instance of PC-SAFT mixture EOS.
+        """
         mass = guest.mass
         sigma = guest.sigma
         epsilon = guest.epsilon
@@ -1365,6 +2549,19 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
         return cls(mass, sigma, epsilon, m=m, x=x, kij=kij)
 
     def set_temperature(self, temperature):
+        """
+        Set temperature and compute mixture-dependent parameters.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        None
+            Sets dhs, wvl, mixture parameters.
+        """
         self.temperature = temperature
         self.dhs = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))
         self.wvl = planck/np.sqrt(2*np.pi*(self.mass)*boltzmann*temperature)
@@ -1373,6 +2570,19 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
             self.CS.set_temperature(temperature)
     
     def _get_mixture_parameters(self, temperature):
+        """
+        Compute mixture parameters (m_mix, sigma_mix, epsilon_mix) and reduced dispersion.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        None
+            Sets mixture attributes.
+        """
         x = self.x
         m = self.m
         sigma = self.sigma

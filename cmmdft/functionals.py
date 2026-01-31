@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from __future__ import division
+import copy as copy_module
 
 import numpy as np, os, copy, re
 from pathlib import Path
@@ -10,6 +11,8 @@ from .log import log
 from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS, SumOfEOS
 from .extpot_calculator import get_system_data, get_external_potential_dict, get_interpolator_dict, generate_effective_potential, get_external_potential
+
+from numba import njit
 
 __all__ = [
     'Functional', 'HardSphereFunctional', 'PCSAFTFunctional',
@@ -23,8 +26,8 @@ class Functional(object):
     def __init__(self):
         pass
 
-    def copy(self, **kwargs):
-        raise NotImplementedError
+    def copy(self):
+        return copy_module.deepcopy(self)
 
     def set_temperature(self, temperature, **kwargs):
         pass
@@ -32,6 +35,7 @@ class Functional(object):
     def set_density(self, krho):
         pass
 
+# #@njit(cache=True)
 def sph_bessel_3(x):
     """3*(sin x - x cos x)/x^3 with analytic x->0 limit = 1."""
     out = np.ones_like(x, dtype=np.float64)
@@ -40,12 +44,34 @@ def sph_bessel_3(x):
     out[mask] = 3.0 * (np.sin(xm) - xm * np.cos(xm)) / (xm**3)
     return out
 
+# #@njit(cache=True)
 def sinc(x):
     """sin(x)/x with analytic x->0 limit = 1."""
     out = np.ones_like(x, dtype=np.float64)
     mask = (x != 0)
     out[mask] = np.sin(x[mask]) / x[mask]
     return out
+
+
+FMT_NAMES = ['FMT', 'aFMT', 'tFMT', 'atFMT', 'taFMT']
+MFMT_NAMES = ['MFMT', 'aMFMT', 'tMFMT', 'atMFMT', 'taMFMT']
+WBII_NAMES = ['WBII', 'aWBII', 'tWBII', 'atWBII', 'taWBII']
+
+def decode_version(version_string):
+    version_array = np.zeros(3)
+    if 'a' in version_string:
+        version_array[0] = 1
+    if 't' in version_string:
+        version_array[1] = 1
+    if version_string in FMT_NAMES:
+        version_array[2] = 0
+    elif version_string in MFMT_NAMES:
+        version_array[2] = 1
+    elif version_string in WBII_NAMES:
+        version_array[2] = 2
+    else:
+        raise ValueError('Invalid version provided')
+    return version_array
 
 class HardSphereFunctional(Functional):
     """The framework for hard sphere functionals."""
@@ -78,12 +104,11 @@ class HardSphereFunctional(Functional):
             self.m = np.atleast_1d(m)
             if len(self.m) != len(self.R):
                 raise ValueError("Length of m should be equal to length of Rhs")
-        
-        self.version = version
+        version_array = decode_version(version)
+        self.version = version_array
 
-    def copy(self, grid=None):
-        if grid is None: grid = self.grid.copy()
-        return type(self)(grid, self.R, m=self.m, version=self.version)
+    # def copy(self):
+    #     return copy_module.deepcopy(self)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         self.temperature = temperature
@@ -126,10 +151,10 @@ class HardSphereFunctional(Functional):
         kwv1 = 1/(4*np.pi)*np.einsum('i,ijklm->ijklm', 1/self.R, kwv2)
 
 
-        self.scalar_weight_functions = [kw0, kw1, kw2, kw3]
-        self.vector_weight_functions = [kwv1, kwv2]
+        self.scalar_weight_functions = np.array([kw0, kw1, kw2, kw3])
+        self.vector_weight_functions = np.array([kwv1, kwv2])
 
-        if 't' in self.version:
+        if self.version[1] == 1:
             #tensor version taken from: https://doi.org/10.1063/5.0010974
             KX = self.grid.kpoints[:,:,:,0]
             KY = self.grid.kpoints[:,:,:,1]
@@ -159,7 +184,7 @@ class HardSphereFunctional(Functional):
             kwzz = B*(Hzz - 1/3) # + 1/3*kw2
 
 
-            self.tensor_weight_functions = [kwxx, kwxy, kwxz, kwyy, kwyz, kwzz]
+            self.tensor_weight_functions = np.array([kwxx, kwxy, kwxz, kwyy, kwyz, kwzz])
         #flatten lists
 
 
@@ -174,81 +199,93 @@ class HardSphereFunctional(Functional):
         krho
             The density in reciprocal space
         """
-        # The scalar density functions
-        kn0 = krho*self.scalar_weight_functions[0]
-        n0 = self.grid.ifftn(kn0)
-        n0 = np.clip(n0, 0.0, None)  # Ensure n0 is non-negative
-        n0 = np.sum(n0*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        kn1 = krho*self.scalar_weight_functions[1]
-        n1 = self.grid.ifftn(kn1)
-        n1 = np.clip(n1, 0.0, None)  # Ensure n1 is non-negative
-        n1 = np.sum(n1*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        kn2 = krho*self.scalar_weight_functions[2]
-        n2 = self.grid.ifftn(kn2)
-        n2 = np.clip(n2, 0.0, None)  # Ensure n2 is non-negative
-        n2 = np.sum(n2*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        kn3 = krho*self.scalar_weight_functions[3]
-        n3 = self.grid.ifftn(kn3)
-        # n3 = np.clip(n3, 0.0, None)  # Ensure n3 is non-negative
-        n3 = np.sum(n3*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        #When n3 approaches 1, things can go wrong because the functional
-        # contains terms with log(1-n3) and 1/(1-n3)
-        n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n3 is in [0, 1-1e-12]
-        # The vector density functions
+        with log.section('(M)FMT', 3, timer='density functions'):
+            kni = krho[np.newaxis, ...]*self.scalar_weight_functions
+            ni = self.grid.ifftn(kni)
+            ni = np.einsum('pnijk,n->pijk', ni, self.m)
+            n0, n1, n2, n3 = ni
 
+            # # The scalar density functions
+            # kn0 = krho*self.scalar_weight_functions[0]
+            # n0 = self.grid.ifftn(kn0)
+            # n0 = np.sum(n0*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
+            # kn1 = krho*self.scalar_weight_functions[1]
+            # n1 = self.grid.ifftn(kn1)
+            # n1 = np.sum(n1*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
+            # kn2 = krho*self.scalar_weight_functions[2]
+            # n2 = self.grid.ifftn(kn2)
+            # n2 = np.sum(n2*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
+            # kn3 = krho*self.scalar_weight_functions[3]
+            # n3 = self.grid.ifftn(kn3)
+            # n3 = np.sum(n3*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
 
-        knv1 = krho[..., None] * self.vector_weight_functions[0]
-        nv1 = self.grid.ifftn(knv1)
-        nv1 = np.sum(nv1*self.m[:,None,None,None,None], axis=0)  #sum over components, weighted by m
-        # nv1 = np.clip(nv1, 0.0, None)  # Ensure nv1 is non-negative
+            #When n3 approaches 1, things can go wrong because the functional
+            # contains terms with log(1-n3) and 1/(1-n3)
+            n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n3 is in [0, 1-1e-12]
+            # The vector density functions
 
-        knv2 = krho[..., None] * self.vector_weight_functions[1]
-        nv2 = self.grid.ifftn(knv2)
-        nv2 = np.sum(nv2*self.m[:,None,None,None,None], axis=0)  #sum over components, weighted by m
-        # nv2 = np.clip(nv2, 0.0, None)  # Ensure nv2 is non-negative
+            knvi = krho[np.newaxis,...,np.newaxis] * self.vector_weight_functions
+            nvi = self.grid.ifftn(knvi)
+            nvi = np.einsum('pnijkd,n->pijkd', nvi, self.m)
+            nv1, nv2 = nvi
 
-        xi = None
-        if 'a' in self.version:
-            xi = (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)/((n2)**2+1e-16)
-            xi = np.clip(xi, 0.0, 1)  # Ensure xi is in [0, 1]
+            # knv1 = krho[..., None] * self.vector_weight_functions[0]
+            # nv1 = self.grid.ifftn(knv1)
+            # nv1 = np.sum(nv1*self.m[:,None,None,None,None], axis=0)  #sum over components, weighted by m
+            # # nv1 = np.clip(nv1, 0.0, None)  # Ensure nv1 is non-negative
 
-        ln_n3 = np.log(1-n3)
-        # ln_n3 = 1
-        n3_2 = n3*n3
-        n3_3 = n3_2*n3
+            # knv2 = krho[..., None] * self.vector_weight_functions[1]
+            # nv2 = self.grid.ifftn(knv2)
+            # nv2 = np.sum(nv2*self.m[:,None,None,None,None], axis=0)  #sum over components, weighted by m
+            # # nv2 = np.clip(nv2, 0.0, None)  # Ensure nv2 is non-negative
 
-        return n0,n1,n2,n3,ln_n3,n3_2,n3_3,nv1,nv2,xi
+            xi = None
+            if self.version[0] == 1:
+                xi = (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)/((n2)**2+1e-16)
+                xi = np.clip(xi, 0.0, 1)  # Ensure xi is in [0, 1]
+
+            ln_n3 = np.log(1-n3)
+            # ln_n3 = 1
+            n3_2 = n3*n3
+            n3_3 = n3_2*n3
+
+            return n0,n1,n2,n3,ln_n3,n3_2,n3_3,nv1,nv2,xi
 
     def _get_tensor_density_functions(self, krho):
-        knxx = krho*self.tensor_weight_functions[0]
-        knxy = krho*self.tensor_weight_functions[1]
-        knxz = krho*self.tensor_weight_functions[2]
-        knyy = krho*self.tensor_weight_functions[3]
-        knyz = krho*self.tensor_weight_functions[4]
-        knzz = krho*self.tensor_weight_functions[5]
+        knii = krho[np.newaxis, ...]*self.tensor_weight_functions
+        nii = self.grid.ifftn(knii)
+        nii = np.einsum('tnijk,n->tijk', nii, self.m)
+        nxx, nxy, nxz, nyy, nyz, nzz = nii
 
-        nxx = self.grid.ifftn(knxx)
-        # nxx = np.clip(nxx, 0.0, None)  # Ensure nxx is non-negative
-        nxx = np.sum(nxx*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        nxy = self.grid.ifftn(knxy)
-        # nxy = np.clip(nxy, 0.0, None)  # Ensure nxy is non-negative
-        nxy = np.sum(nxy*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        nxz = self.grid.ifftn(knxz)
-        # nxz = np.clip(nxz, 0.0, None)  # Ensure nxz is non-negative
-        nxz = np.sum(nxz*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        nyy = self.grid.ifftn(knyy)
-        # nyy = np.clip(nyy, 0.0, None)  # Ensure nyy is non-negative
-        nyy = np.sum(nyy*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        nyz = self.grid.ifftn(knyz)
-        # nyz = np.clip(nyz, 0.0, None)  # Ensure nyz is non-negative
-        nyz = np.sum(nyz*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        nzz = self.grid.ifftn(knzz)
-        # nzz = np.clip(nzz, 0.0, None)  # Ensure nzz is non-negative
-        nzz = np.sum(nzz*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
+        # knxx = krho*self.tensor_weight_functions[0]
+        # knxy = krho*self.tensor_weight_functions[1]
+        # knxz = krho*self.tensor_weight_functions[2]
+        # knyy = krho*self.tensor_weight_functions[3]
+        # knyz = krho*self.tensor_weight_functions[4]
+        # knzz = krho*self.tensor_weight_functions[5]
+
+        # nxx = self.grid.ifftn(knxx)
+        # # nxx = np.clip(nxx, 0.0, None)  # Ensure nxx is non-negative
+        # nxx = np.sum(nxx*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
+        # nxy = self.grid.ifftn(knxy)
+        # # nxy = np.clip(nxy, 0.0, None)  # Ensure nxy is non-negative
+        # nxy = np.sum(nxy*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
+        # nxz = self.grid.ifftn(knxz)
+        # # nxz = np.clip(nxz, 0.0, None)  # Ensure nxz is non-negative
+        # nxz = np.sum(nxz*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
+        # nyy = self.grid.ifftn(knyy)
+        # # nyy = np.clip(nyy, 0.0, None)  # Ensure nyy is non-negative
+        # nyy = np.sum(nyy*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
+        # nyz = self.grid.ifftn(knyz)
+        # # nyz = np.clip(nyz, 0.0, None)  # Ensure nyz is non-negative
+        # nyz = np.sum(nyz*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
+        # nzz = self.grid.ifftn(knzz)
+        # # nzz = np.clip(nzz, 0.0, None)  # Ensure nzz is non-negative
+        # nzz = np.sum(nzz*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
 
         tr2 = (nxx**2 + nyy**2 + nzz**2 + 2*(nxy**2 + nxz**2 + nyz**2))
         tr3 = (nxx**3 + nyy**3 + nzz**3 + 3*(nxx*nxy*nxy + nxx*nxz*nxz + nyy*nxy*nxy + nyy*nyz*nyz + nzz*nxz*nxz + nzz*nyz*nyz) + 6*nxy*nxz*nyz)
-        return [nxx, nxy, nxz, nyy, nyz, nzz, tr2, tr3]
+        return np.array([nxx, nxy, nxz, nyy, nyz, nzz, tr2, tr3])
 
     def get_n3(self, krho):
         kn3 = krho*self.scalar_weight_functions[3]
@@ -257,12 +294,11 @@ class HardSphereFunctional(Functional):
 
     def set_density(self, krho):
         #check if current density is the same as previous one
-        # TODO: check if different heuristics can be used, storing the norm/sum of the density to lower memory
         if np.array_equal(krho, self.krho):
             return
         self.krho = krho
         self.weighted_densities = self._get_density_functions(krho)
-        if 't' in self.version:
+        if self.version[1] == 1:
             self.nt = self._get_tensor_density_functions(krho)
 
     def derive(self, rho, krho):
@@ -277,25 +313,36 @@ class HardSphereFunctional(Functional):
         with log.section('(M)FMT', 3, timer='(M)FMT derive'):
             # Compute the density functions
             self.set_density(krho)
-            dFk_total = 0.0
             # Fhe functional is (up to a factor k_B T) the integral of Phi.
             # Phi is a function of the density functions, which are in turn
             # convolutions of the density and the weight functions. By
             # applying the chain rule, we find that the functional derivative can
             # be obtained by convoluting the derivatives of phi wrt the density
             # functions with the corresponding weight function
+            dFk_total = 0.0
 
-            scalar_dphi = [_get_dphi_n0, _get_dphi_n1, _get_dphi_n2, _get_dphi_n3]
-            for get_dphi, kweight in zip(scalar_dphi, self.scalar_weight_functions):
-                dFk_total += self.grid.fftn(get_dphi(*self.weighted_densities, nt=self.nt, version=self.version))[None,...]*kweight
+
+            # for get_dphi, kweight in zip(scalar_dphi, self.scalar_weight_functions):
+            #     dFk_total += self.grid.fftn(get_dphi(*self.weighted_densities, nt=self.nt, version=self.version))[None,...]*kweight
+
+            n3, ln_n3, n3_2, n3_3 = self.weighted_densities[3:7]
+            phi1, phi2, phi3 = _get_phi(n3, ln_n3, n3_2, n3_3, self.version)
+
+            dphi_stacked = _get_scalar_dphi(*self.weighted_densities, self.nt, phi1, phi2, phi3, version=self.version)
+            kdphi_stacked = self.grid.fftn(dphi_stacked)
+            dFk_total = np.einsum('pijk,pnijk->nijk', kdphi_stacked, self.scalar_weight_functions)
+
             # The vector contribution
-            vector_dphi = [_get_dphi_nv1, _get_dphi_nv2]
-            for get_dphi, kweight in zip(vector_dphi, self.vector_weight_functions):
-                kdphi = self.grid.fftn(get_dphi(*self.weighted_densities, nt=self.nt, version=self.version))
-                dFk_total += -(kdphi[None,...,0] * kweight[...,0] + kdphi[None,...,1] * kweight[...,1] + kdphi[None,...,2] * kweight[...,2])
+            dphi_stacked = _get_vector_dphi(*self.weighted_densities, self.nt, phi2, phi3, version=self.version)
+            kdphi_stacked = self.grid.fftn(dphi_stacked)
+            dFk_total += -np.einsum('pijkv,pnijkv->nijk', kdphi_stacked, self.vector_weight_functions)
 
-            if 't' in self.version:
-                kdphi = self.grid.fftn(_get_dphi_nt(*self.weighted_densities, nt=self.nt, version=self.version))
+            # for get_dphi, kweight in zip(vector_dphi, self.vector_weight_functions):
+            #     kdphi = self.grid.fftn(get_dphi(*self.weighted_densities, nt=self.nt, version=self.version))
+            #     dFk_total += -(kdphi[None,...,0] * kweight[...,0] + kdphi[None,...,1] * kweight[...,1] + kdphi[None,...,2] * kweight[...,2])
+
+            if self.version[1] == 1:
+                kdphi = self.grid.fftn(_get_dphi_nt(*self.weighted_densities, self.nt, phi3, version=self.version))
                 dFk_total += (kdphi[None,...,0] * self.tensor_weight_functions[0] + kdphi[None,...,1] * self.tensor_weight_functions[1] + kdphi[None,...,2] * self.tensor_weight_functions[2] 
                                + kdphi[None,...,3] * self.tensor_weight_functions[3] + kdphi[None,...,4] * self.tensor_weight_functions[4] + kdphi[None,...,5] * self.tensor_weight_functions[5])
 
@@ -305,13 +352,14 @@ class HardSphereFunctional(Functional):
     def value(self, rho, krho, local=False):
         with log.section('(M)FMT', 3, timer='(M)FMT value'):
             self.set_density(krho)  
-            phi = get_phi(*self.weighted_densities, nt=self.nt, version=self.version)
+            phi = get_phi(*self.weighted_densities, self.nt, version=self.version)
             if local:
                 return phi/self.beta
             else:
                 return self.grid.integrate(phi)/self.beta
-        
-def get_phi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt=None, version=None):
+
+#@njit(cache=True)
+def get_phi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
     """
     Compute the functional value
 
@@ -320,170 +368,273 @@ def get_phi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt=None, version=No
     n0, n1, n2, n3, nv1, nv2
         The density functions, should be computed using _get_density_functions
     """
-    phi = n0*_phi1(n3, ln_n3)
-    phi += (n1*n2 - (nv1[...,0]*nv2[...,0]+nv1[...,1]*nv2[...,1]+nv1[...,2]*nv2[...,2]))*_phi2(n3, ln_n3, n3_2, version)
-    if 'a' in version:
+
+    phi1, phi2, phi3 = _get_phi(n3, ln_n3, n3_2, n3_3, version)
+    phi = n0*phi1
+    phi += (n1*n2 - (nv1[...,0]*nv2[...,0]+nv1[...,1]*nv2[...,1]+nv1[...,2]*nv2[...,2]))*phi2
+    if version[0] == 1:
         prefactor3 = (n2**3)*((1-xi)**3)
     else:
         prefactor3 = (n2**3-3.0*n2*(nv2[...,0]**2+nv2[...,1]**2+nv2[...,2]**2))
 
-    if 't' in version:
+    if version[1] == 1:
         xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
         
         prefactor3 += (9/2)*(xx*nv2[...,0]**2 + yy*nv2[...,1]**2 + zz*nv2[...,2]**2 
                             + 2*xy*nv2[...,0]*nv2[...,1] + 2*xz*nv2[...,0]*nv2[...,2] + 2*yz*nv2[...,1]*nv2[...,2]) #quadratic form nv2*nt*nv2
-        # prefactor3 -= (9/2)*(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)*n2 #n2*nv2*nv2
-        # prefactor3 += (9/2)*n2*tr2 #n2*Tr(nt**2)
+
         prefactor3 -= (9/2)*tr3
-    phi += prefactor3*_phi3(n3, ln_n3, n3_2, n3_3, version)
+    phi += prefactor3*phi3
     return phi
 
-def _get_dphi_n0(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-    return _phi1(n3, ln_n3)
+#@njit(cache=True)
+def _get_scalar_dphi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, phi1, phi2, phi3, version):
+    dphi1, dphi2, dphi3 = _get_dphidn(n3, ln_n3, n3_2, n3_3, version)
+    _dphi_n0 = phi1
 
-def _get_dphi_n1(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-    return n2*_phi2(n3, ln_n3, n3_2, version)    
+    _dphi_n1 = n2*phi2    
 
-def _get_dphi_n2(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-    dphi = n1*_phi2(n3, ln_n3, n3_2, version)
-    if 'a' in version:
-        dphi += (3*(n2**2)*(1+xi)*((1-xi)**2))*_phi3(n3, ln_n3, n3_2, n3_3, version)
-    # elif 't' in version:
-    #     tr2 = nt[-2]
-    #     dphi += (9/2)*( -3* (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2) 
-    #                 + tr2)*_phi3(n3, ln_n3, n3_2, n3_3, version)
+    _dphi_n2 = n1*phi2
+    if version[0] == 1:
+        _dphi_n2 += (3*(n2**2)*(1+xi)*((1-xi)**2))*phi3
     else:
-        dphi += 3*(n2**2-(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2))*_phi3(n3, ln_n3, n3_2, n3_3, version)
+        _dphi_n2 += 3*(n2**2-(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2))*phi3
 
-    return dphi
-
-def _get_dphi_n3(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-    dphi = n0*_dphi1dn(n3)
-    dphi += (n1*n2-(nv2[...,0]*nv1[...,0] + nv2[...,1]*nv1[...,1] + nv2[...,2]*nv1[...,2]))*_dphi2dn(n3, ln_n3, n3_2, version)
-    if 'a' in version:
+    _dphi_n3 = n0*dphi1
+    _dphi_n3 += (n1*n2-(nv2[...,0]*nv1[...,0] + nv2[...,1]*nv1[...,1] + nv2[...,2]*nv1[...,2]))*dphi2
+    if version[0] == 1:
         prefactor3 = (n2**3)*((1-xi)**3)
     else:
         prefactor3 = (n2**3-3.0*n2*(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2))
     
-    if 't' in version:
+    if version[1] == 1:
         xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
 
         prefactor3 += (9/2)*(xx*nv2[...,0]**2 + yy*nv2[...,1]**2 + zz*nv2[...,2]**2 + 
                    2*xy*nv2[...,0]*nv2[...,1] + 2*xz*nv2[...,0]*nv2[...,2] + 2*yz*nv2[...,1]*nv2[...,2]) #quadratic form nv2*nt*nv2
-        # contrib -= (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)*n2 #n2*nv2*nv2
-        # contrib += n2*tr2 #n2*Tr(nt**2)
+
         prefactor3 -= (9/2)*tr3
-    dphi += prefactor3*_dphi3dn(n3, ln_n3, n3_2, n3_3, version)
-    return dphi
+    _dphi_n3 += prefactor3*dphi3 
 
-def _get_dphi_nv1(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-    dphi = - nv2 * _phi2(n3, ln_n3, n3_2, version)[..., None]
-    return dphi
+    return np.stack((_dphi_n0, _dphi_n1, _dphi_n2, _dphi_n3))
 
-def _get_dphi_nv2(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-    dphi = - nv1 * _phi2(n3, ln_n3, n3_2, version)[..., None]
-    phi3 = _phi3(n3, ln_n3, n3_2, n3_3, version)
-    if 'a' in version:
+#@njit(cache=True)
+def _get_vector_dphi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, phi2, phi3, version):
+    dphi_nv1 = - nv2 * phi2[..., None]
+
+    dphi_nv2 = - nv1 * phi2[..., None]
+    if version[0] == 1:
         factor = -6*n2*((1-xi)**2)*phi3
-        dphi += nv2 * factor[..., None]
+        dphi_nv2 += nv2 * factor[..., None]
     else:
         factor = -6*n2*phi3
-        dphi += nv2 * factor[..., None]
+        dphi_nv2 += nv2 * factor[..., None]
 
-    if 't' in version:
+    if version[1] == 1:
         vx, vy, vz = nv2[...,0], nv2[...,1], nv2[...,2]
 
         xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
-
-        # # grad wrt nv
-        # grad_nv = np.empty_like(nv2)
-        # grad_nv[...,0] = 2 * ((xx - 3*n2) * vx + xy * vy + xz * vz)
-        # grad_nv[...,1] = 2 * (xy * vx + (yy - 3*n2) * vy + yz * vz)
-        # grad_nv[...,2] = 2 * (xz * vx + yz * vy + (zz - 3*n2) * vz)
         
         grad_nv = np.empty_like(nv2)
         grad_nv[...,0] = 2 * (xx * vx + xy * vy + xz * vz)
         grad_nv[...,1] = 2 * (xy * vx + yy * vy + yz * vz)
         grad_nv[...,2] = 2 * (xz * vx + yz * vy + zz * vz)
 
-        dphi += (9/2)*grad_nv*phi3[..., None]
-    return dphi
+        dphi_nv2 += (9/2)*grad_nv*phi3[..., None]
+    return np.stack((dphi_nv1, dphi_nv2))
 
-def _get_dphi_nt(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+#@njit(cache=True)
+def _get_dphi_nt(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, phi3, version):
     vx, vy, vz = nv2[...,0], nv2[...,1], nv2[...,2]
-
     xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
 
-    # nt^2 terms (symmetrized)
-    # g_xx =  vx*vx + 2*n2*xx - 3*(xx*xx + xy*xy + xz*xz)
-    # g_xy = (vx*vy + 2*n2*xy - 3*(xx*xy + yy*xy + xz*yz))*2
-    # g_xz = (vx*vz + 2*n2*xz - 3*(xx*xz + zz*xz + xy*yz))*2
-    # g_yy =  vy*vy + 2*n2*yy - 3*(yy*yy + xy*xy + yz*yz)
-    # g_yz = (vy*vz + 2*n2*yz - 3*(yy*yz + zz*yz + xy*xz))*2
-    # g_zz =  vz*vz + 2*n2*zz - 3*(zz*zz + xz*xz + yz*yz)
-    
     g_xx =  vx*vx - 3*(xx*xx + xy*xy + xz*xz)
     g_xy = (vx*vy - 3*(xx*xy + yy*xy + xz*yz))*2
     g_xz = (vx*vz - 3*(xx*xz + zz*xz + xy*yz))*2
     g_yy =  vy*vy - 3*(yy*yy + xy*xy + yz*yz)
     g_yz = (vy*vz - 3*(yy*yz + zz*yz + xy*xz))*2
     g_zz =  vz*vz - 3*(zz*zz + xz*xz + yz*yz)
+    grad_nt = np.empty(xx.shape + (6,))
+    grad_nt[...,0] = g_xx
+    grad_nt[...,1] = g_xy
+    grad_nt[...,2] = g_xz
+    grad_nt[...,3] = g_yy
+    grad_nt[...,4] = g_yz
+    grad_nt[...,5] = g_zz
+    # grad_nt = np.stack([g_xx, g_xy, g_xz, g_yy, g_yz, g_zz], axis=-1)
+    return (9/2)*grad_nt*phi3[...,None]
 
-    grad_nt = np.stack([g_xx, g_xy, g_xz, g_yy, g_yz, g_zz], axis=-1)
-    return (9/2)*grad_nt*_phi3(n3, ln_n3, n3_2, n3_3, version)[...,None]
+#@njit(cache=True)
+def _get_phi(n3, ln_n3, n3_2, n3_3, version):
+    phi1 = -ln_n3
 
-FMT_NAMES = ['FMT', 'aFMT', 'tFMT', 'atFMT', 'taFMT']
-MFMT_NAMES = ['MFMT', 'aMFMT', 'tMFMT', 'atMFMT', 'taMFMT']
-WBII_NAMES = ['WBII', 'aWBII', 'tWBII', 'atWBII', 'taWBII']
-
-def _phi1(n3, ln_n3):
-    return -ln_n3
-
-def _dphi1dn(n3):
-    return 1.0/(1.0-n3)
-
-def _phi2(n3, ln_n3, n3_2, version):
-    if version in FMT_NAMES or version in MFMT_NAMES:
-        return 1/(1.0-n3)
-    elif version in WBII_NAMES:
-        return np.where(n3<=1e-8,
+    if version[2] == 0 or version[2] == 1:
+        phi2 = 1/(1.0-n3)
+    elif version[2] == 2:
+        phi2 = np.where(n3<=1e-8,
                         (1+ n3_2/9)/(1-n3), 
                         (5*n3 - n3_2 + 2*(1-n3)*ln_n3)/(3*(n3-n3_2)))
-            
-def _dphi2dn( n3, ln_n3, n3_2, version):
     n3_1_2 = (1-2*n3 + n3_2)
-    if version in FMT_NAMES or version in MFMT_NAMES:
-        return 1/n3_1_2
-    elif version in WBII_NAMES:
-        return np.where(n3<=1e-8,
-                        (1+ 2*n3/9 + n3_2/18)/n3_1_2,
-                        -2*(n3 - 3*n3_2 + n3_1_2*ln_n3)/(3*n3_2*n3_1_2))
-
-def _phi3(n3, ln_n3, n3_2, n3_3, version):
-    n3_1_2 = (1-2*n3 + n3_2)
-    if version in FMT_NAMES:
-        return 1/(24*np.pi*n3_1_2)
-    elif version in MFMT_NAMES:
-        return np.where(n3<=1e-8,
+    if version[2] == 0:
+        phi3 = 1/(24*np.pi*n3_1_2)
+    elif version[2] == 1:
+        phi3 = np.where(n3<=1e-8,
                         (1.0-2*n3/9-n3_2/18)/(24*np.pi*n3_1_2),
                         (n3+n3_1_2*ln_n3)/(36*np.pi*n3_2*n3_1_2))
-    elif version in WBII_NAMES:
-        return np.where(n3<=1e-8,
+    elif version[2] == 2:
+        phi3 = np.where(n3<=1e-8,
                         (1-4*n3/9+n3_2/18)/(24*np.pi*n3_1_2),
-                        -2*(n3 -3*n3_2 + n3_3 + ln_n3*n3_1_2)/((3*n3_2)*24*np.pi*n3_1_2))
+                        -2*(n3 -3*n3_2 + n3_3 + ln_n3*n3_1_2)/((3*n3_2)*24*np.pi*n3_1_2))       
+    return phi1, phi2, phi3 
 
-def _dphi3dn(n3, ln_n3, n3_2, n3_3, version):
+#@njit(cache=True)
+def _get_dphidn(n3, ln_n3, n3_2, n3_3, version):
+    dphi1 = 1.0/(1.0-n3)
+
+    n3_1_2 = (1-2*n3 + n3_2)
+    if version[2] == 0 or version[2] == 1:
+        dphi2 = 1/n3_1_2
+    elif version[2] == 2:
+        dphi2 = np.where(n3<=1e-8,
+                        (1+ 2*n3/9 + n3_2/18)/n3_1_2,
+                        -2*(n3 - 3*n3_2 + n3_1_2*ln_n3)/(3*n3_2*n3_1_2))
+        
+    
     n3_1_3 = (1-3*n3 + 3*n3_2 - n3_3)
-    if version in FMT_NAMES:
-        return 1/(12*np.pi*n3_1_3)
-    elif version in MFMT_NAMES:
-        return np.where(n3<=1e-8,
+    if version[2] == 0:
+        dphi3 = 1/(12*np.pi*n3_1_3)
+    elif version[2] == 1:
+        dphi3 = np.where(n3<=1e-8,
                         (8/3-0.5*n3-0.1*n3_2)/(36*np.pi*n3_1_3),
                         -(2*n3-5*n3_2+n3_3+2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
-    elif version in WBII_NAMES:
-        return np.where(n3<=1e-8,
+    elif version[2] == 2:
+        dphi3 = np.where(n3<=1e-8,
                         (7/3-n3/2+n3_2/10)/(36*np.pi*n3_1_3),
                         (2*n3-5*n3_2+6*n3_3-n3_2*n3_2 + 2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
+    return dphi1, dphi2, dphi3
+
+# @njit
+# def _get_dphi_n0(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+#     return _phi1(n3, ln_n3)
+
+# @njit
+# def _get_dphi_n1(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+#     return n2*_phi2(n3, ln_n3, n3_2, version)    
+
+# @njit
+# def _get_dphi_n2(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+#     dphi = n1*_phi2(n3, ln_n3, n3_2, version)
+#     if version[0] == 1:
+#         dphi += (3*(n2**2)*(1+xi)*((1-xi)**2))*_phi3(n3, ln_n3, n3_2, n3_3, version)
+#     else:
+#         dphi += 3*(n2**2-(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2))*_phi3(n3, ln_n3, n3_2, n3_3, version)
+
+#     return dphi
+
+# @njit
+# def _get_dphi_n3(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+#     dphi = n0*_dphi1dn(n3)
+#     dphi += (n1*n2-(nv2[...,0]*nv1[...,0] + nv2[...,1]*nv1[...,1] + nv2[...,2]*nv1[...,2]))*_dphi2dn(n3, ln_n3, n3_2, version)
+#     if version[0] == 1:
+#         prefactor3 = (n2**3)*((1-xi)**3)
+#     else:
+#         prefactor3 = (n2**3-3.0*n2*(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2))
+    
+#     if version[1] == 1:
+#         xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
+
+#         prefactor3 += (9/2)*(xx*nv2[...,0]**2 + yy*nv2[...,1]**2 + zz*nv2[...,2]**2 + 
+#                    2*xy*nv2[...,0]*nv2[...,1] + 2*xz*nv2[...,0]*nv2[...,2] + 2*yz*nv2[...,1]*nv2[...,2]) #quadratic form nv2*nt*nv2
+
+#         prefactor3 -= (9/2)*tr3
+#     dphi += prefactor3*_dphi3dn(n3, ln_n3, n3_2, n3_3, version)
+#     return dphi
+
+
+# @njit
+# def _get_dphi_nv1(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+#     dphi = - nv2 * _phi2(n3, ln_n3, n3_2, version)[..., None]
+#     return dphi
+
+# @njit
+# def _get_dphi_nv2(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+#     dphi = - nv1 * _phi2(n3, ln_n3, n3_2, version)[..., None]
+#     phi3 = _phi3(n3, ln_n3, n3_2, n3_3, version)
+#     if version[0] == 1:
+#         factor = -6*n2*((1-xi)**2)*phi3
+#         dphi += nv2 * factor[..., None]
+#     else:
+#         factor = -6*n2*phi3
+#         dphi += nv2 * factor[..., None]
+
+#     if version[1] == 1:
+#         vx, vy, vz = nv2[...,0], nv2[...,1], nv2[...,2]
+
+#         xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
+        
+#         grad_nv = np.empty_like(nv2)
+#         grad_nv[...,0] = 2 * (xx * vx + xy * vy + xz * vz)
+#         grad_nv[...,1] = 2 * (xy * vx + yy * vy + yz * vz)
+#         grad_nv[...,2] = 2 * (xz * vx + yz * vy + zz * vz)
+
+#         dphi += (9/2)*grad_nv*phi3[..., None]
+#     return dphi
+
+
+# @njit
+# def _phi1(n3, ln_n3):
+#     return -ln_n3
+
+# @njit
+# def _dphi1dn(n3):
+#     return 1.0/(1.0-n3)
+
+# @njit
+# def _phi2(n3, ln_n3, n3_2, version):
+#     if version[2] == 0 or version[2] == 1:
+#         return 1/(1.0-n3)
+#     elif version[2] == 2:
+#         return np.where(n3<=1e-8,
+#                         (1+ n3_2/9)/(1-n3), 
+#                         (5*n3 - n3_2 + 2*(1-n3)*ln_n3)/(3*(n3-n3_2)))
+
+# @njit            
+# def _dphi2dn( n3, ln_n3, n3_2, version):
+#     n3_1_2 = (1-2*n3 + n3_2)
+#     if version[2] == 0 or version[2] == 1:
+#         return 1/n3_1_2
+#     elif version[2] == 2:
+#         return np.where(n3<=1e-8,
+#                         (1+ 2*n3/9 + n3_2/18)/n3_1_2,
+#                         -2*(n3 - 3*n3_2 + n3_1_2*ln_n3)/(3*n3_2*n3_1_2))
+
+# @njit
+# def _phi3(n3, ln_n3, n3_2, n3_3, version):
+#     n3_1_2 = (1-2*n3 + n3_2)
+#     if version[2] == 0:
+#         return 1/(24*np.pi*n3_1_2)
+#     elif version[2] == 1:
+#         return np.where(n3<=1e-8,
+#                         (1.0-2*n3/9-n3_2/18)/(24*np.pi*n3_1_2),
+#                         (n3+n3_1_2*ln_n3)/(36*np.pi*n3_2*n3_1_2))
+#     elif version[2] == 2:
+#         return np.where(n3<=1e-8,
+#                         (1-4*n3/9+n3_2/18)/(24*np.pi*n3_1_2),
+#                         -2*(n3 -3*n3_2 + n3_3 + ln_n3*n3_1_2)/((3*n3_2)*24*np.pi*n3_1_2))
+
+# @njit
+# def _dphi3dn(n3, ln_n3, n3_2, n3_3, version):
+#     n3_1_3 = (1-3*n3 + 3*n3_2 - n3_3)
+#     if version[2] == 0:
+#         return 1/(12*np.pi*n3_1_3)
+#     elif version[2] == 1:
+#         return np.where(n3<=1e-8,
+#                         (8/3-0.5*n3-0.1*n3_2)/(36*np.pi*n3_1_3),
+#                         -(2*n3-5*n3_2+n3_3+2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
+#     elif version[2] == 2:
+#         return np.where(n3<=1e-8,
+#                         (7/3-n3/2+n3_2/10)/(36*np.pi*n3_1_3),
+#                         (2*n3-5*n3_2+6*n3_3-n3_2*n3_2 + 2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
 
 
 # Universal model constants for a and b
@@ -563,9 +714,8 @@ class PCSAFTFunctional(Functional):
         self.debug = debug
         self.hs_approx = hs_approx
 
-    def copy(self, grid=None):
-        pcsaft = type(self)(self.grid, self.guest)
-        return pcsaft
+    # def copy(self):
+    #     return copy_module.deepcopy(self)
 
     def set_temperature(self, temperature, **kwargs):
         self.temperature = temperature
@@ -860,12 +1010,8 @@ class MFAFunctional(Functional):
         self.potential = None
         self.kpotential = None
 
-    def copy(self, grid=None):
-        if grid is None: grid = self.grid.copy()
-        mfa = type(self)(grid, self.tailcorrections, self.repetitions)
-        mfa.potential = self.potential.copy()
-        mfa.kpotential = self.kpotential.copy()
-        return mfa
+    # def copy(self):
+    #     return copy_module.deepcopy(self)
 
     def load_potential(self, fn):
         self.potential = np.load(fn)
@@ -1104,13 +1250,8 @@ class ExternalPotential(Functional):
 
         self.vdw_spacings = np.array([0.15,0.15,0.15])*angstrom
 
-    def copy(self, grid=None):
-        if grid is None: grid = self.grid.copy()
-        extpot = type(self)(grid, self.system, self.epot_dr, self.positive, self.limit_potential, self.degree)
-        if self.potential is not None:
-            extpot.potential = self.potential.copy()
-            extpot.kpotential = self.kpotential.copy()
-        return extpot
+    # def copy(self):
+    #     return copy_module.deepcopy(self)
     
     def load_potential(self, fn):
         if isinstance(fn, list):
@@ -1216,9 +1357,8 @@ class LDAFunctional(Functional):
         self.grid = grid
         self.eos = eos
 
-    def copy(self, grid=None):
-        if grid is None: grid = self.grid.copy()
-        return LDAFunctional(grid, self.eos)
+    # def copy(self):
+    #     return copy_module.deepcopy(self)
 
     def set_temperature(self, temperature, **kwargs):
         self.temperature = temperature
@@ -1249,9 +1389,8 @@ class WDAVFunctional(LDAFunctional):
         self.temperature = None
         self.R = Rhs
 
-    def copy(self, grid=None):
-        if grid is None: grid = self.grid.copy()
-        return type(self)(grid, self.R, self.eos)
+    # def copy(self):
+    #     return copy_module.deepcopy(self)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         LDAFunctional.set_temperature(self, temperature, **kwargs)        

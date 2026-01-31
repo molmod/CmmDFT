@@ -3,13 +3,19 @@
 
 
 from __future__ import division
+import copy as copy_module
 
 import numpy as np, sys, os
-from scipy.fft import fftn, ifftn
+# from scipy.fft import fftn, ifftn
+
+import scipy.fft as fft
+
 from pathlib import Path
 import json
 
-from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck, amu
+from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck, amu, parse_unit
+
+# from numba import jit, njit, prange
 
 # from ase import atoms
 # from ase.io import read
@@ -29,6 +35,9 @@ class Cell(object):
     def __init__(self, rvecs):
         self.rvecs = rvecs
         self._update_cached_quantities()
+
+    def copy(self):
+        return copy_module.deepcopy(self)
 
     def _update_cached_quantities(self):
         self.a_vec, self.b_vec, self.c_vec = self.rvecs
@@ -79,8 +88,6 @@ class Cell(object):
         """
         Apply the minimum image convention to a displacement vector.
         """
-        delta_cart = np.asarray(delta_cart, dtype=float)
-
         if delta_cart.shape[-1] != 3:
             raise ValueError("Last dimension must be of size 3")
 
@@ -92,6 +99,7 @@ class Cell(object):
 
         # Fractional -> Cartesian
         return delta_frac @ self.rvecs     
+    
 
 class System(object):
     def __init__(self, host, guest):
@@ -123,12 +131,7 @@ class System(object):
         self.second_host = second_host
     
     def copy(self):
-        if hasattr(self, 'second_host'):
-            syst = System(self.host.copy(), self.guest.copy())
-            syst.add_hybrid_system(self.second_host)
-            return syst
-        else:
-            return System(self.host.copy(), self.guest.copy())
+        return copy_module.deepcopy(self)
 
     
 
@@ -136,13 +139,13 @@ class Host(object):
     def __init__(self, name, cell):
         self.name = name
         self.cell = cell
-        
+
     def copy(self):
-        return type(self)(self.name, self.cell)
+        return copy_module.deepcopy(self)
 
     
 class NanoporousHost(Host):
-    def __init__(self, name, struct, par, ffname='', shift=True):
+    def __init__(self, name, struct, par, unit_distance='au', ffname='', shift=True):
         '''This function initializes a nanoporous host system
         
         Parameters
@@ -155,6 +158,7 @@ class NanoporousHost(Host):
             The "par" parameter is .txt a file containing the force-field parameters
         '''
         with log.section('SYSTEM', 1, timer='Initializing'):
+            dist_unit = parse_unit(unit_distance)
             log.dump('Reading host structure from %s with parameters from %s' %(struct,par))
             # try:
             #     self.atoms = read(struct)
@@ -163,20 +167,15 @@ class NanoporousHost(Host):
             self.atoms = YaffSystem.from_file(struct)
             #shift molecule so that center of positions is the origin (as cDFT grid will be centered around this origin)
             if shift:
-                # positions = self.atoms.get_positions()
-                # positions -= positions.sum(axis=0)/len(positions)
-                # self.atoms.set_positions(positions)
-                self.atoms.pos -= self.atoms.pos.sum(axis=0)/len(self.atoms.pos)
-            # rvecs = np.array(self.atoms.get_cell())
-            rvecs = self.atoms.cell.rvecs
+                positions = self.atoms.get_positions()
+                positions -= positions.sum(axis=0)/len(positions)
+                self.atoms.set_positions(positions*dist_unit)
+            rvecs = np.array(self.atoms.get_cell())* dist_unit
             cell = Cell(rvecs)
             Host.__init__(self, name, cell)
             self.struct = struct
             self.par = par
             self.ffname = ffname
-    
-    def copy(self):
-        return NanoporousHost(self.name, self.struct, self.par, self.ffname)
 
     
 class EmptyHost(Host):
@@ -205,10 +204,10 @@ class Guest(object):
         self.fractions = np.array([1.0])
         self.m = np.array([1.0])
         self.ffname = ffname
-    
-    def copy(self):
-        return type(self)(self.name, self.mass, self.ffname)
 
+    def copy(self):
+        return copy_module.deepcopy(self)
+    
     def wavelength(self, temperature):
         kT = boltzmann*temperature
         return planck/np.sqrt(2*np.pi*self.mass*kT)
@@ -258,9 +257,6 @@ class SphericalLJGuest(Guest):
         self.m = m #m parameter for PC-SAFT model
         self.hs_def = hs_def
     
-    def copy(self):
-        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.ffname, m=self.m, hs_def=self.hs_def)
-
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         beta = 1/(boltzmann*temperature)
         Tt = 1/beta/self.epsilon
@@ -287,9 +283,6 @@ class NonSphericalGuest(Guest):
             mass = self.atoms.masses.sum()
             Guest.__init__(self, name, mass, ffname)
 
-    def copy(self):
-        return type(self)(self.name, self.struct, self.par, self.ffname)
-
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         raise NotImplementedError("NonSphericalGuest has no hardsphere definition, must use DualModelGuest")
 
@@ -299,9 +292,6 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
         NonSphericalGuest.__init__(self, name, struct, par, ffname)
         SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def)
 
-    def copy(self):
-        return type(self)(self.name, self.mass, self.sigma, self.epsilon, self.struct, self.par, self.ffname, m=self.m, hs_def=self.hs_def)
-    
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)
 
@@ -339,7 +329,7 @@ class GuestMixture(object):
         self.sigma_mix = np.array([( (gi.sigma + gj.sigma)/2 ) for gi in guests for gj in guests]).reshape((self.nspecies, self.nspecies))
 
     def copy(self):
-        return type(self)([g.copy() for g in self.guests], list(self.fractions), k_inter=self.k_inter)
+        return copy_module.deepcopy(self)
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         Rhs_sigma = [g._calculate_hardsphere_radius(temperature, **kwargs) for g in self.guests]
@@ -398,6 +388,9 @@ class Grid(object):
                     given.
         """
         with log.section('GRID', 2, timer='Initializing'):
+            # pyfftw.interfaces.cache.enable()
+            # pyfftw.config.NUM_THREADS = 1 
+            # pyfftw.config.PLANNER_EFFORT = 'FFTW_MEASURE'            
             log.dump('Initializing grid')
             self.cell = cell
             self.shift = shift
@@ -459,7 +452,7 @@ class Grid(object):
         return Grid(sup_cell, npoints=list(npoints))
 
     def copy(self):
-        return Grid(self.cell, npoints=self.npoints)
+        return copy_module.deepcopy(self)
     
     def integrate(self, data):
         with log.section('GRID', 2, timer='Integrating'):
@@ -483,11 +476,11 @@ class Grid(object):
             else:
                 raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
             return np.sum(data, axis=axes)*self.dr
-
+    
     def fft(self, rdata):
         with log.section('GRID', 2, timer='fft'):
 
-            return fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
+            return fft.fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
     
     def fftn(self, rdata):
         """
@@ -508,7 +501,7 @@ class Grid(object):
                 raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
 
             # Perform FFT on the spatial axes
-            F = fftn(rdata, axes=axes, norm=None)
+            F = fft.fftn(rdata, axes=axes, norm=None)
 
             # Compute scaling factor
             factor = np.exp(1j*np.pi*self.scalprod) / np.prod(npoints)
@@ -523,7 +516,7 @@ class Grid(object):
     
     def ifft(self, fdata):
         with log.section('GRID', 2, timer='ifft'):
-            return ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None).real*np.prod(self.npoints)
+            return fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None).real*np.prod(self.npoints)
     
     
     def ifftn(self, fdata):
@@ -543,6 +536,8 @@ class Grid(object):
                     break
             else:
                 raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
+            
+
 
             # Conjugate phase factor
             factor = np.exp(-1j*np.pi*self.scalprod)
@@ -553,6 +548,6 @@ class Grid(object):
             factor = factor.reshape(expand_shape)
 
             ifft_input = fdata * factor
-            F = ifftn(ifft_input, axes=axes, norm=None)
+            F = fft.ifftn(ifft_input, axes=axes, norm=None)
 
             return F.real * np.prod(npoints)

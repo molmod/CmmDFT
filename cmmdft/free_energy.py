@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 from __future__ import division
-
+import copy as copy_module
 import numpy as np, os, copy, re
 from pathlib import Path
 
@@ -32,21 +32,24 @@ class FreeEnergy(object):
         self.fn_tracking = None
         self.set_temperature(temperature)
 
-    def copy(self, grid=None):
-        if grid is None:
-            fenercopy = FreeEnergy(self.grid.copy(), self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
-        # elif isinstance(grid, Grid):
-        else:
-            fenercopy = FreeEnergy(grid, self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
-        # else:
-            # raise ValueError('The provided grid must be a Grid instance')
-        for part in self.parts:
-            fenercopy.parts.append(part.copy(grid=grid))
-        for part_name in self.part_names:
-            fenercopy.part_names.append(part_name)
-        if hasattr(self, 'epot_fn'): fenercopy.epot_fn = self.epot_fn
-        fenercopy.set_temperature(self.temperature)
-        return fenercopy
+    # def copy(self, grid=None):
+    #     if grid is None:
+    #         fenercopy = FreeEnergy(self.grid.copy(), self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
+    #     # elif isinstance(grid, Grid):
+    #     else:
+    #         fenercopy = FreeEnergy(grid, self.system.copy(), self.temperature, workdir=self.workdir, name_dict=self.name_dict, overwrite=self.overwrite)
+    #     # else:
+    #         # raise ValueError('The provided grid must be a Grid instance')
+    #     for part in self.parts:
+    #         fenercopy.parts.append(part.copy(grid=grid))
+    #     for part_name in self.part_names:
+    #         fenercopy.part_names.append(part_name)
+    #     if hasattr(self, 'epot_fn'): fenercopy.epot_fn = self.epot_fn
+    #     fenercopy.set_temperature(self.temperature)
+    #     return fenercopy
+    
+    def copy(self):
+        return copy_module.deepcopy(self)
     
     def set_temperature(self, temperature, **kwargs):
         """

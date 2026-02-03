@@ -12,6 +12,7 @@ from scipy.optimize import brentq
 from .rotations.AngGrid import AngularGrid
 from .rotations._stroud_1969 import *
 
+from ase import Atoms
 from .units_constants import boltzmann, kjmol, angstrom, kcalmol, amu, gram, centimeter
 
 __all__ = [
@@ -354,25 +355,27 @@ class Loop(object):
         for key, column in zip(self.keys, columns):
             self.data[key] = column
 
-# from ase import Atoms
 
-# def atoms_from_chk(chk_file):
-#     allowed_keys = [
-#         'numbers', 'pos', 'scopes', 'scope_ids', 'ffatypes',
-#         'ffatype_ids', 'bonds', 'rvecs', 'charges', 'radii',
-#         'valence_charges', 'dipoles', 'radii2', 'masses',
-#     ]
-#     kwargs = {}
-#     for key, value in load_chk(chk_file).items():
-#         if key in allowed_keys:
-#             kwargs.update({key: value})
-#     if 'rvecs' in kwargs.keys():
-#         return Atoms(numbers=kwargs['numbers'],
-#                     positions=kwargs['pos'],
-#                     cell=kwargs['rvecs'])
-#     else:
-#         return Atoms(numbers=kwargs['numbers'],
-#                     positions=kwargs['pos'])
+def atoms_from_chk(chk_file):
+    allowed_keys = [
+        'numbers', 'pos', 'scopes', 'scope_ids', 'ffatypes',
+        'ffatype_ids', 'bonds', 'rvecs', 'charges', 'radii',
+        'valence_charges', 'dipoles', 'radii2', 'masses',
+    ]
+    kwargs = {}
+    for key, value in load_chk(chk_file).items():
+        if key in allowed_keys:
+            kwargs.update({key: value})
+
+    if 'rvecs' in kwargs.keys():
+        if len(kwargs['rvecs']):
+            return Atoms(numbers=kwargs['numbers'],
+                        positions=kwargs['pos'],
+                        cell=kwargs['rvecs'])
+        
+    
+    return Atoms(numbers=kwargs['numbers'],
+                positions=kwargs['pos'])
     
 
 def load_chk(filename):

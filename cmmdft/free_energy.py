@@ -228,7 +228,7 @@ class FreeEnergy(object):
                         fn = epot_dr / f'epot.npy'
                     #create a symlink to the potential directory so everything is in one place
                     sym_fn = self.workdir / 'ExtPots'
-                epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, **kwargs)
+                epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, cutoff=rcut, **kwargs)
 
                 if not os.path.isfile(fn) or self.overwrite or rewrite:
                     log.dump('computing external potential on grid')
@@ -370,15 +370,15 @@ class FreeEnergy(object):
             epsilon = self.system.guest.epsilon
 
             if isinstance(self.system.guest, GuestMixture):
-                MBWR = ModifiedBenedictWebbRubinMixEOS(mass, sigma, epsilon, homogenous=False)
-                CS = CarnahanStarlingMixEOS(mass, sigma, epsilon, homogenous=False)
+                MBWR = ModifiedBenedictWebbRubinMixEOS(mass, sigma, epsilon, homogeneous=False)
+                CS = CarnahanStarlingMixEOS(mass, sigma, epsilon, homogeneous=False)
                 if 'MFAMIX' in self.part_names:
                     mfa_part = self.part_dict['MFAMIX']
                     a = mfa_part.compute_vdw_a()
                 if a is not None:
-                    MFA = MFAMixEOS(mass, aij=a, homogenous=False)
+                    MFA = MFAMixEOS(mass, aij=a, homogeneous=False)
                 else:
-                    MFA = MFAMixEOS(mass, sigma, epsilon, homogenous=False)
+                    MFA = MFAMixEOS(mass, sigma, epsilon, homogeneous=False)
                 SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
 
             else:

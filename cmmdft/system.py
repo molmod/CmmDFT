@@ -17,13 +17,11 @@ from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck, am
 
 # from numba import jit, njit, prange
 
-# from ase import atoms
-# from ase.io import read
+from ase import atoms
+from ase.io import read
 
-from yaff import log as ylog, System as YaffSystem
-ylog.set_level(ylog.silent)
 
-# from .tools import atoms_from_chk
+from .tools import atoms_from_chk
 from .log import log
 
 __all__ = ['Cell','System', 
@@ -160,11 +158,10 @@ class NanoporousHost(Host):
         with log.section('SYSTEM', 1, timer='Initializing'):
             dist_unit = parse_unit(unit_distance)
             log.dump('Reading host structure from %s with parameters from %s' %(struct,par))
-            # try:
-            #     self.atoms = read(struct)
-            # except:
-            #     self.atoms = atoms_from_chk(struct)
-            self.atoms = YaffSystem.from_file(struct)
+            try:
+                self.atoms = read(struct)
+            except:
+                self.atoms = atoms_from_chk(struct)
             #shift molecule so that center of positions is the origin (as cDFT grid will be centered around this origin)
             if shift:
                 positions = self.atoms.get_positions()
@@ -271,16 +268,15 @@ class NonSphericalGuest(Guest):
     def __init__(self, name, struct, par, ffname=''):
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Reading guest from %s with parameters from %s' %(struct, par))
-            # try:
-            #     self.atoms = read(struct)
-            # except:
-            #     self.atoms = atoms_from_chk(struct)
-            self.atoms = YaffSystem.from_file(struct)
-            self.natom = len(self.atoms.pos)
+            try:
+                self.atoms = read(struct)
+            except:
+                self.atoms = atoms_from_chk(struct)
+            self.natom = len(self.atoms.positions)
             self.struct = struct
             self.par = par
             mass = None
-            mass = self.atoms.masses.sum()
+            mass = np.sum(self.atoms.get_masses())
             Guest.__init__(self, name, mass, ffname)
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
@@ -404,11 +400,12 @@ class Grid(object):
                     self.npoints = npoints
             self.npoints = np.array(self.npoints)
             self.suffix = '_'.join("%d"%n for n in self.npoints)
-            self.spacings = [            
+            spacings = [            
                 np.linalg.norm(self.cell.rvecs[:,0])/self.npoints[0],
                 np.linalg.norm(self.cell.rvecs[:,1])/self.npoints[1],
                 np.linalg.norm(self.cell.rvecs[:,2])/self.npoints[2],
             ]
+            self.spacings = np.array(spacings)
             log.dump('  number of grid points  =  %4i,  %4i,  %4i' %(self.npoints[0],self.npoints[1],self.npoints[2]))
             log.dump('  spacing of grid points = %.3f, %.3f, %.3f A' %(self.spacings[0]/angstrom,self.spacings[1]/angstrom,self.spacings[2]/angstrom))
             # Volume of one volume element, useful for integrations and FFTs

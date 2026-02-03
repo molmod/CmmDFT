@@ -242,7 +242,7 @@ class Calculator(object):
             Array of chemical potentials in kJ/mol.
         """
 
-        numeric_const_pattern = '([-+]?\d*\.?\d+)(?=kJmol)'
+        numeric_const_pattern = r'([-+]?\d*\.?\d+)(?=kJmol)'
         rx = re.compile(numeric_const_pattern, re.VERBOSE)
 
         dens_list = [f.name for f in self.workdir.iterdir() if f.name.startswith('rho') and f.name.endswith(f'{temperature:#7.5f}K.npy')]

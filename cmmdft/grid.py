@@ -35,10 +35,7 @@ class Grid(CleanupMixin):
                     determine the number of grid points if npoints is not 
                     given.
         """
-        with log.section('GRID', 2, timer='Initializing'):
-            # pyfftw.interfaces.cache.enable()
-            # pyfftw.config.NUM_THREADS = 1 
-            # pyfftw.config.PLANNER_EFFORT = 'FFTW_MEASURE'            
+        with log.section('GRID', 2, timer='Initializing'):    
             log.dump('Initializing grid')
             self.cell = cell
             self.shift = shift

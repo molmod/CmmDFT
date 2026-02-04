@@ -13,6 +13,7 @@ import json
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck, amu, parse_unit
 from .grid import Cell
 from .tools import atoms_from_chk, CleanupMixin
+from .extpot_calculator import get_system_data
 from .log import log
 
 from ase.io import read
@@ -65,7 +66,8 @@ class Host(CleanupMixin):
 
     
 class NanoporousHost(Host):
-    def __init__(self, name, struct, par, unit_distance='au', ffname='', shift=True):
+    def __init__(self, name, struct, par, ffname='', shift=True,
+                 unit_distance='au', unit_sigma='au', unit_energy='au', unit_charge='au', unit_mass='au'):
         '''This function initializes a nanoporous host system
         
         Parameters
@@ -91,10 +93,12 @@ class NanoporousHost(Host):
                 self.atoms.set_positions(positions*dist_unit)
             rvecs = np.array(self.atoms.get_cell())* dist_unit
             cell = Cell(rvecs)
-            Host.__init__(self, name, cell)
+            super().__init__(name, cell)
             self.struct = struct
             self.par = par
             self.ffname = ffname
+            self.host_data, self.host_ff_dict = get_system_data(struct, par, position_shift=shift, 
+                                                                unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
 
     
 class EmptyHost(Host):
@@ -187,7 +191,8 @@ class SphericalLJGuest(Guest):
 
 
 class NonSphericalGuest(Guest):
-    def __init__(self, name, struct, par, ffname=''):
+    def __init__(self, name, struct, par, ffname='',
+                 unit_distance='au', unit_sigma='au', unit_energy='au', unit_charge='au', unit_mass='au'):
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Reading guest from %s with parameters from %s' %(struct, par))
             try:
@@ -199,6 +204,8 @@ class NonSphericalGuest(Guest):
             self.par = par
             mass = None
             mass = np.sum(self.atoms.get_masses())
+            self.guest_data, self.guest_ff_dict = get_system_data(struct, par, position_shift=True, 
+                                                                unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
             Guest.__init__(self, name, mass, ffname)
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):

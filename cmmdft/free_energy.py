@@ -170,8 +170,8 @@ class FreeEnergy(CleanupMixin):
             self.tracking_step += 1
             return G
     
-    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e4*kjmol, degree=11, rewrite=False, load_fn=None, save_fn=None,
-                                **kwargs):
+    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e4*kjmol, degree=11, 
+                               interpolate=False, rewrite=False, load_fn=None, save_fn=None, **kwargs):
         '''The `add_external_potential` function adds an external potential contribution for spherical particles in a system.
             
             Parameters
@@ -237,7 +237,7 @@ class FreeEnergy(CleanupMixin):
                         sym_fn.symlink_to(epot_dr.absolute())    
 
                 epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, 
-                                         limit_potential=upper_limit, cutoff=rcut, degree=degree, **kwargs)
+                                         limit_potential=upper_limit, cutoff=rcut, degree=degree, interpolate=interpolate, **kwargs)
 
                 if not os.path.isfile(fn) or self.overwrite or rewrite:
                     log.dump('computing external potential on grid')

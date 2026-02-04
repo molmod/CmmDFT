@@ -82,6 +82,7 @@ class CleanupMixin:
     _PRESERVE_ATTRS = set()  # Override in subclasses if needed
     
     def close(self):
+        pass
         """Generic cleanup of all non-preserved attributes"""
         if getattr(self, '_closed', False):
             return
@@ -109,15 +110,16 @@ class CleanupMixin:
                         attr.clear()
                     elif isinstance(attr, dict):
                         attr.clear()
-                
+            except Exception:
+                pass
+            try:
                 # Set to None
                 setattr(self, attr_name, None)
                 
-            except Exception as e:
-                # Log but don't fail on cleanup errors
-                print(f"Warning: couldn't clean up {attr_name}: {e}")
+            except Exception:
+                # Only warn on unexpected errors
                 pass
-        
+            
         self._closed = True
     
     def __enter__(self):
@@ -169,8 +171,12 @@ class DeepCleanupMixin:
                 # Clear reference
                 setattr(self, attr_name, None)
                 
-            except Exception:
+            except AttributeError:
+                # Attribute doesn't exist anymore, skip
                 pass
+            except Exception as e:
+                # Only warn on unexpected errors
+                print(f"Warning: couldn't clean up {attr_name}: {type(e).__name__}: {e}")
         
         self._closed = True
     

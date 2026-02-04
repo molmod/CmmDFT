@@ -243,7 +243,7 @@ def _lj_batched(R, sigma, epsilon, cutoff):
     return out.reshape(R_shape)
 
 # @njit(cache=True, parallel=True)
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _compute_vext(points, host_pos, sigma_mixed, epsilon_mixed, rvecs, inv_rvecs, cutoff):
     npoints = points.shape[0]
     natoms = host_pos.shape[0]
@@ -390,7 +390,7 @@ def _compute_vext_derivatives(points, host_pos, sigma_mixed, epsilon_mixed, rvec
     return Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
 
 
-def get_external_potential(points, host_struct, host_par, sigmaff, epsilonff, cutoff=12*angstrom, position_shift=True):
+def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones interactions.
 
@@ -415,26 +415,29 @@ def get_external_potential(points, host_struct, host_par, sigmaff, epsilonff, cu
         External potential at each grid point, shape (N,).
     """
 
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs), ff_dict = get_system_data(host_struct, host_par, position_shift=position_shift)
+    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
 
     cell = Cell(rvecs)
 
     Vext = np.zeros(points.shape[:-1])
     
     for i, atom_id in enumerate(ffatype_ids):
-        sigma, epsilon = ff_dict[atom_id]    
+        sigma, epsilon = host_ff_dict[atom_id]    
 
         sigma_mixed = 0.5*(sigma + sigmaff)
         epsilon_mixed = np.sqrt(epsilon * epsilonff)
+
         host_position = host_pos[i]
+
         dr = points - host_position
         dr = cell.mic(dr)
-        R = np.sqrt(np.sum(dr*dr, axis=1)) + 1e-12
+        R = np.sqrt(np.sum(dr*dr, axis=-1)) + 1e-12
+
         Vext += _lj_batched(R, sigma_mixed, epsilon_mixed, cutoff=cutoff)  # (N,)
         
     return Vext
     
-def get_external_potential_jit(points, host_struct, host_par, sigmaff, epsilonff, cutoff=12*angstrom, position_shift=True):
+def get_external_potential_jit(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones interactions.
 
@@ -458,7 +461,7 @@ def get_external_potential_jit(points, host_struct, host_par, sigmaff, epsilonff
     Vext : ndarray
         External potential at each grid point, shape (N,).
     """
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs), ff_dict = get_system_data(host_struct, host_par, position_shift=position_shift)
+    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
     inv_rvecs = np.linalg.inv(rvecs)
 
     # Build per-atom mixed parameters so the numba kernel can index them
@@ -466,7 +469,7 @@ def get_external_potential_jit(points, host_struct, host_par, sigmaff, epsilonff
     sigma_mixed_arr = np.empty(natoms, dtype=float)
     epsilon_mixed_arr = np.empty(natoms, dtype=float)
     for i, atom_id in enumerate(ffatype_ids):
-        sigma, epsilon = ff_dict[atom_id]
+        sigma, epsilon = host_ff_dict[atom_id]
         sigma_mixed_arr[i] = 0.5 * (sigma + sigmaff)
         epsilon_mixed_arr[i] = np.sqrt(epsilon * epsilonff)
     points_shape = points.shape
@@ -475,7 +478,7 @@ def get_external_potential_jit(points, host_struct, host_par, sigmaff, epsilonff
     Vext = _compute_vext(points, host_pos, sigma_mixed_arr, epsilon_mixed_arr, rvecs, inv_rvecs, cutoff)
     return Vext.reshape(points_shape[:-1])
 
-def get_external_potential_derivatives(points, host_struct, host_par, sigmaff, epsilonff, spacings, cutoff=12*angstrom, position_shift=True):
+def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
     """
     Calculate external potential and all derivatives at grid points.
 
@@ -502,7 +505,7 @@ def get_external_potential_derivatives(points, host_struct, host_par, sigmaff, e
         Array of shape (8, N) containing [V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz]
         in unit cube format.
     """
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs), ff_dict = get_system_data(host_struct, host_par, position_shift=position_shift)
+    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
 
     Vext = np.zeros(len(points))
     dVdx = np.zeros(len(points))
@@ -518,7 +521,7 @@ def get_external_potential_derivatives(points, host_struct, host_par, sigmaff, e
     L = np.linalg.norm(rvecs, axis=1)
     
     for i, atom_id in enumerate(ffatype_ids):
-        sigma, epsilon = ff_dict[atom_id]
+        sigma, epsilon = host_ff_dict[atom_id]
         sigma_mixed = 0.5*(sigma + sigmaff)
         epsilon_mixed = np.sqrt(epsilon * epsilonff)
         
@@ -565,7 +568,7 @@ def get_external_potential_derivatives(points, host_struct, host_par, sigmaff, e
     return np.array([Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz])
 
 
-def get_external_potential_derivatives_jit(points, host_struct, host_par, sigmaff, epsilonff, spacings, cutoff=12*angstrom, position_shift=True):
+def get_external_potential_derivatives_jit(points, host_data, host_ff_dict, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
     """
     JIT-compatible wrapper for computing external potential and derivatives.
 
@@ -574,7 +577,7 @@ def get_external_potential_derivatives_jit(points, host_struct, host_par, sigmaf
     Keeping the wrapper lets callers switch to a true numba kernel later
     without changing call sites.
     """
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs), ff_dict = get_system_data(host_struct, host_par, position_shift=position_shift)
+    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
     inv_rvecs = np.linalg.inv(rvecs)
 
     # Build per-atom mixed parameters so the numba kernel can index them
@@ -582,7 +585,7 @@ def get_external_potential_derivatives_jit(points, host_struct, host_par, sigmaf
     sigma_mixed_arr = np.empty(natoms, dtype=float)
     epsilon_mixed_arr = np.empty(natoms, dtype=float)
     for i, atom_id in enumerate(ffatype_ids):
-        sigma, epsilon = ff_dict[atom_id]
+        sigma, epsilon = host_ff_dict[atom_id]
         sigma_mixed_arr[i] = 0.5 * (sigma + sigmaff)
         epsilon_mixed_arr[i] = np.sqrt(epsilon * epsilonff)
     points_shape = points.shape
@@ -1067,7 +1070,7 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
     return result  # shape: (m,)
 
 
-def generate_effective_potential(points, beta, guest_struct, guest_par, epot_generator_dict, degree=11, max_size=5e+6, max_pot=200*kjmol):
+def generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=11, max_size=5e+6, max_pot=200*kjmol):
     """
     Generate effective potential on a grid with automatic batching.
 
@@ -1091,7 +1094,6 @@ def generate_effective_potential(points, beta, guest_struct, guest_par, epot_gen
     ndarray
         Effective potential on grid, same shape as points[..., 0].
     """
-    guest_data = get_system_data(guest_struct, guest_par)[0]
     position_shift = points.reshape(-1,3).astype(np.float32)
     potentials_flat = []
 
@@ -1114,8 +1116,8 @@ def generate_effective_potential(points, beta, guest_struct, guest_par, epot_gen
     potential = potentials_flat.reshape(points.shape[:-1])
     return potential
 
-def precalculate_effective_potential(points, beta,host_struct, host_par, guest_struct, guest_par, 
-                                     cutoff=12*angstrom, degree=11, position_shift=True, max_size=5e+6, max_pot=200*kjmol):
+def precalculate_effective_potential(points, beta, host_data, host_ff_dict, guest_data, guest_ff_dict, 
+                                     cutoff=12*angstrom, degree=11, max_size=5e+6, max_pot=200*kjmol):
     """
     Precalculate effective potential with adaptive refinement.
 
@@ -1146,8 +1148,7 @@ def precalculate_effective_potential(points, beta,host_struct, host_par, guest_s
         Refined effective potential field.
     """    
     
-    epot_generator_dict = get_external_potential_dict(host_struct, host_par, guest_struct, guest_par, cutoff=cutoff, position_shift=position_shift)
-    guest_data = get_system_data(guest_struct, guest_par)[0]
+    epot_generator_dict = get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_dict, cutoff=cutoff)
 
     potential = generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=3, max_size=max_size)
     potential_mask = potential <  max_pot
@@ -1158,12 +1159,9 @@ def precalculate_effective_potential(points, beta,host_struct, host_par, guest_s
     return potential
 
 
-def interpolate_effective_potential(beta, points, struct_host, hostpar, struct_guest, guestpar, tmp_epot_dr, 
-                                    tmp_spacing=0.15*angstrom, cutoff=12*angstrom, position_shift=True, 
+def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest_data, guest_ff_dict, tmp_epot_dr, 
+                                    tmp_spacing=0.15*angstrom, cutoff=12*angstrom, max_size=5e+6, max_pot=200*kjmol, 
                                     degree=11, int_method='tricubic', remove_tmp=True):
-        
-        host_data, ff_dict = get_system_data(struct_host, hostpar, position_shift=position_shift)
-        guest_data, guest_ff_dict = get_system_data(struct_guest, guestpar)
         
         cell = Cell(host_data[-2])
         epot_grid = Grid(cell, spacing=tmp_spacing)
@@ -1173,12 +1171,18 @@ def interpolate_effective_potential(beta, points, struct_host, hostpar, struct_g
             atom_name = guest_data[2][atom]
             sigmaff, epsilonff = guest_ff_dict[atom]
             tmp_points = epot_grid.points[...,:3].reshape(-1,3)
-            epot = get_external_potential_derivatives(tmp_points, host_data, ff_dict, sigmaff, epsilonff, epot_grid.spacings, cutoff=cutoff).reshape((8, )+ tuple(epot_grid.npoints))
+            epot = get_external_potential_derivatives(tmp_points, host_data, host_ff_dict, sigmaff, epsilonff, epot_grid.spacings, cutoff=cutoff).reshape((8, )+ tuple(epot_grid.npoints))
             np.save(part_epot_fn, epot)
             epot_fn_dict[atom_name] = part_epot_fn
 
         int_dict = get_interpolator_dict(epot_fn_dict, points, np.array([0.15, 0.15, 0.15])*angstrom, int_method=int_method)
-        int_eff_pot = precalculate_effective_potential(points, beta, guest_data, int_dict, degree=degree)
+
+        potential = generate_effective_potential(points, beta, guest_data, int_dict, degree=3, max_size=max_size)
+        potential_mask = potential <  max_pot
+        redo_positions = points[potential_mask]
+
+        redo_potential = generate_effective_potential(redo_positions, beta, guest_data, int_dict, degree=degree, max_size=max_size)
+        potential[potential_mask] = redo_potential
 
         if remove_tmp:
             for atom in range(len(guest_ff_dict)):
@@ -1187,7 +1191,7 @@ def interpolate_effective_potential(beta, points, struct_host, hostpar, struct_g
                 if os.path.exists(part_epot_fn):
                     os.remove(part_epot_fn)
             
-        return int_eff_pot
+        return potential
 
 def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_method='tricubic'):
     """
@@ -1219,7 +1223,7 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
     return interpolator_dict
     
 
-def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, chk_guest, position_shift=True, mic=True, cutoff=12*angstrom):
+def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_dict, mic=True, cutoff=12*angstrom):
     """
     Create dictionary of external potential generators for guest atom types, for
     generation of effective external potentials.
@@ -1250,17 +1254,14 @@ def get_external_potential_dict(pars_file_host, pars_file_guest, chk_host, chk_g
         If mic=False (non-MIC potentials not implemented).
     """
     
-    host_data, FF_dict_host = get_system_data(chk_host, pars_file_host, position_shift=position_shift)
-    guest_data, FF_dict_guest = get_system_data(chk_guest, pars_file_guest)
     guest_ffatypes = guest_data[2]
 
-
     external_potential_dict = {}
-    for i in range(len(FF_dict_guest)):
-        sigmaff, epsilonff = FF_dict_guest[i]
+    for i in range(len(guest_ff_dict)):
+        sigmaff, epsilonff = guest_ff_dict[i]
         if mic:
             key = guest_ffatypes[i]
-            external_potential_dict[key] = partial(get_external_potential, host_data=host_data, FF_dict=FF_dict_host, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
+            external_potential_dict[key] = partial(get_external_potential, host_data=host_data, FF_dict=host_ff_dict, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
         else:
             raise NotImplementedError("Non-MIC external potentials are not implemented yet.")
             # external_potential_dict[key] = partial(compute_batch_insertion_energy_typed, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst)
@@ -1292,13 +1293,15 @@ def read_pars_file_dict(pars_file):
         FF_dict[atom] = (sigma, epsilon)
     return FF_dict
 
-def get_system_data(struct_fn, pars_fn, position_shift=True):
+def get_system_data(struct_fn, pars_fn, position_shift=True,
+                    unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au'):
     struct_fn = Path(struct_fn)
     pars_fn = Path(pars_fn)
     if struct_fn.suffix == '.chk' and pars_fn.suffix=='.txt':
         return _get_system_data_chk(struct_fn, pars_fn, position_shift=position_shift)
     elif struct_fn.suffix=='.pdb' and pars_fn.suffix=='.xml':
-        return _get_system_data_from_pdb_xml(struct_fn, pars_fn, position_shift=position_shift)
+        return _get_system_data_from_pdb_xml(struct_fn, pars_fn, position_shift=position_shift, 
+                                             unit_energy=unit_energy, unit_sigma=unit_sigma, unit_distance=unit_distance, unit_charge=unit_charge, unit_mass=unit_mass)
     else:
         raise ValueError("Structure and forcefield files must be either \'.chk\' and \'.txt\' (compatible with YAFF) or \'.pdb\' and \'.xml\' compatible with openMM")
 
@@ -1335,7 +1338,7 @@ def _get_system_data_chk(chk_fn, pars_file, position_shift=False):
         rvecs = np.zeros((3, 3))
 
     """ Read parameters from a pars file """
-    LJpar = Parameters.from_file(pars_file).sections['LJ']
+    LJpar = Parameters.from_file(str(pars_file)).sections['LJ']
     units = [parse_unit(unit[1].split()[1]) for unit in LJpar.definitions['UNIT'].lines]
     FF_dict = np.empty((len(LJpar.definitions['PARS'].lines),2))
 
@@ -1353,7 +1356,8 @@ def _get_system_data_chk(chk_fn, pars_file, position_shift=False):
     return (pos, masses, ffatypes, ffatype_ids, natom, rvecs), FF_dict
 
 
-def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, position_shift=True, unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au'):
+def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, position_shift=True, 
+                                  unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au'):
     """
     Extract system data and force field parameters from PDB topology and XML system files.
     

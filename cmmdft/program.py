@@ -102,31 +102,33 @@ class Program(CleanupMixin):
     #     return new_instance
 
     def close(self):
-        """Close all dependent objects, then clean up self"""
-        if getattr(self, '_closed', False):
-            return
-        
-        log.dump("Closing Program and all dependencies...")
-        
-        # Close specific objects in the right order        
-        # Close system
-        if hasattr(self, 'system'):
-            self._safe_close(self.system)
+        pass
+        # with log.section('PROGRAM', 1, timer=None):
+        #     """Close all dependent objects, then clean up self"""
+        #     if getattr(self, '_closed', False):
+        #         return
+            
+        #     log.dump("Closing Program and all dependencies...")
+            
+        #     # Close specific objects in the right order        
+        #     # Close system
+        #     # if hasattr(self, 'system'):
+        #     #     self._safe_close(self.system)
 
-        # Close grid
-        if hasattr(self, 'grid'):
-            self._safe_close(self.grid)
+        #     # Close grid
+        #     if hasattr(self, 'grid'):
+        #         self._safe_close(self.grid)
 
-        # Close free energy functional
-        if hasattr(self, 'fener'):
-            self._safe_close(self.fener)
+        #     # Close free energy functional
+        #     if hasattr(self, 'fener'):
+        #         self._safe_close(self.fener)
 
-        # Close solver
-        if hasattr(self, 'solver'):
-            self._safe_close(self.solver)
+        #     # Close solver
+        #     if hasattr(self, 'solver'):
+        #         self._safe_close(self.solver)
 
-        # Now clean up all remaining attributes
-        super().close()
+        #     # # Now clean up all remaining attributes
+        #     # super().close()
     
     def _safe_close(self, obj):
         """Safely close an object if it has a close method"""

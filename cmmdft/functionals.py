@@ -8,7 +8,7 @@ from pathlib import Path
 from .units_constants import kjmol, planck, boltzmann, angstrom
 
 from .log import log
-from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
+from .system import NanoporousHost, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS, SumOfEOS
 from .extpot_calculator import get_system_data, get_external_potential_dict, get_interpolator_dict, generate_effective_potential, get_external_potential, interpolate_effective_potential, precalculate_effective_potential
 from .tools import CleanupMixin
@@ -1296,14 +1296,20 @@ class ExternalPotential(Functional):
 
     def _generate_pot(self, host, real_guest, temperature):
         points = self.grid.points[...,:3]
+        host_data = host.host_data
+        host_ff_dict = host.host_ff_dict
         if isinstance(real_guest, SphericalLJGuest):
-            potential = real_guest.m * get_external_potential(points, host.struct, host.par, real_guest.sigma, real_guest.epsilon, cutoff=self.cutoff, position_shift=True)
-        elif self.interpolate:
-            potential = interpolate_effective_potential(1/temperature/boltzmann, points, host.struct, host.par, real_guest.struct, real_guest.par, self.epot_dr, 
-                                    tmp_spacing=0.15*angstrom, cutoff=self.cutoff, position_shift=True, 
-                                    degree=self.degree, int_method='tricubic', remove_tmp=True)
+            potential = real_guest.m * get_external_potential(points, host_data, host_ff_dict, real_guest.sigma, real_guest.epsilon, cutoff=self.cutoff)
         else:
-            potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host.struct, host.par, real_guest.struct, real_guest.par, degree=self.degree)
+            guest_data = real_guest.guest_data
+            guest_ff_dict = real_guest.guest_ff_dict
+
+            if self.interpolate:
+                potential = interpolate_effective_potential(1/temperature/boltzmann, points, host_data, host_ff_dict, guest_data, guest_ff_dict, self.epot_dr, 
+                                        tmp_spacing=0.15*angstrom, cutoff=self.cutoff,
+                                        degree=self.degree, int_method='tricubic', remove_tmp=True)
+            else:
+                potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host_data, host_ff_dict, guest_data, guest_ff_dict, degree=self.degree)
         return potential
 
     def generate_potential(self, temperature=None):

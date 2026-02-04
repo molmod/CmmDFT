@@ -13,11 +13,11 @@ from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom
 
 from .log import log
 from .functionals import HardSphereFunctional
-from .tools import selection_sort
+from .tools import selection_sort, CleanupMixin
 
 __all__ = ['Solver', 'Picard', 'Anderson', 'Fire', 'QuasiNewton']
 
-class Solver(object):
+class Solver(CleanupMixin):
     """
     Generic solver class for DFT calculations.
     """

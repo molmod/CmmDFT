@@ -8,7 +8,7 @@ from .units_constants import kjmol, angstrom, boltzmann, planck
 
 from .log import log
 from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
-
+from .tools import CleanupMixin
 from .functionals import *
 from .eos import *
 
@@ -16,7 +16,7 @@ __all__ = [
     'FreeEnergy'
     ]
 
-class FreeEnergy(object):
+class FreeEnergy(CleanupMixin):
     def __init__(self, grid, system, temperature, workdir='.', name_dict={}, overwrite=False):
         self.grid = grid
         self.system = system
@@ -170,7 +170,7 @@ class FreeEnergy(object):
             self.tracking_step += 1
             return G
     
-    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e4*kjmol, rewrite=False, load_fn=None, save_fn=None,
+    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e4*kjmol, degree=11, rewrite=False, load_fn=None, save_fn=None,
                                 **kwargs):
         '''The `add_external_potential` function adds an external potential contribution for spherical particles in a system.
             
@@ -206,6 +206,7 @@ class FreeEnergy(object):
                 epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, **kwargs)
                 log.dump('loading external potential from %s' %fn)
                 epot.load_potential(fn)  
+                # create a symlink in the workdir to the directory where external potentials are found
                 sym_fn = self.workdir / 'ExtPots'
                 if not sym_fn.is_symlink():
                     sym_fn.symlink_to(epot_dr.absolute())    
@@ -217,18 +218,26 @@ class FreeEnergy(object):
                 else:
                     epot_dr = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] 
                     if not epot_dr.is_dir(): epot_dr.mkdir(parents=True)
-                    if  isinstance(self.system.guest, NonSphericalGuest):
-                        if self.system.guest.mol.natom != 1: 
-                            assert temperature is not None, 'Temperature must be provided for non-spherical particles'
-                            fn = epot_dr / f'eff_epot_{temperature:#3.2f}K.npy'  
-                        else:
-                            fn = epot_dr / f'epot.npy'
-                        
+
+                    # determine if NonSphericalGuest is present
+                    if  isinstance(self.system.guest, GuestMixture):
+                        NonSphericalList = np.array([isinstance(it_guest, NonSphericalGuest) for it_guest in self.system.guest.guests])
+                        if np.any(NonSphericalList): NonSphericalPresent = True
+                    else:
+                        NonSphericalPresent = isinstance(self.system.guest, NonSphericalGuest)
+                    # If NonSphericalGuest is initiated, the potential is temperature dependent
+                    if NonSphericalPresent: 
+                        assert temperature is not None, 'Temperature must be provided for non-spherical particles'
+                        fn = epot_dr / f'eff_epot_{temperature:#3.2f}K.npy'  
                     else:
                         fn = epot_dr / f'epot.npy'
                     #create a symlink to the potential directory so everything is in one place
                     sym_fn = self.workdir / 'ExtPots'
-                epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, cutoff=rcut, **kwargs)
+                    if not sym_fn.is_symlink():
+                        sym_fn.symlink_to(epot_dr.absolute())    
+
+                epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, 
+                                         limit_potential=upper_limit, cutoff=rcut, degree=degree, **kwargs)
 
                 if not os.path.isfile(fn) or self.overwrite or rewrite:
                     log.dump('computing external potential on grid')

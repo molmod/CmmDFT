@@ -11,6 +11,7 @@ from .log import log
 from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
 from .eos import ModifiedBenedictWebbRubinEOS, CarnahanStarlingEOS, MFAEOS, SumOfEOS
 from .extpot_calculator import get_system_data, get_external_potential_dict, get_interpolator_dict, generate_effective_potential, get_external_potential, interpolate_effective_potential, precalculate_effective_potential
+from .tools import CleanupMixin
 
 from numba import njit
 
@@ -22,7 +23,7 @@ __all__ = [
 ]
  
 
-class Functional(object):
+class Functional(CleanupMixin):
     def __init__(self):
         pass
 
@@ -1242,6 +1243,7 @@ class ExternalPotential(Functional):
         self.nspecies = system.guest.nspecies
         self.host = system.host
         self.epot_dr = epot_dr
+
         self.positive = positive
         self.limit_potential = limit_potential
         self.degree = degree
@@ -1250,9 +1252,6 @@ class ExternalPotential(Functional):
 
         self.vdw_spacings = np.array([0.15,0.15,0.15])*angstrom
 
-    # def copy(self):
-    #     return copy_module.deepcopy(self)
-    
     def load_potential(self, fn):
         if isinstance(fn, list):
             potentials = [np.load(f) for f in fn]
@@ -1264,9 +1263,10 @@ class ExternalPotential(Functional):
                 self.potential = np.zeros((1,) + self.grid.points.shape[:3], dtype='float64')
                 self.potential[0] = np.load(fn)
             else:
-                self.potential = np.load(fn)
-                assert self.potential.shape[0]==self.nspecies, f'Number of species in potential ({self.potential.shape[0]}) does not match number of species in system ({self.nspecies})'
-                assert self.grid.points.shape[:3]==self.potential.shape[1:]
+                potential = np.load(fn)
+                assert potential.shape[0]==self.nspecies, f'Number of species in potential: ({potential.shape[0]}) does not match number of species in system: ({self.nspecies})'
+                assert potential.shape[1:]==self.grid.points.shape[:3], f'Spatial grid of potential: {potential.shape[1:]} does not match that of the system grid: {tuple(self.grid.npoints)}'
+                self.potential = potential
         self.potential = np.clip(self.potential, None, self.limit_potential)
         self.kpotential = self.grid.fftn(self.potential)
 
@@ -1294,19 +1294,16 @@ class ExternalPotential(Functional):
             else:
                 self.load_potential(epot_fn)
 
-
     def _generate_pot(self, host, real_guest, temperature):
         points = self.grid.points[...,:3]
         if isinstance(real_guest, SphericalLJGuest):
-            potential = real_guest.m * get_external_potential(points, host.struct, host.par, real_guest.sigma, real_guest.epsilon, host.struct, host.par, cutoff=self.cutoff)
+            potential = real_guest.m * get_external_potential(points, host.struct, host.par, real_guest.sigma, real_guest.epsilon, cutoff=self.cutoff, position_shift=True)
         elif self.interpolate:
-            potential = interpolate_effective_potential(1/temperature/boltzmann, points, host.par, host.struct, real_guest.par, real_guest.struct, self.epot_dr, 
+            potential = interpolate_effective_potential(1/temperature/boltzmann, points, host.struct, host.par, real_guest.struct, real_guest.par, self.epot_dr, 
                                     tmp_spacing=0.15*angstrom, cutoff=self.cutoff, position_shift=True, 
                                     degree=self.degree, int_method='tricubic', remove_tmp=True)
         else:
-            epot_dict = get_external_potential_dict(self.host.par, real_guest.par, self.host.struct, real_guest.struct, cutoff=self.cutoff)
-
-            potential = precalculate_effective_potential(points, 1/temperature/boltzmann, real_guest.struct, real_guest.par, epot_dict, degree=self.degree)
+            potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host.struct, host.par, real_guest.struct, real_guest.par, degree=self.degree)
         return potential
 
     def generate_potential(self, temperature=None):
@@ -1323,10 +1320,9 @@ class ExternalPotential(Functional):
         if isinstance(self.guest, GuestMixture):
             for e, real_guest in enumerate(self.guest.guests):
                 self.potential[e] = self._generate_pot(self.host, real_guest, temperature)
-                self.kpotential[e] = self.grid.fftn(self.potential[e])
         else:
             self.potential[0] = self._generate_pot(self.host, self.guest, temperature)
-            self.kpotential[0] = self.grid.fftn(self.potential[0])
+        self.kpotential = self.grid.fftn(self.potential)
 
     def dump_potential(self, fn):
         assert self.potential is not None

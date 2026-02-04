@@ -9,19 +9,19 @@ import json, zipfile, itertools
 
 from .units_constants import avogadro, planck, boltzmann, kjmol, bar, kelvin, joule, mol, angstrom, amu, convert_units
 
-from .system import System, Grid, NanoporousHost, SphericalLJGuest
+from .system import NanoporousHost
 from .program import Program
 from .free_energy import FreeEnergy
 from .functionals import WDAVFunctional, ExternalPotential
 from .eos import VanderWaalsEOS, EquationOfState
 from .log import log
-from .tools import selection_sort, bisect_left, make_supercell, get_file_suffix, Document, get_chempot_key
+from .tools import selection_sort, bisect_left, make_supercell, get_file_suffix, Document, get_chempot_key, CleanupMixin
 from .extpot_calculator import get_external_potential, get_system_data
 #log.set_level('silent')
 
 
 
-class Calculator(object):
+class Calculator(CleanupMixin):
     """
     Class to extract all information from a program instance required to compute properties derivable
     from the density (such as the loading and contributions to the free energy).
@@ -58,7 +58,7 @@ class Calculator(object):
         label : str, optional
             Optional label for identification.
         """
-        self.program = program
+        self.program = program.copy()
         self.name_dict = program.name_dict
         self.workdir = program.workdir
         self.grid = program.grid.copy()
@@ -242,7 +242,7 @@ class Calculator(object):
             Array of chemical potentials in kJ/mol.
         """
 
-        numeric_const_pattern = r'([-+]?\d*\.?\d+)(?=kJmol)'
+        numeric_const_pattern = r"([-+]?\d*\.?\d+)(?=kJmol)"
         rx = re.compile(numeric_const_pattern, re.VERBOSE)
 
         dens_list = [f.name for f in self.workdir.iterdir() if f.name.startswith('rho') and f.name.endswith(f'{temperature:#7.5f}K.npy')]

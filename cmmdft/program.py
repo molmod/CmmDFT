@@ -3,21 +3,23 @@
 
 
 from __future__ import division
+import copy as copy_module
 
-import numpy as np, sys, os, time
+import numpy as np, sys, os, time, gc
 from pathlib import Path
 
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom
 
 from .free_energy import FreeEnergy
-from .system import System, Grid, GuestMixture
+from .system import System, GuestMixture
+from .grid import Grid
 from .solver import Solver, Picard, Anderson, NoSolutionError
 from .log import log
-from .tools import find_local_maxima, find_neighbours
+from .tools import find_local_maxima, find_neighbours, CleanupMixin
 __all__ = ['Program']
 
 
-class Program(object):
+class Program(CleanupMixin):
     def __init__(self, prefix='', hostname='', guestname='', ff_suffix='', funct_suffix='', grid_suffix='', suffix='', overwrite=False, logfile=None, second_log=False, silent=False):
         '''This is the initialization function for a class that sets various attributes and creates a work
             directory if it doesn't exist.
@@ -50,7 +52,8 @@ class Program(object):
             is an optional parameter and its default value is None. If a file name is provided, the energy
             values will be written to that file during the calculation.
         '''
-        #Initializing       
+        #Initializing    
+        self._closed = False   
         self.name_dict = {'prefix':prefix, 'hostname':hostname, 'guestname':guestname, 'ff_suffix':ff_suffix, 'funct_suffix':funct_suffix, 'grid_suffix':grid_suffix, 'suffix':suffix}
 
         workdir = Path(prefix) / hostname /guestname / ff_suffix / funct_suffix / grid_suffix / suffix
@@ -72,32 +75,70 @@ class Program(object):
             self.rho_fn = None
             self.pars_fn = None
     
-    def copy(self):
-        '''Creates a copy of the current Program instance.'''
-        new_instance = Program(
-            prefix=self.name_dict['prefix'],
-            hostname=self.name_dict['hostname'],
-            guestname=self.name_dict['guestname'],
-            ff_suffix=self.name_dict['ff_suffix'],
-            funct_suffix=self.name_dict['funct_suffix'],
-            grid_suffix=self.name_dict['grid_suffix'],
-            suffix=self.name_dict['suffix'],
-            overwrite=self.overwrite,
-            logfile=None
-        )
-        new_instance.workdir = self.workdir
-        new_instance.rho_fn = self.rho_fn
-        new_instance.pars_fn = self.pars_fn
-        if hasattr(self, 'system'):
-            new_instance.system = self.system
-        if hasattr(self, 'grid'):
-            new_instance.grid = self.grid
-        if hasattr(self, 'fener'):
-            new_instance.fener = self.fener
-        if hasattr(self, 'solver'):
-            new_instance.solver = self.solver
-        return new_instance
+    # def copy(self):
+    #     '''Creates a copy of the current Program instance.'''
+    #     new_instance = Program(
+    #         prefix=self.name_dict['prefix'],
+    #         hostname=self.name_dict['hostname'],
+    #         guestname=self.name_dict['guestname'],
+    #         ff_suffix=self.name_dict['ff_suffix'],
+    #         funct_suffix=self.name_dict['funct_suffix'],
+    #         grid_suffix=self.name_dict['grid_suffix'],
+    #         suffix=self.name_dict['suffix'],
+    #         overwrite=self.overwrite,
+    #         logfile=None
+    #     )
+    #     new_instance.workdir = self.workdir
+    #     new_instance.rho_fn = self.rho_fn
+    #     new_instance.pars_fn = self.pars_fn
+    #     if hasattr(self, 'system'):
+    #         new_instance.system = self.system
+    #     if hasattr(self, 'grid'):
+    #         new_instance.grid = self.grid
+    #     if hasattr(self, 'fener'):
+    #         new_instance.fener = self.fener
+    #     if hasattr(self, 'solver'):
+    #         new_instance.solver = self.solver
+    #     return new_instance
 
+    def close(self):
+        """Close all dependent objects, then clean up self"""
+        if getattr(self, '_closed', False):
+            return
+        
+        log.dump("Closing Program and all dependencies...")
+        
+        # Close specific objects in the right order        
+        # Close system
+        if hasattr(self, 'system'):
+            self._safe_close(self.system)
+
+        # Close grid
+        if hasattr(self, 'grid'):
+            self._safe_close(self.grid)
+
+        # Close free energy functional
+        if hasattr(self, 'fener'):
+            self._safe_close(self.fener)
+
+        # Close solver
+        if hasattr(self, 'solver'):
+            self._safe_close(self.solver)
+
+        # Now clean up all remaining attributes
+        super().close()
+    
+    def _safe_close(self, obj):
+        """Safely close an object if it has a close method"""
+        if obj is not None and hasattr(obj, 'close') and callable(obj.close):
+            try:
+                obj.close()
+            except Exception as e:
+                print(f"Warning during close: {e}")
+    
+    def copy(self):
+        return copy_module.deepcopy(self)
+    
     def set_system(self, host, guest):
         self.system = System(host, guest)
     

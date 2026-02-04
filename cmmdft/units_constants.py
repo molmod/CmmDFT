@@ -1,4 +1,29 @@
-from __future__ import division
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# Copyright (C) 2019 - 2026 Louis Vanduyfhuys <Louis.Vanduyfhuys@UGent.be>
+# Center for Molecular Modeling (CMM), Ghent University, Ghent, Belgium;
+# all rights reserved unless otherwise stated.
+#
+# This file is part of a library developed by Louis Vanduyfhuys at
+# the Center for Molecular Modeling. Usage of this package should be 
+# authorized by prof. Van Vanduyfhuys.
+
+# This file has been retrieved from the MolMod package, which is/was a 
+# collection of molecular modelling tools for python.
+
+import ast
+import operator as op
+
+# define which operations among units are allowed
+ALLOWED_OPERATORS = {
+    ast.Add: op.add,
+    ast.Sub: op.sub,
+    ast.Mult: op.mul,
+    ast.Div: op.truediv,
+    ast.Pow: op.pow,
+    ast.USub: op.neg,
+}
 
 # Constants in atomic units
 boltzmann = 3.1668154051341965e-06
@@ -13,18 +38,45 @@ def parse_unit(expression):
        Argument:
         | ``expression``  --  A string containing a numerical expressions
                               including unit conversions.
-
-       In addition to the variables in this module, also the following
-       shorthands are supported:
-
     """
     try:
+        node = ast.parse(expression, mode='eval').body
         g = globals()
         g.update(shorthands)
-        return float(eval(str(expression), g))
+        return _eval_ast(node, g)
     except:
-        raise ValueError("Could not interpret '%s' as a unit or a measure." % expression)
+        raise ValueError(f"Invalid expression '{expression}'")
+    
 
+def _eval_ast(node, g):
+    '''Recursive evaluation of the string'''
+    if isinstance(node, ast.Constant):
+        return node.value
+    elif isinstance(node, ast.BinOp):
+        # evaluate a binary operation (e.g., a + b)
+        left = _eval_ast(node.left, g)
+        right = _eval_ast(node.right, g)
+        op_type = type(node.op)
+        if op_type in ALLOWED_OPERATORS:
+            return ALLOWED_OPERATORS[op_type](left, right)
+        else:
+            raise ValueError(f"Invalid operation '{op_type}'")
+    elif isinstance(node, ast.UnaryOp):
+        # evaluate a unary operation (e.g., -a)
+        operand = _eval_ast(node.operand, g)
+        op_type = type(node.op)
+        if op_type in ALLOWED_OPERATORS:
+            return ALLOWED_OPERATORS[op_type](operand)
+        else:
+            raise ValueError(f"Invalid operation '{op_type}'")
+    elif isinstance(node, ast.Name):
+        # replace variable name with its value
+        if node.id in g:
+            return g[node.id]
+        else:
+            raise ValueError(f"Unknown unit '{node.id}'")
+    else:
+        raise ValueError(f"Unsupported expression: {ast.dump(node)}")
 
 # Units in atomic units
 # *** Generic ***

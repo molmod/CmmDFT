@@ -355,7 +355,7 @@ class EquationOfState(object):
         """
         Solve EOS for density as function of chemical potential at fixed temperature.
 
-        Solves the equation: ..math:: \mu = k_B T\ln(\rho\Lambda^3) + f^N_{ex}(\rho,T) + \rho\frac{\partial f^N_{ex}}{\partial \rho}(\rho,T)
+        Solves the equation:  \mu = k_B T\ln(\rho\Lambda^3) + f^N_{ex}(\rho,T) + \rho\frac{\partial f^N_{ex}}{\partial \rho}(\rho,T)
         This is done by first defining a rough grid of densities for which the corresponding chemical potential is computed according to the above equation. This rough grid is used to bracket possible solutions who are then fed into the brentq routine of scipy.optimize to find all solutions.
         Parameters
         ----------
@@ -632,7 +632,7 @@ class EOS_MIX(EquationOfState):
         Raises
         ------
         AssertionError
-            If homogenous=False.
+            If homogeneous=False.
         ValueError
             If neither rho nor pressure is provided.
         """
@@ -677,7 +677,7 @@ class EOS_MIX(EquationOfState):
         Raises
         ------
         AssertionError
-            If homogenous=False.
+            If homogeneous=False.
         ValueError
             If neither rho nor pressure is provided.
         """
@@ -717,7 +717,7 @@ class EOS_MIX(EquationOfState):
         Raises
         ------
         AssertionError
-            If homogenous=False.
+            If homogeneous=False.
         ValueError
             If neither rho nor chempot is provided.
         """
@@ -754,7 +754,7 @@ class EOS_MIX(EquationOfState):
         Raises
         ------
         AssertionError
-            If homogenous=False.
+            If homogeneous=False.
         """
         assert self.homogeneous, 'Partial pressure calculation only supported for homogeneous mixtures'
         kT = boltzmann*self.temperature
@@ -1267,7 +1267,7 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
             Sigma parameters for components, shape (ncomp,).
         epsilon : array-like
             Epsilon parameters for components, shape (ncomp,).
-        homogenous : bool, optional
+        homogeneous : bool, optional
             If True, treat as homogeneous mixture, default True.
         x : array-like, optional
             Mole fractions, shape (ncomp,).

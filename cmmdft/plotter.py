@@ -6,9 +6,6 @@ import matplotlib.cm as cmap
 
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, parse_unit
 
-from .system import System, Grid
-from .free_energy import FreeEnergy
-from .log import log
 from .eos import ModifiedBenedictWebbRubinEOS
 
 __all__ = ['Plotter', 'MultiPlotter']

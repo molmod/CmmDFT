@@ -82,6 +82,7 @@ class CleanupMixin:
     _PRESERVE_ATTRS = set()  # Override in subclasses if needed
     
     def close(self):
+        return
         """Generic cleanup of all non-preserved attributes"""
         if getattr(self, '_closed', False):
             return

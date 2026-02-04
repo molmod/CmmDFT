@@ -7,7 +7,7 @@ from pathlib import Path
 from .units_constants import kjmol, angstrom, boltzmann, planck
 
 from .log import log
-from .system import NanoporousHost, Grid, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
+from .system import NanoporousHost, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
 from .tools import CleanupMixin
 from .functionals import *
 from .eos import *

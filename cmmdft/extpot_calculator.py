@@ -1157,6 +1157,45 @@ def precalculate_effective_potential(points, beta,host_struct, host_par, guest_s
     potential[potential_mask] = redo_potential
     return potential
 
+def precalculate_int_effective_potential(points, beta, guest_data, epot_generator_dict, 
+                                     cutoff=12*angstrom, degree=11, position_shift=True, max_size=5e+6, max_pot=200*kjmol):
+    """
+    Precalculate effective potential with adaptive refinement.
+
+    First pass uses low-degree quadrature; points with low potential
+    are refined with higher-degree quadrature. Can save a significant 
+    amount of computation time.
+
+    Parameters
+    ----------
+    points : ndarray
+        Grid points for evaluation.
+    beta : float
+        Inverse temperature.
+    guest_data : tuple
+        Guest molecule data.
+    epot_generator_dict : dict
+        Dictionary of potential generators.
+    degree : int, optional
+        Final quadrature degree, default 11.
+    max_size : float, optional
+        Batch size limit, default 5e+6.
+    max_pot : float, optional
+        Potential threshold for refinement, default 200*kjmol.
+
+    Returns
+    -------
+    ndarray
+        Refined effective potential field.
+    """    
+
+    potential = generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=3, max_size=max_size)
+    potential_mask = potential <  max_pot
+    redo_positions = points[potential_mask]
+    
+    redo_potential = generate_effective_potential(redo_positions, beta, guest_data, epot_generator_dict, degree=degree, max_size=max_size)
+    potential[potential_mask] = redo_potential
+    return potential
 
 def interpolate_effective_potential(beta, points, struct_host, hostpar, struct_guest, guestpar, tmp_epot_dr, 
                                     tmp_spacing=0.15*angstrom, cutoff=12*angstrom, position_shift=True, 
@@ -1178,7 +1217,7 @@ def interpolate_effective_potential(beta, points, struct_host, hostpar, struct_g
             epot_fn_dict[atom_name] = part_epot_fn
 
         int_dict = get_interpolator_dict(epot_fn_dict, points, np.array([0.15, 0.15, 0.15])*angstrom, int_method=int_method)
-        int_eff_pot = precalculate_effective_potential(points, beta, guest_data, int_dict, degree=degree)
+        int_eff_pot = precalculate_int_effective_potential(points, beta, guest_data, int_dict, degree=degree)
 
         if remove_tmp:
             for atom in range(len(guest_ff_dict)):
@@ -1296,7 +1335,7 @@ def get_system_data(struct_fn, pars_fn, position_shift=True):
     struct_fn = Path(struct_fn)
     pars_fn = Path(pars_fn)
     if struct_fn.suffix == '.chk' and pars_fn.suffix=='.txt':
-        return _get_system_data_chk(struct_fn, pars_fn, position_shift=position_shift)
+        return _get_system_data_chk(str(struct_fn), str(pars_fn), position_shift=position_shift)
     elif struct_fn.suffix=='.pdb' and pars_fn.suffix=='.xml':
         return _get_system_data_from_pdb_xml(struct_fn, pars_fn, position_shift=position_shift)
     else:

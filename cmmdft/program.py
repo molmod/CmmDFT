@@ -102,6 +102,7 @@ class Program(CleanupMixin):
     #     return new_instance
 
     def close(self):
+        return
         """Close all dependent objects, then clean up self"""
         if getattr(self, '_closed', False):
             return

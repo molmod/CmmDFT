@@ -402,11 +402,12 @@ class Grid(object):
                     self.npoints = npoints
             self.npoints = np.array(self.npoints)
             self.suffix = '_'.join("%d"%n for n in self.npoints)
-            self.spacings = [            
+            spacings = [            
                 np.linalg.norm(self.cell.rvecs[:,0])/self.npoints[0],
                 np.linalg.norm(self.cell.rvecs[:,1])/self.npoints[1],
                 np.linalg.norm(self.cell.rvecs[:,2])/self.npoints[2],
             ]
+            self.spacings = np.array(spacings)
             log.dump('  number of grid points  =  %4i,  %4i,  %4i' %(self.npoints[0],self.npoints[1],self.npoints[2]))
             log.dump('  spacing of grid points = %.3f, %.3f, %.3f A' %(self.spacings[0]/angstrom,self.spacings[1]/angstrom,self.spacings[2]/angstrom))
             # Volume of one volume element, useful for integrations and FFTs

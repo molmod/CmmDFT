@@ -348,13 +348,13 @@ def _compute_vext_derivatives(points, host_pos, sigma_mixed, epsilon_mixed, rvec
                 dV = 24 * eps_i * (r6 - 2 * r12) / R**2
                 ddV = 96 * eps_i * (7 * r12 - 2 * r6) / R**4
                 dddV = 384 * eps_i * (5 * r6 - 28 * r12) / R**6
-                accx += dV * rx
-                accy += dV * ry
-                accz += dV * rz
-                accxy += ddV * rx * ry
-                accxz += ddV * rx * rz
-                accyz += ddV * ry * rz
-                accxyz += dddV * rx * ry * rz
+                accx += dV * dx
+                accy += dV * dy
+                accz += dV * dz
+                accxy += ddV * dx * dy
+                accxz += ddV * dx * dz
+                accyz += ddV * dy * dz
+                accxyz += dddV * dx * dy * dz
         Vext[p] = acc
         dVdx[p] = accx
         dVdy[p] = accy
@@ -595,7 +595,7 @@ def get_external_potential_derivatives_jit(points, host_data, FF_dict, sigmaff, 
     points_shape = points.shape
     points = points.reshape(-1,3)
     # Call the numba-parallel kernel once for all atoms
-    Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz  = _compute_vext_derivatives(points, host_pos, sigma_mixed_arr, epsilon_mixed_arr, rvecs, inv_rvecs, cutoff, spacings)
+    Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz  = _compute_vext_derivatives(points, host_pos, sigma_mixed_arr, epsilon_mixed_arr, rvecs, inv_rvecs, cutoff, np.array(spacings))
     return np.array([ Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz]).reshape((8,)+points_shape[:-1])
 
 def compute_batch_insertion_energy_typed(
@@ -1384,7 +1384,7 @@ def read_pars_file_dict(pars_file):
         FF_dict[atom] = (sigma, epsilon)
     return FF_dict
 
-def get_system_data(chk_fn, pars_file):
+def get_system_data(chk_fn, pars_file, position_shift=False):
     """
     Extract system data and force field parameters from checkpoint (.chk) and pars files.
 
@@ -1404,6 +1404,8 @@ def get_system_data(chk_fn, pars_file):
     """
     kwargs = load_chk(chk_fn)
     pos = kwargs['pos']
+    if position_shift:
+        pos -= np.mean(pos, axis=0)
     masses = kwargs['masses']
     ffatypes = list(kwargs['ffatypes'])
     ffatype_ids = kwargs['ffatype_ids']

@@ -8,7 +8,6 @@ from .units_constants import kjmol, angstrom, boltzmann, planck
 
 from .log import log
 from .system import NanoporousHost, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
-from .tools import CleanupMixin
 from .functionals import *
 from .eos import *
 
@@ -16,7 +15,7 @@ __all__ = [
     'FreeEnergy'
     ]
 
-class FreeEnergy(CleanupMixin):
+class FreeEnergy(object):
     def __init__(self, grid, system, temperature, workdir='.', name_dict={}, overwrite=False):
         self.grid = grid
         self.system = system

@@ -14,12 +14,11 @@ import json
 
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck, amu, parse_unit
 
-from .tools import CleanupMixin
 from .log import log
 
 __all__ = ['Cell', 'Grid']
 
-class Grid(CleanupMixin):
+class Grid(object):
     def __init__(self, cell, npoints=None, spacing=0.25*angstrom, shift=True):
         """
             cell
@@ -199,7 +198,7 @@ class Grid(CleanupMixin):
             return F.real * np.prod(npoints)
         
 
-class Cell(CleanupMixin):
+class Cell(object):
     def __init__(self, rvecs):
         self.rvecs = rvecs
         self._update_cached_quantities()

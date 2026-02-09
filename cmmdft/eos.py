@@ -21,7 +21,7 @@ __all__ = [
     'CarnahanStarlingEOS', 'CarnahanStarlingMixEOS', 
     'MFAEOS', 'MFAMixEOS', 
     'MFMT_MFA_EOS', 
-    'PCSAFT_EOS', 'PCSAFT_MIX_EOS'
+    'PCSAFTEOS', 'PCSAFTMixEOS'
 ]
 
 class EquationOfState(object):
@@ -352,7 +352,7 @@ class EquationOfState(object):
         return np.logspace(-10,0,npoints)/angstrom**3
     
     def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000):    
-        """
+        r"""
         Solve EOS for density as function of chemical potential at fixed temperature.
 
         Solves the equation:  \mu = k_B T\ln(\rho\Lambda^3) + f^N_{ex}(\rho,T) + \rho\frac{\partial f^N_{ex}}{\partial \rho}(\rho,T)
@@ -407,7 +407,7 @@ class EquationOfState(object):
         return densities
 
     def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000):
-        """
+        r"""
         Solve EOS for density as function of pressure at fixed temperature.
 
         Solves the equation: ..math:: p = k_B T\rho + \rho^2\frac{\partial^2 f^N_{ex}}{\partial \rho^2}(\rho,T)
@@ -461,7 +461,7 @@ class EquationOfState(object):
         return densities
 
     def find_critical_point(self, rho_scale=1.0/angstrom**3, T_scale=kelvin, p_scale=kjmol/angstrom, rho_red_init=0.0005, T_red_init=300, rho_red_upper=np.inf, T_red_upper=np.inf):
-        """
+        r"""
         Critical point is defined as the point where both dP/dV and d2P/dV2 are zero. In terms of the excess free energy per volume, this criterion becomes:
 
             rho    \frac{\partial^2 f_V}{\partial \rho^2} &= -kT
@@ -2060,7 +2060,7 @@ b_constants = np.array([
     [-355.60235612, -165.20769346, -29.666905585]
 ])
 
-class PCSAFT_EOS(EquationOfState):
+class PCSAFTEOS(EquationOfState):
     """
     Perturbed Chain Statistical Associating Fluid Theory (PC-SAFT) EOS.
     
@@ -2137,7 +2137,7 @@ class PCSAFT_EOS(EquationOfState):
 
         Returns
         -------
-        PCSAFT_EOS
+        PCSAFTEOS
             Instance of PC-SAFT EOS.
         """
         mass = guest.mass
@@ -2446,7 +2446,7 @@ class PCSAFT_EOS(EquationOfState):
         raise NotImplementedError('Third derivative not implemented for PC-SAFT EOS')
 
 
-class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
+class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
     
     """
     PC-SAFT EOS for homogeneous mixtures.
@@ -2537,7 +2537,7 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
 
         Returns
         -------
-        PCSAFT_MIX_EOS
+        PCSAFTMixEOS
             Instance of PC-SAFT mixture EOS.
         """
         mass = guest.mass

@@ -13,7 +13,6 @@ from .units_constants import boltzmann, kjmol, angstrom, kcalmol, amu, gram, cen
 
 __all__ = [
     'selection_sort', 'bisect_left', 'get_file_suffix',
-    'CleanupMixin', 'DeepCleanupMixin',
     'find_local_maxima', 'find_neighbours'
     'potential_from_mfa', 'make_supercell',
     'atoms_from_chk', 'load_chk'
@@ -57,6 +56,7 @@ def bisect_left(a, x, lo=0, hi=None, *, key=None):
     return lo
 
 def get_file_suffix(chempot, temp):
+    print(chempot)
     if hasattr(chempot, '__iter__'):
         file_suff = ''
         for mu in chempot:
@@ -75,117 +75,6 @@ def get_chempot_key(chempot):
     else:
         chempot_key = f'{chempot:#0.8f}'
     return chempot_key
-
-class CleanupMixin:
-    """Mixin to provide automatic cleanup for any class"""
-    
-    _PRESERVE_ATTRS = set()  # Override in subclasses if needed
-    
-    def close(self):
-        pass
-        """Generic cleanup of all non-preserved attributes"""
-        if getattr(self, '_closed', False):
-            return
-        
-        for attr_name in list(vars(self).keys()):
-            # Skip private/protected attributes and preserved ones
-            if (attr_name.startswith('_') or 
-                attr_name in getattr(self, '_PRESERVE_ATTRS', set())):
-                continue
-            
-            try:
-                attr = getattr(self, attr_name)
-                
-                # Try to close if it has a close method
-                if hasattr(attr, 'close') and callable(attr.close):
-                    attr.close()
-                
-                # Clear large numpy arrays explicitly
-                if isinstance(attr, np.ndarray):
-                    del attr
-                
-                # Clear lists/dicts containing large objects
-                if isinstance(attr, (list, dict)):
-                    if isinstance(attr, list):
-                        attr.clear()
-                    elif isinstance(attr, dict):
-                        attr.clear()
-            except Exception:
-                pass
-            try:
-                # Set to None
-                setattr(self, attr_name, None)
-                
-            except Exception:
-                # Only warn on unexpected errors
-                pass
-            
-        self._closed = True
-    
-    def __enter__(self):
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-        return False
-    
-    def __del__(self):
-        self.close()
-
-class DeepCleanupMixin:
-    """Mixin with recursive cleanup for nested objects"""
-    
-    def close(self, _depth=0, _max_depth=3):
-        """Recursively clean up object graph"""
-        if getattr(self, '_closed', False) or _depth > _max_depth:
-            return
-        
-        for attr_name in list(vars(self).keys()):
-            if attr_name.startswith('_'):
-                continue
-            
-            try:
-                attr = getattr(self, attr_name, None)
-                if attr is None:
-                    continue
-                
-                # Close if possible
-                if hasattr(attr, 'close') and callable(attr.close):
-                    if isinstance(attr, DeepCleanupMixin):
-                        attr.close(_depth=_depth+1, _max_depth=_max_depth)
-                    else:
-                        attr.close()
-                
-                # Handle collections
-                if isinstance(attr, list):
-                    for item in attr:
-                        if hasattr(item, 'close'):
-                            item.close()
-                    attr.clear()
-                elif isinstance(attr, dict):
-                    for item in attr.values():
-                        if hasattr(item, 'close'):
-                            item.close()
-                    attr.clear()
-                
-                # Clear reference
-                setattr(self, attr_name, None)
-                
-            except AttributeError:
-                # Attribute doesn't exist anymore, skip
-                pass
-            except Exception as e:
-                # Only warn on unexpected errors
-                print(f"Warning: couldn't clean up {attr_name}: {type(e).__name__}: {e}")
-        
-        self._closed = True
-    
-    def __enter__(self):
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-        return False
 
 # def calculate_along_diffusion(ff, grid, ring_indices, natom, step_dist, cvs_limits=None, beta=1/boltzmann/300, degree=9):
 #     '''

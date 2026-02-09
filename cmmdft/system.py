@@ -12,7 +12,7 @@ import json
 
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck, amu, parse_unit
 from .grid import Cell
-from .tools import atoms_from_chk, CleanupMixin
+from .tools import atoms_from_chk
 from .extpot_calculator import get_system_data
 from .log import log
 
@@ -24,7 +24,7 @@ __all__ = ['System',
            ]
 
 
-class System(CleanupMixin):
+class System(object):
     def __init__(self, host, guest):
         '''This is a constructor function that initializes the "host" and "guest" attributes of an object.
         
@@ -56,7 +56,7 @@ class System(CleanupMixin):
     def copy(self):
         return copy_module.deepcopy(self)
 
-class Host(CleanupMixin):
+class Host(object):
     def __init__(self, name, cell):
         self.name = name
         self.cell = cell
@@ -115,7 +115,7 @@ class EmptyHost(Host):
             Host.__init__(self, name, cell)
 
 
-class Guest(CleanupMixin):
+class Guest(object):
     def __init__(self, name, mass, ffname=''):
         self.name = name
         self.mass = mass
@@ -221,7 +221,7 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)
 
 
-class GuestMixture(CleanupMixin):
+class GuestMixture(Guest, object):
     def __init__(self, guests, fractions, k_inter=None):
         self.names = [guest.name for guest in guests]
         self.guests = guests

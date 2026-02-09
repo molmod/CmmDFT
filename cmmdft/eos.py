@@ -21,7 +21,7 @@ __all__ = [
     'CarnahanStarlingEOS', 'CarnahanStarlingMixEOS', 
     'MFAEOS', 'MFAMixEOS', 
     'MFMT_MFA_EOS', 
-    'PCSAFT_EOS', 'PCSAFT_MIX_EOS'
+    'PCSAFTEOS', 'PCSAFTMixEOS'
 ]
 
 class EquationOfState(object):
@@ -134,12 +134,25 @@ class EquationOfState(object):
         
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmin(rho, axis=1)
+            rho = np.nanmax(rho, axis=1)
             return self.compute_chempot(rho=rho, temperature=self.temperature)
         else:
             raise ValueError('Either rho or pressure must be provided')
+        
+    def gibbs_free_energy_per_particle(self, rho, pressure):
+        """Compute g = f + P/rho"""
+        f = self.excess_free_energy_particle(rho)  # f_ex
+        kT = boltzmann * self.temperature
+        return kT * np.log(rho) + f + pressure / rho
     
-    
+    def grand_potential(self, rho, mu):
+        kT = boltzmann * self.temperature
+        f_ex = self.excess_free_energy_particle(rho)
+        f_ideal = kT * np.log(self.wvl**3 * rho)
+        f_total = f_ideal + f_ex
+        # Grand potential per unit volume: omega = f - mu*rho
+        return f_total * rho - mu * rho
+
     def compute_excess_chempot(self, rho=None, pressure=None, temperature=None):
         """
         Compute the excess chemical potential (non-ideal contribution), input can be densities or pressures
@@ -174,7 +187,7 @@ class EquationOfState(object):
             return self.derivative_excess_free_energy_volume(rho)
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmin(rho, axis=1)
+            rho = np.nanmax(rho, axis=1)
             return self.compute_excess_chempot(rho=rho, temperature=self.temperature)
         else:
             raise ValueError('Either rho or pressure must be provided')
@@ -264,7 +277,7 @@ class EquationOfState(object):
             return self.P_ref * np.exp((chempot-self.mu_ref)/(kT))
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmin(rho, axis=1)
+            rho = np.nanmax(rho, axis=1)
             mu = self.compute_chempot(rho)
             
             if not hasattr(self, 'P_ref'):
@@ -352,7 +365,7 @@ class EquationOfState(object):
         return np.logspace(-10,0,npoints)/angstrom**3
     
     def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000):    
-        """
+        r"""
         Solve EOS for density as function of chemical potential at fixed temperature.
 
         Solves the equation:  \mu = k_B T\ln(\rho\Lambda^3) + f^N_{ex}(\rho,T) + \rho\frac{\partial f^N_{ex}}{\partial \rho}(\rho,T)
@@ -403,11 +416,14 @@ class EquationOfState(object):
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
             if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
-            densities[i,:len(solutions)] = np.array(sorted(solutions))
+            if len(solutions) > 0:
+                stable_solutions = self.filter_stable_phases_chempot(solutions, mu)
+                densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
+                
         return densities
 
     def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000):
-        """
+        r"""
         Solve EOS for density as function of pressure at fixed temperature.
 
         Solves the equation: ..math:: p = k_B T\rho + \rho^2\frac{\partial^2 f^N_{ex}}{\partial \rho^2}(\rho,T)
@@ -446,7 +462,8 @@ class EquationOfState(object):
                         density_intervals[i] = [interval]
                     else:
                         density_intervals[i].append(interval)
-        #for each chemical potential, find a solution in each proposed interval using the brentq method
+                        
+        #for each pressure, find a solution in each proposed interval using the brentq method
         densities = np.zeros([len(pressures), 3])*np.nan
         for i,p in enumerate(pressures):
             solutions = []
@@ -457,11 +474,106 @@ class EquationOfState(object):
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
             if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
-            densities[i,:len(solutions)] = np.array(sorted(solutions))
+            if len(solutions) > 0:
+                stable_solutions = self.filter_stable_phases_pressure(solutions, p)
+                densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
+                
         return densities
+    
+    def filter_stable_phases_pressure(self, densities, pressure, g_tolerance=1e-6):
+        """
+        Filter density solutions to keep only thermodynamically stable phases.
+        
+        At equilibrium, phases with the lowest Gibbs free energy are stable.
+        This method keeps the solution with minimum Gibbs energy, plus any
+        metastable solutions within g_tolerance.
+        
+        Parameters
+        ----------
+        densities : list
+            List of density solutions at the same pressure
+        pressure : float
+            Pressure in bar
+        g_tolerance : float, optional
+            Relative tolerance for identifying metastable states, default 1e-6
+            
+        Returns
+        -------
+        list
+            Filtered list of stable/metastable densities
+        """
+        if len(densities) == 0:
+            return []
+        
+        # Compute Gibbs free energy for each solution
+        gibbs_energies = []
+        for rho in densities:
+            g = self.gibbs_free_energy_per_particle(rho, pressure)
+            gibbs_energies.append((rho, g))
+        
+        # Find minimum Gibbs energy
+        g_min = min(g for _, g in gibbs_energies)
+        
+        # Keep solutions with Gibbs energy close to minimum
+        # This allows for metastable phases while filtering spurious solutions
+        stable_densities = []
+        for rho, g in gibbs_energies:
+            if abs(g - g_min) / abs(g_min) < g_tolerance or g <= g_min * (1 + g_tolerance):
+                stable_densities.append(rho)
+        
+        return stable_densities
+
+    def filter_stable_phases_chempot(self, densities, chempot, f_tolerance=1e-6):
+        """
+        Filter density solutions to keep only thermodynamically stable phases
+        for a given chemical potential.
+        
+        At equilibrium with fixed chemical potential and temperature, phases 
+        with the lowest Helmholtz free energy (grand potential = -PV) are stable.
+        
+        Parameters
+        ----------
+        densities : list
+            List of density solutions at the same chemical potential
+        chempot : float
+            Chemical potential in atomic units (Hartree)
+        f_tolerance : float, optional
+            Relative tolerance for identifying metastable states, default 1e-6
+            
+        Returns
+        -------
+        list
+            Filtered list of stable/metastable densities
+        """
+        if len(densities) == 0:
+            return []
+        
+        kT = boltzmann * self.temperature
+        
+        # Compute grand potential density (omega = f - mu*rho) for each solution
+        # The stable phase minimizes omega
+        grand_potentials = []
+        for rho in densities:
+            f_ex = self.excess_free_energy_particle(rho)
+            f_ideal = kT * np.log(self.wvl**3 * rho)
+            f_total = f_ideal + f_ex
+            # Grand potential per unit volume: omega = f - mu*rho
+            omega = f_total * rho - chempot * rho
+            grand_potentials.append((rho, omega))
+        
+        # Find minimum grand potential
+        omega_min = min(omega for _, omega in grand_potentials)
+        
+        # Keep solutions with grand potential close to minimum
+        stable_densities = []
+        for rho, omega in grand_potentials:
+            if abs(omega - omega_min) / abs(omega_min) < f_tolerance or omega <= omega_min * (1 + f_tolerance):
+                stable_densities.append(rho)
+        
+        return stable_densities
 
     def find_critical_point(self, rho_scale=1.0/angstrom**3, T_scale=kelvin, p_scale=kjmol/angstrom, rho_red_init=0.0005, T_red_init=300, rho_red_upper=np.inf, T_red_upper=np.inf):
-        """
+        r"""
         Critical point is defined as the point where both dP/dV and d2P/dV2 are zero. In terms of the excess free energy per volume, this criterion becomes:
 
             rho    \frac{\partial^2 f_V}{\partial \rho^2} &= -kT
@@ -611,6 +723,14 @@ class EOS_MIX(EquationOfState):
         """
         raise NotImplementedError
 
+    def grand_potential(self, rho, mu):
+        kT = boltzmann * self.temperature
+        f_ex = self.excess_free_energy_particle(rho)
+        f_ideal = kT * np.log(self.wvl**3 * rho)
+        f_total = f_ideal + f_ex
+        # Grand potential per unit volume: omega = f - mu*rho
+        return f_total * rho - np.sum(mu * (rho[np.newaxis,...]*self.x), axis=0)
+
     def compute_chempot(self, rho=None, pressure=None, temperature=None):
         """
         Compute chemical potentials for mixture components, from densities of pressures.
@@ -651,7 +771,7 @@ class EOS_MIX(EquationOfState):
             return ideal.T + excess_mu
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmin(rho, axis=1)
+            rho = np.nanmax(rho, axis=1)
             return self.compute_chempot(rho=rho, temperature=self.temperature)
         else:
             raise ValueError('Either rho or pressure must be provided')
@@ -693,7 +813,7 @@ class EOS_MIX(EquationOfState):
             return (a + rho_sum*da_drhoi).T
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmin(rho, axis=1)
+            rho = np.nanmax(rho, axis=1)
             return self.compute_excess_chempot(rho=rho, temperature=self.temperature)
     
     def compute_pressure(self, rho=None, chempot=None, temperature=None):
@@ -734,7 +854,7 @@ class EOS_MIX(EquationOfState):
             return kT*rho_sum + rho_sum**2*self.derivative_excess_free_energy_particle(rho_sum)
         elif chempot is not None:
             rho = self.solve_densities_from_chempots(chempot)
-            rho = np.nanmin(rho, axis=1)
+            rho = np.nanmax(rho, axis=1)
             return self.compute_pressure(rho=rho, temperature=self.temperature)
     
     def compute_partial_pressure(self, rho):
@@ -827,6 +947,39 @@ class EOS_MIX(EquationOfState):
             if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
             densities[i,:len(solutions)] = np.array(sorted(solutions))
         return densities
+    
+    def filter_stable_phases_chempot(self, densities, chempot, tolerance=1e-6):
+        """
+        Filter solutions for mixture - keep phase with lowest thermodynamic potential.
+        
+        Parameters
+        ----------
+        densities : list
+            List of density solutions (each can be array for mixture components)
+        pressure_or_chempot : float or array
+            Pressure (scalar) or chemical potentials (array for each component)
+        is_pressure : bool
+            True for P-based solving, False for μ-based solving
+        """
+        if len(densities) == 0:
+            return []
+        
+        potentials = []
+        for rho in densities:
+            # Grand potential approach
+            g = self.grand_potential(rho, chempot)
+            potentials.append((rho, g))
+        
+        # Find minimum
+        g_min = min(g for _, g in potentials)
+        
+        # Keep solutions near minimum
+        stable = []
+        for rho, g in potentials:
+            if abs(g - g_min) / abs(g_min) < tolerance or g <= g_min * (1 + tolerance):
+                stable.append(rho)
+        
+        return stable
 
 class SumOfEOS(EquationOfState):
     """
@@ -2060,7 +2213,7 @@ b_constants = np.array([
     [-355.60235612, -165.20769346, -29.666905585]
 ])
 
-class PCSAFT_EOS(EquationOfState):
+class PCSAFTEOS(EquationOfState):
     """
     Perturbed Chain Statistical Associating Fluid Theory (PC-SAFT) EOS.
     
@@ -2137,7 +2290,7 @@ class PCSAFT_EOS(EquationOfState):
 
         Returns
         -------
-        PCSAFT_EOS
+        PCSAFTEOS
             Instance of PC-SAFT EOS.
         """
         mass = guest.mass
@@ -2349,7 +2502,7 @@ class PCSAFT_EOS(EquationOfState):
         ndarray
             Density grid.
         """
-        log_start = -10
+        log_start = -15
         log_end = np.min(np.log(angstrom**3/(np.pi/6*self.m*self.dhs**3))/np.log(10)-0.01)
         return np.logspace(log_start, log_end, npoints)/angstrom**3
 
@@ -2426,6 +2579,9 @@ class PCSAFT_EOS(EquationOfState):
             fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
         fchain = self._chain_contribution(zeta2, zeta3)
         fdisp = self._dispersion_contribution(rho, eta)
+        # print('Hard Sphere', fhs*boltzmann*self.temperature/kjmol)
+        # print('Hard Chain', fchain*boltzmann*self.temperature/kjmol)
+        # print('Dispersion', fdisp*boltzmann*self.temperature/kjmol)
         return boltzmann*self.temperature*(fhs + fchain + fdisp)
     
     def derivative_excess_free_energy_particle(self, rho):
@@ -2437,6 +2593,7 @@ class PCSAFT_EOS(EquationOfState):
             dfhs = self.m_mix*self._derivative_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
         dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
         dfdisp = self._derivative_dispersion_contribution(rho, eta)
+        
         return boltzmann*self.temperature*(dfhs + dfchain + dfdisp)
 
     def derivative2_excess_free_energy_particle(self, rho):
@@ -2446,7 +2603,7 @@ class PCSAFT_EOS(EquationOfState):
         raise NotImplementedError('Third derivative not implemented for PC-SAFT EOS')
 
 
-class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
+class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
     
     """
     PC-SAFT EOS for homogeneous mixtures.
@@ -2537,7 +2694,7 @@ class PCSAFT_MIX_EOS(PCSAFT_EOS, EOS_MIX):
 
         Returns
         -------
-        PCSAFT_MIX_EOS
+        PCSAFTMixEOS
             Instance of PC-SAFT mixture EOS.
         """
         mass = guest.mass

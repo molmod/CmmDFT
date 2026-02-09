@@ -11,15 +11,16 @@ from pathlib import Path
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom
 
 from .free_energy import FreeEnergy
-from .system import System, GuestMixture
+from .system import System, GuestMixture, Guest
 from .grid import Grid
 from .solver import Solver, Picard, Anderson, NoSolutionError
 from .log import log
-from .tools import find_local_maxima, find_neighbours, CleanupMixin
+from .tools import find_local_maxima, find_neighbours, get_file_suffix
+from .eos import *
 __all__ = ['Program']
 
 
-class Program(CleanupMixin):
+class Program(object):
     def __init__(self, prefix='', hostname='', guestname='', ff_suffix='', funct_suffix='', grid_suffix='', suffix='', overwrite=False, logfile=None, second_log=False, silent=False):
         '''This is the initialization function for a class that sets various attributes and creates a work
             directory if it doesn't exist.
@@ -101,43 +102,6 @@ class Program(CleanupMixin):
     #         new_instance.solver = self.solver
     #     return new_instance
 
-    def close(self):
-        pass
-        # with log.section('PROGRAM', 1, timer=None):
-        #     """Close all dependent objects, then clean up self"""
-        #     if getattr(self, '_closed', False):
-        #         return
-            
-        #     log.dump("Closing Program and all dependencies...")
-            
-        #     # Close specific objects in the right order        
-        #     # Close system
-        #     # if hasattr(self, 'system'):
-        #     #     self._safe_close(self.system)
-
-        #     # Close grid
-        #     if hasattr(self, 'grid'):
-        #         self._safe_close(self.grid)
-
-        #     # Close free energy functional
-        #     if hasattr(self, 'fener'):
-        #         self._safe_close(self.fener)
-
-        #     # Close solver
-        #     if hasattr(self, 'solver'):
-        #         self._safe_close(self.solver)
-
-        #     # # Now clean up all remaining attributes
-        #     # super().close()
-    
-    def _safe_close(self, obj):
-        """Safely close an object if it has a close method"""
-        if obj is not None and hasattr(obj, 'close') and callable(obj.close):
-            try:
-                obj.close()
-            except Exception as e:
-                print(f"Warning during close: {e}")
-    
     def copy(self):
         return copy_module.deepcopy(self)
     
@@ -159,7 +123,38 @@ class Program(CleanupMixin):
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
         self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, shift=shift)
-    
+
+    def set_eos(self, eosname):
+        with log.section('PROGRAM', 1, timer='Initializing'):
+            assert self.system is not None, "Host and guest must be set using set_system"
+            assert isinstance(self.system.guest, Guest), "Guest attribute must be Guest class"
+            assert eosname in ['MBWR', 'CS', 'MFA', 'PCSAFT']
+            guest = self.system.guest
+            if eosname == 'MBWR':
+                if isinstance(guest, GuestMixture):
+                    self.eos = ModifiedBenedictWebbRubinMixEOS.from_guest(guest)
+                else:
+                    self.eos = ModifiedBenedictWebbRubinEOS.from_guest(guest)
+            elif eosname == 'CS':
+                if isinstance(guest, GuestMixture):
+                    self.eos = CarnahanStarlingMixEOS.from_guest(guest)
+                else:
+                    self.eos = CarnahanStarlingEOS.from_guest(guest)
+            elif eosname == 'MFA':
+                if isinstance(guest, GuestMixture):
+                    self.eos = MFAMixEOS.from_guest(guest)
+                else:
+                    self.eos = MFAEOS.from_guest(guest)
+            elif eosname == 'PCSAFT':
+                if isinstance(guest, GuestMixture):
+                    self.eos = PCSAFTMixEOS.from_guest(guest)
+                else:
+                    self.eos = PCSAFTEOS.from_guest(guest)
+            else:
+                raise ValueError('Unable to set eos')
+            log.dump(f'eos set to {eosname}')
+
+
     def init_free_energy(self, temperature):
         '''This function initializes the FreeEnergy object of a program at a given temperature.
             
@@ -181,7 +176,8 @@ class Program(CleanupMixin):
         assert self.grid is not None, "Grid must first be set using 'set_grid'"
         assert isinstance(self.grid, Grid), "self.grid is not an instance of Grid, aborting!"
         self.fener = FreeEnergy(self.grid, self.system, temperature, workdir=self.workdir, overwrite=self.overwrite, name_dict=self.name_dict)
-    
+        if hasattr(self, 'eos'): self.eos.set_temperature(temperature)
+
     def set_temperature(self, temperature):
         '''This function sets the temperature for a FreeEnergy object.
             
@@ -266,7 +262,7 @@ class Program(CleanupMixin):
         self.mask_empty = (~energy_mask)*(~range_mask)*(~self.mask_mof)
         return self.mask_site, self.mask_mof, self.mask_empty    
 
-    def _set_initial_density(self, Ninit=None, chempot=None, rewrite=False, Temp=None, silent=False):
+    def _set_initial_density(self, Ninit=None, chempot=None, rewrite=False, silent=False):
         """
             Sets the initial density for the solving of the cDFT calculation
 
@@ -286,7 +282,18 @@ class Program(CleanupMixin):
             if self.rho_fn is not None and os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite:
                 log.dump('Reading initial guess for density from %s' %self.rho_fn)
                 self.rho0 = np.load(self.rho_fn)
-            else:
+            else:                        
+                index = None
+                for partname in self.fener.part_names:
+                    if 'ExtPot' in partname:
+                        index = self.fener.part_names.index(partname)
+                if index is not None:
+                    epot_data = self.fener.parts[index].potential
+                    epot_pos = np.maximum(epot_data, 0)
+                    epot_factor = np.exp(-epot_pos/boltzmann/self.fener.temperature)
+                else:
+                    epot_factor = np.ones(rho_shape)    
+
                 if Ninit is not None:
                     if isinstance(Ninit, str) or isinstance(Ninit, Path):
                         if Path(Ninit).is_file():
@@ -295,50 +302,52 @@ class Program(CleanupMixin):
                         else:
                             raise FileNotFoundError('File %s for setting initial density not found' %Ninit)
                     elif isinstance(Ninit, float):
-                        index = None
-                        for partname in self.fener.part_names:
-                            if 'ExtPot' in partname:
-                                index = self.fener.part_names.index(partname)
-                        if index is not None:
-                            epot_data = self.fener.parts[index].potential
-                            epot_pos = np.maximum(epot_data, 0)
-                            self.rho0 = Ninit*np.exp(-epot_pos/boltzmann/Temp)
-                            log.dump('Setting initial guess for density at %.3e/cellvolume in pores' %Ninit)
-                        else:
-                            log.dump('Setting initial guess for density at %.3e/cellvolume' %(Ninit*self.system.host.cell.volume))
-                            self.rho0 = np.full(rho_shape, Ninit)  
+                        self.rho0 = Ninit*epot_factor
+                        log.dump('Setting initial guess for density at %.3e/cellvolume in pores' %Ninit)
                     elif isinstance(Ninit, np.ndarray):
                         if Ninit.ndim == 1:
                             assert len(Ninit) == self.system.guest.nspecies, 'Ninit must have the same length as the number of components'
                             Ninit_grid = np.array([Ninit[i]*np.ones(self.grid.npoints) for i in range(self.system.guest.nspecies)])
-                            index = None
-                            for partname in self.fener.part_names:
-                                if 'ExtPot' in partname:
-                                    index = self.fener.part_names.index(partname)
-                            if index is not None:
-                                epot_data = self.fener.parts[index].potential
-                                epot_pos = np.maximum(epot_data, 0)
-                                self.rho0 = Ninit_grid*np.exp(-epot_pos/boltzmann/Temp)
-                                log.dump('Setting initial guess for density at %.3e and %.3e per cellvolume in pores' %(Ninit[0], Ninit[1]))
-                            else:
-                                log.dump('Setting initial guess for density at %.3e and %.3e per cellvolume' %(Ninit[0]*self.system.host.cell.volume, Ninit[1]*self.system.host.cell.volume))
-                                self.rho0 = Ninit_grid
+                            self.rho0 = Ninit_grid*epot_factor
+                            Ninit_str = ''
+                            for Ni in Ninit:
+                                Ninit_str += '%.3e, ' %Ni
+                            log.dump(f'Setting initial guess for density at {Ninit_str} per cellvolume in pores')
                         else:
                             assert Ninit.shape == tuple(rho_shape), 'Ninit must have the same shape as the grid'
                             log.dump('Setting initial guess for density from array')
                             self.rho0 = Ninit
                 else:
-                    log.dump('Setting initial guess for density from ideal gas at chempot = %.3f kJ/mol' %(chempot/kjmol))
-                    index = None
-                    for partname in self.fener.part_names:
-                        if 'ExtPot' in partname:
-                            index = self.fener.part_names.index(partname)
-                    if index is not None:
-                        epot_data = self.fener.parts[index].potential        
+                    if chempot.ndim == 1:
+                        chempot_str = ', '.join([f'{ch/kjmol:0.3f}' for ch in chempot])
                     else:
-                        epot_data = np.zeros(rho_shape)          
-                    self.rho0 = np.exp(self.fener.beta*(chempot-epot_data))/self.fener.wavelength**3
-                    
+                        chempot_str = f'{chempot/kjmol:0.3f}'
+                            
+                    log.dump('Setting initial guess for density from ideal gas at chempot = %s kJ/mol' %(chempot_str))      
+                    self.rho0 = np.exp(self.fener.beta*(chempot))/self.fener.wavelength**3*epot_factor
+
+    def _initial_thermodynamic_conditions(self, chempot=None, pressure=None, bulk_density=None):
+        assert hasattr(self, 'eos'), 'eos attribute must be initialized'
+        assert (chempot is not None) or (pressure is not None) or (bulk_density is not None), 'Either, chemical potential, pressure, or bulk density must be provided'
+        if bulk_density is not None:
+            assert isinstance(bulk_density, float), 'Bulk density must represent the sum of the gas densities'
+            chempot = self.eos.compute_chempot(rho=bulk_density, temperature=self.fener.temperature)[0]
+            rho = bulk_density
+        elif chempot is not None:
+            if isinstance(self.system.guest, GuestMixture):
+                assert len(chempot) == self.system.guest.nspecies, 'A chemical potential must be given for each gas specie present'
+            rho = self.eos.solve_densities_from_chempots([chempot])[0]
+        
+        elif pressure is not None:
+            chempot = self.eos.compute_chempot(pressure=pressure, temperature=self.fener.temperature)[0]
+            rho = self.eos.solve_densities_from_pressures([pressure])
+        rho_bulk = np.nanmin(rho)
+        
+        if isinstance(self.system.guest, GuestMixture):
+            rho_bulk = np.array(self.system.guest.fractions)*rho_bulk
+
+        return chempot, rho_bulk
+
     def _set_split_density(self, masks, densities):
         """
             Set the initial density to a split density according to a given split of the system
@@ -356,76 +365,85 @@ class Program(CleanupMixin):
                 self.rho0[mask] = rho  
             self.split = True
     
-    def set_solver(self, solver):
+    def set_solver(self, solver=None):
         '''This function sets the solver for a program.'''
         with log.section('PROGRAM', 1, timer='Initializing'):
-            # assert isinstance(solver, Solver), "solver is not an instance of Solver, aborting!"
+            if solver==None:
+                solver = Anderson(self)
+            else:
+                if isinstance(solver, list):
+                    for i, solv in enumerate(solver):
+                        assert isinstance(solv, Solver), f"Solver at index {i} is not an instance of Solver, aborting!"
+                    log.dump('Set solver to a list, will use cascade solver')
+                else:
+                    assert isinstance(solver, Solver), "solver is not an instance of Solver, aborting!"
+                    log.dump('Solver set to %s' %solver.name)
             self.solver = solver
-            log.dump('Solver set to %s' %solver.name)
 
-    def cascade_solver(self, solvers, chempot, **kwargs):
+    def _cascade_solver(self, solvers, chempot, silent=False):
         '''This function attempts to solve the system using a cascade of solvers.'''
         with log.section('PROGRAM', 1, timer=None):
             for solver in solvers:
-                self.set_solver(solver)
                 try:
-                    N, rho, converged = self.solve(chempot, **kwargs)
+                    N, rho, converged = self._solve_wrapped(solver, chempot, silent=silent)
                     if converged:
                         break  # Stop if successful
                     log.dump('Solver %s did not converge, trying next one...' %solver.name)
                 except NoSolutionError:
                     log.dump('Solver %s failed, trying next one...' %solver.name)
             else:
-                log.warning('All solvers failed, at %7.5fkJmol %7.5fK.' %(chempot/kjmol,self.fener.temperature/kelvin))
+                chempot_str_parts = get_file_suffix(chempot, self.fener.temperature).split('_')
+                chempot_str = ' '.join(chempot_str_parts)
+                log.warning('All solvers failed, at %s.' %(chempot_str))
 
-
-    def solve(self, chempot, Ninit=None, rewrite=False, energy_tracking=True, silent=False, continue_solving=False):
-        '''This function solves for the density profile at given a chemical potential and temperature
-        
-        Parameters
-        ----------
-        chempot
-            The chemical potential of the simulation.
-        Ninit
-            Initial density (see _set_initial_density for more information).
-        rewrite, optional
-            A boolean parameter that determines whether to overwrite and ignore all previously calculated
-        loadings. 
-        energy_tracking, optional
-            A boolean parameter that determines whether the program will log and save energetic values during
-        the simulation. If set to True, the program will save the energetic values in a seperate file.
-        silent, optional
-            A boolean parameter that determines whether or not to print log messages during the calculation.
-        If set to True, only critical log messages will be printed.
-        
-        '''
+    def _solve_wrapped(self, solver, chempot, silent=False):
+        '''This function solves for the density profile at given a chemical potential and temperature'''
         if silent: log_level = 3
         else: log_level = 2
         with log.section('PROGRAM', log_level, timer='Solve'):
+            rho_old = self.rho0.copy()
+            N, rho, converged = solver.solve(chempot, rho_old, log_level)
+
+            if solver.track_history:
+                solving_name = 'solving_history%s.csv'%(self.file_suffix)
+                solver_history_fn = self.workdir / solving_name
+                data = solver.history[:solver.curr_step+1, :]
+                np.savetxt(solver_history_fn, data, delimiter=',', header=solver.history_header)
+                log.dump('  saving history to %s' %(solver_history_fn))
+
+            np.save(self.rho_fn, rho)
+            return N, rho, converged
+
+    def solve(self, chempot=None, pressure=None, rho_b=None, Ninit=None, rewrite=False, energy_tracking=True, silent=False, continue_solving=False):
+        
+        if silent: log_level = 3
+        else: log_level = 2
+        with log.section('PROGRAM', log_level, timer='Solve'):
+            if not hasattr(self, 'eos') and chempot is None:
+                raise ValueError("If an eos has not been initialized, chemical potential must be given for solving")
+            elif hasattr(self, 'eos'):
+                chempot, rho_b = self._initial_thermodynamic_conditions(chempot=chempot, pressure=pressure, bulk_density=rho_b)
+            if Ninit is None:
+                Ninit = rho_b
+
             log.dump('Thermodynamic conditions:')
-            # if isinstance(self.system.guest, GuestMixture):
             if self.system.guest.nspecies > 1:
                 if not hasattr(chempot, '__iter__'):
                     chempot = np.full(self.system.guest.nspecies, chempot)
                 
-                self.file_suffix = ''
+                self.file_suffix = get_file_suffix(chempot, self.fener.temperature)
                 for e in range(self.system.guest.nspecies):
                     fugacity = np.exp(self.fener.beta*chempot[e])/self.fener.beta/self.fener.wavelength[e]**3
                     log.dump('  component %d: %s' %(e+1, self.system.guest.names[e]))
                     log.dump('    temperature = %7.3f   K' %(self.fener.temperature/kelvin))
                     log.dump('    chem. pot.  = %7.3f kJ/mol' %(chempot[e]/kjmol))
                     log.dump('    fugacity    = %7.3f bar' %(fugacity/bar))
-                    self.file_suffix += '_%7.5fkJmol' %(chempot[e]/kjmol)
-                
-                self.file_suffix += '_%7.5fK' %(self.fener.temperature/kelvin)
 
             else:
                 fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
                 log.dump('  temperature = %7.3f   K' %(self.fener.temperature/kelvin))
                 log.dump('  chem. pot.  = %7.3f kJ/mol' %(chempot/kjmol))
                 log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
-
-                self.file_suffix = '_%7.5fkJmol_%7.5fK' %(chempot/kjmol,self.fener.temperature/kelvin) 
 
             if energy_tracking:
                 convergence_fn = os.path.join(self.workdir,  "convergence%s.txt" %(self.file_suffix))
@@ -437,20 +455,20 @@ class Program(CleanupMixin):
                 rho = np.load(self.rho_fn)
                 N = self.grid.integrate(rho)
                 return N, rho, True
-                
-            self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite, Temp=self.fener.temperature, silent=silent)
-            rho_old = self.rho0.copy()
-            N, rho, converged = self.solver.solve(chempot, rho_old, log_level)
+            print(Ninit, chempot)
+            self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite)    
+            if isinstance(self.solver, list):
+                self._cascade_solver(self.solver, chempot, silent=silent)    
+            else:
+                self._solve_wrapped(self.solver, chempot, silent=silent)
 
-            if self.solver.track_history:
-                solving_name = 'solving_history%s.csv'%(self.file_suffix)
-                solver_history_fn = self.workdir / solving_name
-                data = self.solver.history[:self.solver.curr_step+1, :]
-                np.savetxt(solver_history_fn, data, delimiter=',', header=self.solver.history_header)
-                log.dump('  saving history to %s' %(solver_history_fn))
+    def adsorption_isotherm(self, temperature, pressures, **kwargs):
+        self.set_temperature(temperature)
+        chempots = self.eos.compute_chempot(pressure=pressures, temperature=temperature)
+        rho_b = self.eos.solve_densities_from_pressures(pressures)
+        for chempot in chempots:
+            self.solve(chempot, Ninit=rho_b, **kwargs)
 
-            np.save(self.rho_fn, rho)
-            return N, rho, converged
 
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):
         '''This function calculates the reference chemical potential by solving an adsorption isotherm and

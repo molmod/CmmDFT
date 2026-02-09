@@ -13,15 +13,15 @@ from .system import NanoporousHost
 from .program import Program
 from .free_energy import FreeEnergy
 from .functionals import WDAVFunctional, ExternalPotential
-from .eos import VanderWaalsEOS, EquationOfState
+from .eos import EquationOfState
 from .log import log
-from .tools import selection_sort, bisect_left, make_supercell, get_file_suffix, Document, get_chempot_key, CleanupMixin
+from .tools import selection_sort, bisect_left, make_supercell, get_file_suffix, Document, get_chempot_key
 from .extpot_calculator import get_external_potential, get_system_data
 #log.set_level('silent')
 
 
 
-class Calculator(CleanupMixin):
+class Calculator(object):
     """
     Class to extract all information from a program instance required to compute properties derivable
     from the density (such as the loading and contributions to the free energy).

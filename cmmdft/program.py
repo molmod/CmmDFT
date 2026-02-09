@@ -462,6 +462,13 @@ class Program(object):
             else:
                 self._solve_wrapped(self.solver, chempot, silent=silent)
 
+    def adsorption_isotherm(self, temperature, pressures, **kwargs):
+        self.set_temperature(temperature)
+        chempots = self.eos.compute_chempot(pressure=pressures, temperature=temperature)
+        rho_b = self.eos.solve_densities_from_pressures(pressures)
+        for chempot in chempots:
+            self.solve(chempot, Ninit=rho_b, **kwargs)
+
 
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):
         '''This function calculates the reference chemical potential by solving an adsorption isotherm and

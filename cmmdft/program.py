@@ -444,7 +444,7 @@ class Program(object):
                 log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
 
             if energy_tracking:
-                convergence_fn = os.path.join(self.workdir,  "_convergence%s.txt" %(self.file_suffix))
+                convergence_fn = os.path.join(self.workdir,  "convergence_%s.txt" %(self.file_suffix))
                 self.fener.init_tracking(convergence_fn, rewrite=rewrite)
 
             self.rho_fn = os.path.join(self.workdir, 'rho_%s.npy'%(self.file_suffix))

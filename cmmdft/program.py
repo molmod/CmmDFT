@@ -430,12 +430,11 @@ class Program(object):
             if Ninit is None:
                 Ninit = rho_b
 
+            self.file_suffix = get_file_suffix(chempot, self.fener.temperature)
+
             log.dump('Thermodynamic conditions:')
             self.file_suffix = get_file_suffix(chempot, self.fener.temperature)
             if self.system.guest.nspecies > 1:
-                if not hasattr(chempot, '__iter__'):
-                    chempot = np.full(self.system.guest.nspecies, chempot)
-                
                 for e in range(self.system.guest.nspecies):
                     fugacity = np.exp(self.fener.beta*chempot[e])/self.fener.beta/self.fener.wavelength[e]**3
                     log.dump('  component %d: %s' %(e+1, self.system.guest.names[e]))

@@ -1414,47 +1414,62 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, position_shift=True,
     # Use XML masses if available and more complete
     if len(xml_masses) == natom:
         masses = np.array(xml_masses)
-    
-    # Find the CustomNonbondedForce section with SIGMA and EPSILON parameters
-    lj_params = []
-    
-    # Find all CustomNonbondedForce elements and locate the one with SIGMA and EPSILON
-    custom_forces = root.findall('.//Force[@type="CustomNonbondedForce"]')
-    lj_force = None
-    
-    for force in custom_forces:
-        per_particle = force.find('PerParticleParameters')
-        if per_particle is not None:
-            param_names = [param.get('name') for param in per_particle.findall('Parameter')]
-            if 'SIGMA' in param_names and 'EPSILON' in param_names:
-                lj_force = force
-                break
-    
-    if lj_force is None:
-        raise ValueError("Could not find CustomNonbondedForce with SIGMA and EPSILON parameters")
-    
-    # Extract sigma and epsilon from PerParticleParameters
-    # param1 corresponds to SIGMA, param2 corresponds to EPSILON
-    particles_elem = lj_force.find('Particles')
-    if particles_elem is not None:
-        for particle in particles_elem.findall('Particle'):
-            sigma_str = particle.get('param1')
-            epsilon_str = particle.get('param2')
-            if sigma_str and epsilon_str:
-                sigma = float(sigma_str)
-                epsilon = float(epsilon_str)
-                lj_params.append((sigma, epsilon))
-    
+        
+    elif lj_force is None:
+        NonBondedForce = root.findall('.//NonbondedForce')
+        for force in NonBondedForce:
+            particles = force.find('Particles')
+            for particle in particles.findall('Particle'):
+                epsilon_str = particle.get('eps')
+                sigma_str = particle.get('sig')
+                if sigma_str and epsilon_str:
+                    sigma = float(sigma_str)
+                    epsilon = float(epsilon_str)
+                    lj_params.append((sigma, epsilon))
+
     # Also extract charges from NonbondedForce for completeness
     charges = []
+    lj_params = []
     nonbonded_force = root.find('.//Force[@type="NonbondedForce"]')
     if nonbonded_force is not None:
         particles_elem = nonbonded_force.find('Particles')
         if particles_elem is not None:
             for particle in particles_elem.findall('Particle'):
                 q_str = particle.get('q')
+                epsilon_str = particle.get('eps')
+                sigma_str = particle.get('sig')
                 if q_str:
                     charges.append(float(q_str))
+                if epsilon_str and sigma_str:
+                    sigma = float(sigma_str)
+                    epsilon = float(epsilon_str)
+                    if not (sigma==0 and epsilon==0):
+                        lj_params.append((sigma, epsilon))
+    if not len(lj_params):
+        # Find all CustomNonbondedForce elements and locate the one with SIGMA and EPSILON
+        custom_forces = root.findall('.//Force[@type="CustomNonbondedForce"]')
+
+        lj_force = None
+        
+        for force in custom_forces:
+            per_particle = force.find('PerParticleParameters')
+            if per_particle is not None:
+                param_names = [param.get('name') for param in per_particle.findall('Parameter')]
+                if 'SIGMA' in param_names and 'EPSILON' in param_names:
+                    lj_force = force
+                    break
+        if lj_force is not None:    
+            # Extract sigma and epsilon from PerParticleParameters
+            # param1 corresponds to SIGMA, param2 corresponds to EPSILON
+            particles_elem = lj_force.find('Particles')
+            if particles_elem is not None:
+                for particle in particles_elem.findall('Particle'):
+                    sigma_str = particle.get('param1')
+                    epsilon_str = particle.get('param2')
+                    if sigma_str and epsilon_str:
+                        sigma = float(sigma_str)
+                        epsilon = float(epsilon_str)
+                        lj_params.append((sigma, epsilon))
     
     if len(lj_params) != natom:
         raise ValueError(f"Could not extract LJ parameters for all atoms. "

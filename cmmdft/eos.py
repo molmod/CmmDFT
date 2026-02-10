@@ -426,7 +426,9 @@ class EquationOfState(object):
 
         for i,mu in enumerate(chempots):
             for j in range(1,n_rough_gridpoints):
-                if np.all(rough_chempot_grid[j-1]<=mu) and np.all(mu<=rough_chempot_grid[j]):
+                mu_low = rough_chempot_grid[j-1]
+                mu_high = rough_chempot_grid[j]
+                if np.all((mu_low - mu) * (mu_high - mu) <= 0):
                     interval = [rough_density_grid[j-1],rough_density_grid[j]]
                     if density_intervals[i] is None:
                         density_intervals[i] = [interval]
@@ -483,7 +485,9 @@ class EquationOfState(object):
         density_intervals = [None,]*len(pressures)
         for i,p in enumerate(pressures):
             for j in range(1,n_rough_gridpoints):
-                if rough_pressure_grid[j-1]<=p<=rough_pressure_grid[j]:
+                p_low = rough_pressure_grid[j-1]
+                p_high = rough_pressure_grid[j]
+                if (p_low - p) * (p_high - p) <= 0:
                     interval = [rough_density_grid[j-1],rough_density_grid[j]]
                     if density_intervals[i] is None:
                         density_intervals[i] = [interval]
@@ -851,7 +855,7 @@ class EOS_MIX(EquationOfState):
         rho, rho_sum, x = self._get_fractional_coefficients(rho_orig)
         return x * P * np.exp(mu_res/(kT))
     
-    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000, excess_only=False):
+    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000):
         """
         Solve EOS for density as function of chemical potential at fixed temperature.
 
@@ -878,41 +882,34 @@ class EOS_MIX(EquationOfState):
         rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
         rho, rho_sum, x = self._get_fractional_coefficients(rough_density_grid)
         #compute the chemical potential on this rough grid
-        kT = boltzmann*self.temperature
-        if excess_only:
-            rough_chempot_grid = self.compute_excess_chempot(rho=rho_sum)
-        else:
-            rough_chempot_grid = self.compute_chempot(rho=rho_sum)
+        rough_chempot_grid = self.compute_chempot(rho=rho_sum)
 
         #determine in which interval in rough_chempot_grid the given chempots lies and
         chempots = np.atleast_1d(chempots)
 
         density_intervals = [None,]*len(chempots)
-        for i,mu in enumerate(chempots):
+        for i, mu in enumerate(chempots):
             for j in range(1,n_rough_gridpoints):
-                if np.all(rough_chempot_grid[j-1]<=mu) and np.all(mu<=rough_chempot_grid[j]):
+                mu_low = rough_chempot_grid[j-1]
+                mu_high = rough_chempot_grid[j]
+                if np.all((mu_low - mu) * (mu_high - mu) <= 0):
                     interval = [rough_density_grid[j-1],rough_density_grid[j]]
                     if density_intervals[i] is None:
                         density_intervals[i] = [interval]
                     else:
                         density_intervals[i].append(interval)
+
         #for each chemical potential, find a solution in each proposed interval using the brentq method
         densities = np.zeros([len(chempots), 2])*np.nan
         for i,mu in enumerate(chempots):
             solutions = []
-            if excess_only:
-                def fun(rho):
-                    return np.sum((self.compute_excess_chempot(rho=rho) - mu))
-            else:
-                def fun(rho):
-                    return np.sum((self.compute_chempot(rho=rho) - mu))
-            print(density_intervals[i])    
+            def fun(rho):
+                return np.sum((self.compute_chempot(rho=rho) - mu))
             if density_intervals[i] is not None:
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
             if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
-            print('solution', solutions)
             if len(solutions) > 0:
                 stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
                 densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
@@ -2462,7 +2459,7 @@ class PCSAFTEOS(EquationOfState):
             Density grid.
         """
         log_start = -15
-        log_end = np.log(np.sum(1/(np.pi/6*self.m*self.dhs**3)))/np.log(10) -0.01
+        log_end = np.log(1/np.sum(np.pi/6*self.x*self.m*self.dhs**3))/np.log(10) -0.01
         return np.logspace(log_start, log_end, npoints)
 
     def _hard_sphere_contribution(self, zeta0, zeta1, zeta2, zeta3):

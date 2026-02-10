@@ -637,9 +637,7 @@ class Anderson(Picard):
         bds = opt.Bounds(0,1)
         linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
         alphas = opt.minimize(sum_res, np.full(mk,1/mk), method='SLSQP', tol=1e-15, bounds=bds, constraints=linear_constraint).x
-        print(alphas)
         t1 = time.time()
-        print(f'Time to optimize alphas {t1-t0:0.5f}')
         self.opt_alphas_time.append(t1-t0)
 
         rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
@@ -671,16 +669,13 @@ class Anderson(Picard):
         alphas = np.linalg.solve(gram, ones)
         alphas /= alphas.sum()  # Normalize to sum to 1
 
-        print(alphas)
         
         # Project to [0,1] if needed (usually not necessary)
         alphas = np.clip(alphas, 0, 1)
         alphas /= alphas.sum()
         
-        print(alphas)
         t1 = time.time()
 
-        print(f'Time to optimize alphas {t1-t0:0.5f}')
         self.opt_alphas_time.append(t1-t0)
         rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
         Grho_result = (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
@@ -724,9 +719,7 @@ class Anderson(Picard):
         )
         alphas = result.x
         
-        print(alphas)
         t1 = time.time()
-        print(f'Time to optimize alphas {t1-t0:0.5f}')
         self.opt_alphas_time.append(t1-t0)
 
         rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
@@ -777,9 +770,7 @@ class Anderson(Picard):
                 print("Warning: constraint violation, using SLSQP fallback")
                 alphas = self._slsqp_fallback(residuals, mk)
         
-        print(alphas)
         t1 = time.time()
-        print(f'Time to optimize alphas {t1-t0:0.5f}')
         self.opt_alphas_time.append(t1-t0)
 
         rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)

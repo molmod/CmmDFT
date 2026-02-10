@@ -56,7 +56,6 @@ def bisect_left(a, x, lo=0, hi=None, *, key=None):
     return lo
 
 def get_file_suffix(chempot, temp):
-    print(chempot)
     if hasattr(chempot, '__iter__'):
         file_suff = ''
         for mu in chempot:

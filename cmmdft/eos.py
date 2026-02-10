@@ -9,7 +9,7 @@ from __future__ import division
 import numpy as np
 from scipy.optimize import brentq, root
 
-from .units_constants import kjmol, bar, kelvin, angstrom, planck, boltzmann
+from .units_constants import kjmol, bar, kelvin, angstrom, planck, boltzmann, mol, meter
 
 from .log import log
 
@@ -139,19 +139,47 @@ class EquationOfState(object):
         else:
             raise ValueError('Either rho or pressure must be provided')
         
-    def gibbs_free_energy_per_particle(self, rho, pressure):
+    def ideal_free_energy(self, rho):
+        kT = boltzmann * self.temperature
+        return kT * ( np.log(self.wvl**3 * rho) -1)
+        
+    def gibbs_free_energy_per_particle(self, rho):
         """Compute g = f + P/rho"""
+        P = self.compute_pressure(rho=rho)
         f = self.excess_free_energy_particle(rho)  # f_ex
         kT = boltzmann * self.temperature
-        return kT * np.log(rho) + f + pressure / rho
+        f_id = self.ideal_free_energy(rho)
+        return f_id + f + P / rho
     
-    def grand_potential(self, rho, mu):
+    def grand_potential(self, rho):
+        mu = self.compute_chempot(rho=rho)
         kT = boltzmann * self.temperature
         f_ex = self.excess_free_energy_particle(rho)
-        f_ideal = kT * np.log(self.wvl**3 * rho)
+        f_ideal = self.ideal_free_energy(rho)
         f_total = f_ideal + f_ex
         # Grand potential per unit volume: omega = f - mu*rho
         return f_total * rho - mu * rho
+    
+    def helmholtz_free_energy_per_particle(self, rho):
+        """
+        Compute Helmholtz free energy per particle.
+        
+        f = f_ideal + f_ex = kT·ln(Λ³ρ) + f_ex
+        
+        Parameters
+        ----------
+        rho : float or array-like
+            Number density in particles/Angstrom^3
+            
+        Returns
+        -------
+        float or array-like
+            Helmholtz free energy per particle
+        """
+        kT = boltzmann * self.temperature
+        f_ideal = self.ideal_free_energy(rho)
+        f_ex = self.excess_free_energy_particle(rho)
+        return f_ideal + f_ex    
 
     def compute_excess_chempot(self, rho=None, pressure=None, temperature=None):
         """
@@ -320,7 +348,7 @@ class EquationOfState(object):
         float or ndarray
             Free energy per volume.
         """
-        return self.excess_free_energy_volume(rho) + boltzmann*self.temperature*rho*(np.log(self.wvl**3*rho)-1)
+        return self.excess_free_energy_volume(rho) + rho*self.ideal_free_energy(rho)
     
     def derivative_excess_free_energy_particle(self, rho):
         "Returns the density derivative of the excess free energy per particle"
@@ -391,8 +419,7 @@ class EquationOfState(object):
         #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
         rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
         #compute the chemical potential on this rough grid
-        kT = boltzmann*self.temperature
-        rough_chempot_grid = kT*np.log(self.wvl**3*rough_density_grid) + self.excess_free_energy_particle(rough_density_grid) + rough_density_grid*self.derivative_excess_free_energy_particle(rough_density_grid)
+        rough_chempot_grid = self.compute_chempot(rho=rough_density_grid)
         #determine in which interval in rough_chempot_grid the given chempots lies and
         chempots = np.atleast_1d(chempots)
         density_intervals = [None,]*len(chempots)
@@ -410,14 +437,15 @@ class EquationOfState(object):
         for i,mu in enumerate(chempots):
             solutions = []
             def fun(rho):
-                return kT*np.log(self.wvl**3*rho) + self.excess_free_energy_particle(rho) + rho*self.derivative_excess_free_energy_particle(rho) - mu
+                return self.compute_chempot(rho=rho) - mu
             if density_intervals[i] is not None:
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
             if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            # densities[i,:len(solutions)] = np.array(solutions)
             if len(solutions) > 0:
-                stable_solutions = self.filter_stable_phases_chempot(solutions, mu)
+                stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
                 densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
                 
         return densities
@@ -449,7 +477,6 @@ class EquationOfState(object):
         #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
         rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
         #compute the pressure on this rough grid
-        kT = boltzmann*self.temperature
         rough_pressure_grid = self.compute_pressure(rho=rough_density_grid)
         pressures = np.atleast_1d(pressures)
         #determine in which interval in rough_pressure_grid the given pressure lies 
@@ -468,19 +495,19 @@ class EquationOfState(object):
         for i,p in enumerate(pressures):
             solutions = []
             def fun(rho):
-                return kT*rho + rho**2*self.derivative_excess_free_energy_particle(rho) - p
+                return self.compute_pressure(rho=rho) - p
             if density_intervals[i] is not None:
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
             if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
             if len(solutions) > 0:
-                stable_solutions = self.filter_stable_phases_pressure(solutions, p)
+                stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
                 densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
                 
         return densities
     
-    def filter_stable_phases_pressure(self, densities, pressure, g_tolerance=1e-6):
+    def filter_stable_phases(self, rho, ensemble, p_tolerance=1e-15):
         """
         Filter density solutions to keep only thermodynamically stable phases.
         
@@ -490,7 +517,7 @@ class EquationOfState(object):
         
         Parameters
         ----------
-        densities : list
+        rho : list
             List of density solutions at the same pressure
         pressure : float
             Pressure in bar
@@ -502,73 +529,26 @@ class EquationOfState(object):
         list
             Filtered list of stable/metastable densities
         """
-        if len(densities) == 0:
+        if len(rho) == 0:
             return []
+        rho = np.array(rho)
         
-        # Compute Gibbs free energy for each solution
-        gibbs_energies = []
-        for rho in densities:
-            g = self.gibbs_free_energy_per_particle(rho, pressure)
-            gibbs_energies.append((rho, g))
+        # Compute relevant potential for each solution
+        if ensemble.lower() == 'gibbs':
+            potentials = self.gibbs_free_energy_per_particle(rho)
+        elif ensemble.lower() == 'helmholtz':
+            potentials = self.helmholtz_free_energy_per_particle(rho)
+        elif ensemble.lower() == 'grand':
+            potentials = self.grand_potential(rho)
+        # Find minimum potential
+        p_min = min(p for p in potentials)
         
-        # Find minimum Gibbs energy
-        g_min = min(g for _, g in gibbs_energies)
-        
-        # Keep solutions with Gibbs energy close to minimum
+        # Keep solutions with potential energy close to minimum
         # This allows for metastable phases while filtering spurious solutions
         stable_densities = []
-        for rho, g in gibbs_energies:
-            if abs(g - g_min) / abs(g_min) < g_tolerance or g <= g_min * (1 + g_tolerance):
-                stable_densities.append(rho)
-        
-        return stable_densities
-
-    def filter_stable_phases_chempot(self, densities, chempot, f_tolerance=1e-6):
-        """
-        Filter density solutions to keep only thermodynamically stable phases
-        for a given chemical potential.
-        
-        At equilibrium with fixed chemical potential and temperature, phases 
-        with the lowest Helmholtz free energy (grand potential = -PV) are stable.
-        
-        Parameters
-        ----------
-        densities : list
-            List of density solutions at the same chemical potential
-        chempot : float
-            Chemical potential in atomic units (Hartree)
-        f_tolerance : float, optional
-            Relative tolerance for identifying metastable states, default 1e-6
-            
-        Returns
-        -------
-        list
-            Filtered list of stable/metastable densities
-        """
-        if len(densities) == 0:
-            return []
-        
-        kT = boltzmann * self.temperature
-        
-        # Compute grand potential density (omega = f - mu*rho) for each solution
-        # The stable phase minimizes omega
-        grand_potentials = []
-        for rho in densities:
-            f_ex = self.excess_free_energy_particle(rho)
-            f_ideal = kT * np.log(self.wvl**3 * rho)
-            f_total = f_ideal + f_ex
-            # Grand potential per unit volume: omega = f - mu*rho
-            omega = f_total * rho - chempot * rho
-            grand_potentials.append((rho, omega))
-        
-        # Find minimum grand potential
-        omega_min = min(omega for _, omega in grand_potentials)
-        
-        # Keep solutions with grand potential close to minimum
-        stable_densities = []
-        for rho, omega in grand_potentials:
-            if abs(omega - omega_min) / abs(omega_min) < f_tolerance or omega <= omega_min * (1 + f_tolerance):
-                stable_densities.append(rho)
+        for rho_, p in zip(rho, potentials):
+            if abs(p - p_min) / abs(p_min) < p_tolerance or p <= p_min * (1 + p_tolerance):
+                stable_densities.append(rho_)
         
         return stable_densities
 
@@ -700,36 +680,23 @@ class EOS_MIX(EquationOfState):
             assert rho.shape[0]==self.ncomp, 'For a mixture, rho should be an array with shape (ncomp, ...)'
             rho_sum = np.sum(rho, axis=0)
             x = rho/rho_sum
-        return rho, rho_sum, x        
+        return rho, rho_sum, x       
 
-    def _drhoi_excess_free_energy_particle(self, rho):
-        """
-        Compute derivative of excess free energy per particle w.r.t. component density.
+    def ideal_free_energy(self, rho):
+        kT = boltzmann * self.temperature
+        rho, rho_sum, x = self._get_fractional_coefficients(rho)
+        wvl_rho = np.einsum('i,ij->j', self.wvl**3, rho)
+        return kT*(np.log(wvl_rho) - 1)
 
-        Parameters
-        ----------
-        rho : float or array-like
-            Density.
-
-        Returns
-        -------
-        ndarray
-            Derivative array, shape (ncomp, ...).
-
-        Raises
-        ------
-        NotImplementedError
-            Must be implemented by subclasses.
-        """
-        raise NotImplementedError
-
-    def grand_potential(self, rho, mu):
+    def grand_potential(self, rho):
+        mu = self.compute_chempot(rho)
         kT = boltzmann * self.temperature
         f_ex = self.excess_free_energy_particle(rho)
-        f_ideal = kT * np.log(self.wvl**3 * rho)
+        f_ideal = self.ideal_free_energy(rho)
         f_total = f_ideal + f_ex
+        rho, rho_sum, x = self._get_fractional_coefficients(rho)
         # Grand potential per unit volume: omega = f - mu*rho
-        return f_total * rho - np.sum(mu * (rho[np.newaxis,...]*self.x), axis=0)
+        return f_total * rho_sum - np.einsum('ji,ij->j', mu, rho)
 
     def compute_chempot(self, rho=None, pressure=None, temperature=None):
         """
@@ -813,7 +780,7 @@ class EOS_MIX(EquationOfState):
             return (a + rho_sum*da_drhoi).T
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmax(rho, axis=1)
+            rho = np.nanmin(rho, axis=1)
             return self.compute_excess_chempot(rho=rho, temperature=self.temperature)
     
     def compute_pressure(self, rho=None, chempot=None, temperature=None):
@@ -945,41 +912,32 @@ class EOS_MIX(EquationOfState):
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
             if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
-            densities[i,:len(solutions)] = np.array(sorted(solutions))
+            if len(solutions) > 0:
+                stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
+                densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
+
         return densities
-    
-    def filter_stable_phases_chempot(self, densities, chempot, tolerance=1e-6):
+
+    def _drhoi_excess_free_energy_particle(self, rho):
         """
-        Filter solutions for mixture - keep phase with lowest thermodynamic potential.
-        
+        Compute derivative of excess free energy per particle w.r.t. component density.
+
         Parameters
         ----------
-        densities : list
-            List of density solutions (each can be array for mixture components)
-        pressure_or_chempot : float or array
-            Pressure (scalar) or chemical potentials (array for each component)
-        is_pressure : bool
-            True for P-based solving, False for μ-based solving
+        rho : float or array-like
+            Density.
+
+        Returns
+        -------
+        ndarray
+            Derivative array, shape (ncomp, ...).
+
+        Raises
+        ------
+        NotImplementedError
+            Must be implemented by subclasses.
         """
-        if len(densities) == 0:
-            return []
-        
-        potentials = []
-        for rho in densities:
-            # Grand potential approach
-            g = self.grand_potential(rho, chempot)
-            potentials.append((rho, g))
-        
-        # Find minimum
-        g_min = min(g for _, g in potentials)
-        
-        # Keep solutions near minimum
-        stable = []
-        for rho, g in potentials:
-            if abs(g - g_min) / abs(g_min) < tolerance or g <= g_min * (1 + tolerance):
-                stable.append(rho)
-        
-        return stable
+        raise NotImplementedError
 
 class SumOfEOS(EquationOfState):
     """

@@ -405,7 +405,7 @@ class Program(object):
             N, rho, converged = solver.solve(chempot, rho_old, log_level)
 
             if solver.track_history:
-                solving_name = 'solving_history%s.csv'%(self.file_suffix)
+                solving_name = 'solving_history_%s.csv'%(self.file_suffix)
                 solver_history_fn = self.workdir / solving_name
                 data = solver.history[:solver.curr_step+1, :]
                 np.savetxt(solver_history_fn, data, delimiter=',', header=solver.history_header)
@@ -426,12 +426,10 @@ class Program(object):
             if Ninit is None:
                 Ninit = rho_b
 
+            self.file_suffix = get_file_suffix(chempot, self.fener.temperature)
+
             log.dump('Thermodynamic conditions:')
             if self.system.guest.nspecies > 1:
-                if not hasattr(chempot, '__iter__'):
-                    chempot = np.full(self.system.guest.nspecies, chempot)
-                
-                self.file_suffix = get_file_suffix(chempot, self.fener.temperature)
                 for e in range(self.system.guest.nspecies):
                     fugacity = np.exp(self.fener.beta*chempot[e])/self.fener.beta/self.fener.wavelength[e]**3
                     log.dump('  component %d: %s' %(e+1, self.system.guest.names[e]))
@@ -446,10 +444,10 @@ class Program(object):
                 log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
 
             if energy_tracking:
-                convergence_fn = os.path.join(self.workdir,  "convergence%s.txt" %(self.file_suffix))
+                convergence_fn = os.path.join(self.workdir,  "_convergence%s.txt" %(self.file_suffix))
                 self.fener.init_tracking(convergence_fn, rewrite=rewrite)
 
-            self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.file_suffix))
+            self.rho_fn = os.path.join(self.workdir, 'rho_%s.npy'%(self.file_suffix))
             if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite and not continue_solving:
                 log.dump('  skipping because solution found in file %s' %(self.rho_fn))
                 rho = np.load(self.rho_fn)

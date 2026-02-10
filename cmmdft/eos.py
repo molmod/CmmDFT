@@ -906,12 +906,13 @@ class EOS_MIX(EquationOfState):
             else:
                 def fun(rho):
                     return np.sum((self.compute_chempot(rho=rho) - mu))
-                
+            print(density_intervals[i])    
             if density_intervals[i] is not None:
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
             if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            print('solution', solutions)
             if len(solutions) > 0:
                 stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
                 densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
@@ -2461,8 +2462,8 @@ class PCSAFTEOS(EquationOfState):
             Density grid.
         """
         log_start = -15
-        log_end = np.min(np.log(angstrom**3/(np.pi/6*self.m*self.dhs**3))/np.log(10)-0.01)
-        return np.logspace(log_start, log_end, npoints)/angstrom**3
+        log_end = np.log(np.sum(1/(np.pi/6*self.m*self.dhs**3)))/np.log(10) -0.01
+        return np.logspace(log_start, log_end, npoints)
 
     def _hard_sphere_contribution(self, zeta0, zeta1, zeta2, zeta3):
         """

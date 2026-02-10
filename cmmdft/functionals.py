@@ -184,8 +184,6 @@ class HardSphereFunctional(Functional):
 
 
             self.tensor_weight_functions = np.array([kwxx, kwxy, kwxz, kwyy, kwyz, kwzz])
-        #flatten lists
-
 
     def _get_density_functions(self, krho):
         """

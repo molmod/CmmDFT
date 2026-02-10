@@ -124,35 +124,39 @@ class Program(object):
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
         self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, shift=shift)
 
-    def set_eos(self, eosname):
+    def set_eos(self, eosname='PCSAFT', eos=None):
         with log.section('PROGRAM', 1, timer='Initializing'):
-            assert self.system is not None, "Host and guest must be set using set_system"
-            assert isinstance(self.system.guest, Guest), "Guest attribute must be Guest class"
-            assert eosname in ['MBWR', 'CS', 'MFA', 'PCSAFT']
-            guest = self.system.guest
-            if eosname == 'MBWR':
-                if isinstance(guest, GuestMixture):
-                    self.eos = ModifiedBenedictWebbRubinMixEOS.from_guest(guest)
-                else:
-                    self.eos = ModifiedBenedictWebbRubinEOS.from_guest(guest)
-            elif eosname == 'CS':
-                if isinstance(guest, GuestMixture):
-                    self.eos = CarnahanStarlingMixEOS.from_guest(guest)
-                else:
-                    self.eos = CarnahanStarlingEOS.from_guest(guest)
-            elif eosname == 'MFA':
-                if isinstance(guest, GuestMixture):
-                    self.eos = MFAMixEOS.from_guest(guest)
-                else:
-                    self.eos = MFAEOS.from_guest(guest)
-            elif eosname == 'PCSAFT':
-                if isinstance(guest, GuestMixture):
-                    self.eos = PCSAFTMixEOS.from_guest(guest)
-                else:
-                    self.eos = PCSAFTEOS.from_guest(guest)
+            if eos is not None:
+                assert isinstance(eos, EquationOfState)
+                self.eos = eos
             else:
-                raise ValueError('Unable to set eos')
-            log.dump(f'eos set to {eosname}')
+                assert self.system is not None, "Host and guest must be set using set_system"
+                assert isinstance(self.system.guest, Guest), "Guest attribute must be Guest class"
+                assert eosname in ['MBWR', 'CS', 'MFA', 'PCSAFT']
+                guest = self.system.guest
+                if eosname == 'MBWR':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = ModifiedBenedictWebbRubinMixEOS.from_guest(guest)
+                    else:
+                        self.eos = ModifiedBenedictWebbRubinEOS.from_guest(guest)
+                elif eosname == 'CS':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = CarnahanStarlingMixEOS.from_guest(guest)
+                    else:
+                        self.eos = CarnahanStarlingEOS.from_guest(guest)
+                elif eosname == 'MFA':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = MFAMixEOS.from_guest(guest)
+                    else:
+                        self.eos = MFAEOS.from_guest(guest)
+                elif eosname == 'PCSAFT':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = PCSAFTMixEOS.from_guest(guest)
+                    else:
+                        self.eos = PCSAFTEOS.from_guest(guest)
+                else:
+                    raise ValueError('Unable to set eos')
+                log.dump(f'eos set to {eosname}')
 
 
     def init_free_energy(self, temperature):
@@ -400,12 +404,12 @@ class Program(object):
         '''This function solves for the density profile at given a chemical potential and temperature'''
         if silent: log_level = 3
         else: log_level = 2
-        with log.section('PROGRAM', log_level, timer='Solve'):
+        with log.section('PROGRAM', log_level, timer=None):
             rho_old = self.rho0.copy()
             N, rho, converged = solver.solve(chempot, rho_old, log_level)
 
             if solver.track_history:
-                solving_name = 'solving_history%s.csv'%(self.file_suffix)
+                solving_name = 'solving_history_%s.csv'%(self.file_suffix)
                 solver_history_fn = self.workdir / solving_name
                 data = solver.history[:solver.curr_step+1, :]
                 np.savetxt(solver_history_fn, data, delimiter=',', header=solver.history_header)
@@ -427,11 +431,11 @@ class Program(object):
                 Ninit = rho_b
 
             log.dump('Thermodynamic conditions:')
+            self.file_suffix = get_file_suffix(chempot, self.fener.temperature)
             if self.system.guest.nspecies > 1:
                 if not hasattr(chempot, '__iter__'):
                     chempot = np.full(self.system.guest.nspecies, chempot)
                 
-                self.file_suffix = get_file_suffix(chempot, self.fener.temperature)
                 for e in range(self.system.guest.nspecies):
                     fugacity = np.exp(self.fener.beta*chempot[e])/self.fener.beta/self.fener.wavelength[e]**3
                     log.dump('  component %d: %s' %(e+1, self.system.guest.names[e]))
@@ -446,16 +450,16 @@ class Program(object):
                 log.dump('  fugacity    = %7.3f bar' %(fugacity/bar))
 
             if energy_tracking:
-                convergence_fn = os.path.join(self.workdir,  "convergence%s.txt" %(self.file_suffix))
+                convergence_fn = os.path.join(self.workdir,  "convergence_%s.txt" %(self.file_suffix))
                 self.fener.init_tracking(convergence_fn, rewrite=rewrite)
 
-            self.rho_fn = os.path.join(self.workdir, 'rho%s.npy'%(self.file_suffix))
+            self.rho_fn = os.path.join(self.workdir, 'rho_%s.npy'%(self.file_suffix))
             if os.path.isfile(self.rho_fn) and not self.overwrite and not rewrite and not continue_solving:
                 log.dump('  skipping because solution found in file %s' %(self.rho_fn))
                 rho = np.load(self.rho_fn)
                 N = self.grid.integrate(rho)
                 return N, rho, True
-            print(Ninit, chempot)
+
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite)    
             if isinstance(self.solver, list):
                 self._cascade_solver(self.solver, chempot, silent=silent)    

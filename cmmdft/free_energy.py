@@ -299,9 +299,7 @@ class FreeEnergy(object):
             #     self.system.guest.compute_hardsphere_radius(temperature, **kwargs)
             #     return self.system.guest.Rhs
             m = self.system.guest.m
-            if not hasattr(m, '__iter__'):
-                m = [m]
-            HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, m=np.array(m), version=version)
+            HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, m=np.atleast_1d(m), version=version)
             self.add_part(HardSphere)
     
     def add_mean_field(self, tailcorrections=False, cutoff=None, repetitions=[2,2,2], **kwargs):

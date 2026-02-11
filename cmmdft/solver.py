@@ -104,7 +104,6 @@ class Solver(object):
 
     def _get_Omega(self, rho, krho):
         with log.section(self.name, self.log_level, timer='Omega'):
-
             N = np.asarray([self.grid.integrate_n(rho[e]) for e in range(self.nspecies)])
             rho_reg = self._clip_density(rho)
             wvl3 = np.atleast_1d(self.fener.wavelength)**3
@@ -134,10 +133,7 @@ class Solver(object):
         return self.fener.beta*np.einsum('ijkl,i->ijkl',np.exp(-self.fener.beta*C1), fug)
 
     def _get_dOmega(self, rho, C1):
-        rho_reg = self._clip_density(rho)
-        lnrho = np.log(np.einsum('i,ijkl->ijkl',self.fener.wavelength**3,rho_reg), dtype='float64') / self.fener.beta # Avoid log(0)
-        dO = lnrho + C1 - self.chempot[:, np.newaxis, np.newaxis, np.newaxis]
-        return dO
+        return np.log(np.einsum('i,ijkl->ijkl',self.fener.wavelength**3,self._clip_density(rho)), dtype='float64') / self.fener.beta + C1 - self.chempot[:, np.newaxis, np.newaxis, np.newaxis]
 
     def _get_C1(self, rho, krho=None):
         with log.section(self.name, self.log_level, timer='C1'):
@@ -145,21 +141,18 @@ class Solver(object):
                 krho = self.grid.fftn(rho)
             C1 = np.zeros(self.rho_shape)
             for part in self.fener.parts:
-                c1 = part.derive(rho, krho)
-                C1 += c1
+                C1 += part.derive(rho, krho)
             return C1
 
     def _clip_density(self, rho):
-        rho = np.where(rho < self.lower_density, 1e-30, rho)
-        return rho
+        return np.where(rho < self.lower_density, 1e-30, rho)
     
     def pack_rhos(self, rho_list):
         """rho_list: list of arrays shape (nx,ny,nz) -> 1D vector"""
         return rho_list.ravel()
 
     def unpack_rhos(self, rho_packed):
-        rho = rho_packed.reshape(*self.rho_shape)
-        return rho
+        return rho_packed.reshape(*self.rho_shape)
 
     def _get_alpha_max(self, rho, krho, Grho, krho_new=None):
         if krho_new is None:
@@ -206,15 +199,13 @@ class Solver(object):
                     log.dump("             *  Rel. Integr. Unsign. Err. density = %11.4e " %(self.RIUE))
 
                 elif criterion.lower() == 'res':
-                    Grho_new = self.get_new_rho(C1_new, self.fugacity)
-                    res_norm = np.linalg.norm(Grho_new - rho_new)
+                    res_norm = np.linalg.norm(self.get_new_rho(C1_new, self.fugacity) - rho_new)
                     self.RES = res_norm/np.sqrt(N_new)/np.sqrt(np.prod(self.grid.npoints))
                     crit = self.RES
                     log.dump("             *  Norm of residual                  = %11.4e" %self.RES)
 
                 elif criterion.lower() == 'der':
-                    dOmega = self._get_dOmega(rho_new, C1_new)
-                    self.DER = np.linalg.norm((np.abs(rho_new)*beta*dOmega/(self.a_tol + self.r_tol*np.abs(rho_new)))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
+                    self.DER = np.linalg.norm((np.abs(rho_new)*beta*self._get_dOmega(rho_new, C1_new)/(self.a_tol + self.r_tol*np.abs(rho_new)))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
                     crit = self.DER
                     log.dump("             *  Norm of derivative                  = %11.4e" %self.DER)
 
@@ -227,14 +218,12 @@ class Solver(object):
                 if not np.isnan(self.RES):
                     self.history[self.curr_step, 2] = self.RES
                 else:
-                    Grho_new = self.get_new_rho(C1_new, self.fugacity)
-                    res_norm = np.linalg.norm(Grho_new - rho_new)
+                    res_norm = np.linalg.norm(self.get_new_rho(C1_new, self.fugacity) - rho_new)
                     self.history[self.curr_step, 2] = res_norm/N_new/np.sqrt(np.prod(self.grid.npoints))
 
                 self.history[self.curr_step, 3] = self.RIUE
 
-                dOmega = beta*self._get_dOmega(rho_new, C1_new)
-                DER = np.linalg.norm((np.abs(rho_new)*dOmega)[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
+                DER = np.linalg.norm((np.abs(rho_new)*(beta*self._get_dOmega(rho_new, C1_new)))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
                 self.history[self.curr_step, 4] = DER
 
             if self.omega0 is not None:
@@ -291,13 +280,11 @@ class Solver(object):
 
             if self.track_history:
                 rho_mask = np.isclose(rho, 0)
-                Grho = self.get_new_rho(C1, self.fugacity)
-                dOmega = self._get_dOmega(rho, C1)
                 self.history[0, 0] = self.grid.integrate(rho).real
                 self.history[0, 1] = self.omega0
-                self.history[0, 2] = np.linalg.norm(Grho - rho)
+                self.history[0, 2] = np.linalg.norm(self.get_new_rho(C1, self.fugacity) - rho)
                 self.history[0, 3] = np.nan
-                self.history[0, 4] = np.linalg.norm((np.abs(rho)*dOmega)[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
+                self.history[0, 4] = np.linalg.norm((np.abs(rho)* self._get_dOmega(rho, C1))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
                 self.history[0, 5] = np.nan
                 self.history[0, 6] = np.nan
 
@@ -321,8 +308,8 @@ class Solver(object):
                     converged = True
                     break
                 rho = rho_new.copy()
-                C1 = C1_new.copy()
-                krho = krho_new.copy()
+                C1 = C1_new
+                krho = krho_new
 
 
             if istep==self.nsteps-1:
@@ -414,9 +401,8 @@ class Picard(Solver):
 
     def update_rho_static(self, rho, krho, C1):
         with log.section(self.name, self.log_level, timer='Update rho'):
-            Grho = self.get_new_rho(C1, self.fugacity)
             alpha_mix_cor = self.alpha_mix*self.correction_factor
-            rho_new = (1.0-alpha_mix_cor)*rho+alpha_mix_cor*Grho
+            rho_new = (1.0-alpha_mix_cor)*rho+alpha_mix_cor*self.get_new_rho(C1, self.fugacity)
             rho_new[rho_new<1e-10/angstrom**3] = 0.0
 
             krho_new = self.grid.fftn(rho_new)
@@ -436,16 +422,14 @@ class Picard(Solver):
             else:
                 alpha1 = 0.45*alpha_max
                 rho1 = (1-alpha1)*rho + alpha1*Grho
-                krho1 = self.grid.fftn(rho1)
-                omega1 = self._get_Omega(rho1, krho1)
+                omega1 = self._get_Omega(rho1, self.grid.fftn(rho1))
                 #choose the third point for the quadratic approximation
                 if omega1 <= prev_omega:
                     alpha2 = 0.9*alpha_max
                 else:
                     alpha2 = 0.225*alpha_max
                 rho2 = (1-alpha2)*rho + alpha2*Grho
-                krho2 = self.grid.fftn(rho2)
-                omega2 = self._get_Omega(rho2, krho2)
+                omega2 = self._get_Omega(rho2, self.grid.fftn(rho2))
                 c, b, a = np.polyfit([0, alpha1, alpha2], [prev_omega, omega1, omega2], 2)
                 alphas = np.linspace(-max(alpha1,alpha2)/4, max(alpha1,alpha2), 10000)
                 omegas = a + b*alphas +c*alphas**2
@@ -460,9 +444,7 @@ class Picard(Solver):
                 tstart = time.time()
                 def calc_G_rho(alpha):
                     rho_temp = (1-alpha)*rho + alpha*Grho
-                    krho_temp = self.grid.fftn(rho_temp)#*self.grid.dr
-                    omega = self._get_Omega(rho_temp, krho_temp)
-                    return omega
+                    return self._get_Omega(rho_temp, self.grid.fftn(rho_temp))
 
                 bounds = opt.Bounds(0.01*alpha_max, 0.9*alpha_max)
                 alpha_opt_new = opt.minimize(calc_G_rho, [self.alpha_mix*alpha_max], bounds=bounds, method='SLSQP', options= {'ftol':1e-8}).x
@@ -597,61 +579,25 @@ class Anderson(Picard):
 
             AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true or self.curr_step > 10
             if AND_condition:
-                if self.minimize_method == 'SLSQP':
-                    rho_new, krho_new, C1_new = self.update_rho_Anderson()
-                elif self.minimize_method == 'ANA':
-                    rho_new, krho_new, C1_new = self.update_rho_Anderson_analytical()
-                elif self.minimize_method == 'SLSQP_new':
-                    rho_new, krho_new, C1_new = self.update_rho_Anderson_slsqp_fast()
-                elif self.minimize_method == 'LSQ':
-                    rho_new, krho_new, C1_new = self.update_rho_Anderson_lsq()
-
-
+                rho_new, krho_new, C1_new = self.update_rho_Anderson()
                 Grho_new = self.get_new_rho(C1_new, self.fugacity)
                 self.And_true = True
 
                 if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
-                    rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
+                    return self.update_rho_hybrid(rho, krho, C1)
 
                 elif np.linalg.norm(Grho_new - rho_new) > np.linalg.norm(Grho - rho)*5:
                     self.damping = self.damping_min
-                    rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
+                    return self.update_rho_hybrid(rho, krho, C1)
                 else:
                     Omega_new = self._get_Omega(rho_new, krho_new)
                     if Omega_new > prev_omega*(0.8):
-                        rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
+                        return self.update_rho_hybrid(rho, krho, C1)
 
             else:
-                rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
+                return self.update_rho_hybrid(rho, krho, C1)
 
             return rho_new, krho_new, C1_new
-
-    def update_rho_Anderson(self):
-        mk = min(self.curr_step, self.m)
-        residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
-        t0 = time.time()
-        def sum_res(alps):
-            combined = np.einsum('i,ij->j', alps, residuals)
-            return np.linalg.norm(combined)
-        
-        bds = opt.Bounds(0,1)
-        linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
-        alphas = opt.minimize(sum_res, np.full(mk,1/mk), method='SLSQP', tol=1e-15, bounds=bds, constraints=linear_constraint).x
-        t1 = time.time()
-        self.opt_alphas_time.append(t1-t0)
-
-        rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
-        Grho_result = (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
-
-        if self.adaptive_damping: 
-            rho_new, krho_new = self._get_damping_coefficient(rho_result, Grho_result)
-        else:
-            rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
-            rho_new = self._clip_density(rho_new)
-            krho_new = self.grid.fftn(rho_new)
-
-        C1_new = self._get_C1(rho_new, krho_new)
-        return rho_new, krho_new, C1_new
 
     def update_rho_Anderson_analytical(self):
         mk = min(self.curr_step, self.m)
@@ -690,15 +636,13 @@ class Anderson(Picard):
         C1_new = self._get_C1(rho_new, krho_new)
         return rho_new, krho_new, C1_new
     
-    def update_rho_Anderson_slsqp_fast(self):
+    def update_rho_Anderson(self):
         mk = min(self.curr_step, self.m)
         residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
         
-        t0 = time.time()
-        
         # Precompute Gram matrix for faster objective evaluation
         gram = residuals @ residuals.T
-        
+        del residuals
         def sum_res_fast(alphas):
             return np.sqrt(alphas @ gram @ alphas)
         
@@ -718,93 +662,17 @@ class Anderson(Picard):
             options={'ftol': 1e-15, 'maxiter': 200}
         )
         alphas = result.x
-        
-        t1 = time.time()
-        self.opt_alphas_time.append(t1-t0)
-
-        rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
-        Grho_result = (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
 
         if self.adaptive_damping: 
-            rho_new, krho_new = self._get_damping_coefficient(rho_result, Grho_result)
+            rho_new, krho_new = self._get_damping_coefficient((alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape), (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape))
         else:
-            rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
+            rho_new = (1-self.correction_factor*self.damping)*(alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape) + self.correction_factor*self.damping*(alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
             rho_new = self._clip_density(rho_new)
             krho_new = self.grid.fftn(rho_new)
 
         C1_new = self._get_C1(rho_new, krho_new)
         return rho_new, krho_new, C1_new
     
-    def update_rho_Anderson_lsq(self):
-        mk = min(self.curr_step, self.m)
-        residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
-        
-        t0 = time.time()
-        
-        # We want to minimize ||residuals.T @ alphas||^2
-        # subject to: sum(alphas) = 1, 0 <= alphas <= 1
-        
-        # Convert equality constraint to bounds by solving a reduced problem
-        # Use the last variable to enforce sum = 1
-        if mk == 1:
-            alphas = np.array([1.0])
-        else:
-            # Solve for first (mk-1) variables, set last one to enforce sum=1
-            A_reduced = residuals[:-1].T - residuals[-1:].T
-            b = np.zeros(residuals.shape[1])
-            
-            # Bounds: if alpha_i is in [0,1], and sum=1, then:
-            # alpha_i in [max(0, 1-(mk-1)), min(1, 1-0)] for first mk-1
-            lower = np.zeros(mk-1)
-            upper = np.ones(mk-1)
-            
-            result = opt.lsq_linear(A_reduced, b, bounds=(lower, upper), 
-                                    method='bvls', tol=1e-12, max_iter=200)
-            
-            alphas_reduced = result.x
-            alphas = np.append(alphas_reduced, 1 - alphas_reduced.sum())
-            
-            # Safety check
-            if alphas[-1] < -1e-10 or alphas[-1] > 1 + 1e-10:
-                # Fallback to original SLSQP
-                print("Warning: constraint violation, using SLSQP fallback")
-                alphas = self._slsqp_fallback(residuals, mk)
-        
-        t1 = time.time()
-        self.opt_alphas_time.append(t1-t0)
-
-        rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
-        Grho_result = (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
-
-        if self.adaptive_damping: 
-            rho_new, krho_new = self._get_damping_coefficient(rho_result, Grho_result)
-        else:
-            rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
-            rho_new = self._clip_density(rho_new)
-            krho_new = self.grid.fftn(rho_new)
-
-        C1_new = self._get_C1(rho_new, krho_new)
-        return rho_new, krho_new, C1_new
-
-    def _slsqp_fallback(self, residuals, mk):
-        """Fallback to original SLSQP if needed"""
-        gram = residuals @ residuals.T
-        
-        def sum_res_fast(alphas):
-            return np.sqrt(alphas @ gram @ alphas)
-        
-        bds = opt.Bounds(0, 1)
-        linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
-        
-        result = opt.minimize(
-            sum_res_fast, 
-            np.full(mk, 1/mk), 
-            method='SLSQP',
-            bounds=bds, 
-            constraints=linear_constraint,
-            options={'ftol': 1e-12}
-        )
-        return result.x    
         
 class Fire(Solver):
     """

@@ -62,20 +62,20 @@ class Grid(object):
             self.dk = 1.0/self.dr
             # Real space grid, centered at the origin, storing x,y,z and norm of 
             # vector of each grid point
-            self.points = np.zeros((list(self.npoints)+[4]))
+            self.points = np.zeros((list(self.npoints)+[4]), dtype=np.float64)
             if shift:
-                grid = [np.linspace(-0.5, 0.5, num=self.npoints[alpha], endpoint=False) for alpha in range(3)]
+                grid = [np.linspace(-0.5, 0.5, num=self.npoints[alpha], endpoint=False, dtype=np.float64) for alpha in range(3)]
             else:
-                grid = [np.linspace(0, 1, num=self.npoints[alpha], endpoint=False) for alpha in range(3)]
+                grid = [np.linspace(0, 1, num=self.npoints[alpha], endpoint=False, dtype=np.float64) for alpha in range(3)]
             gridpoints = np.asarray(np.meshgrid(grid[0],grid[1],grid[2], indexing='ij'))
             # Cartesian components of the real space grid
 
             #New order of einsum testen ab,aijk,ijkb
-            self.points[:,:,:,:3] = np.einsum('ab,aijk->ijkb', self.cell.rvecs, gridpoints)
+            self.points[:,:,:,:3] = np.einsum('ab,aijk->ijkb', self.cell.rvecs.astype(np.float64), gridpoints)
             # Norms of the vectors of the real space grid
             self.points[:,:,:,3] = np.sqrt(self.points[:,:,:,0]**2+self.points[:,:,:,1]**2+self.points[:,:,:,2]**2)
             # Fourier grid
-            self.kpoints = np.zeros(list(self.npoints)+[4])
+            self.kpoints = np.zeros(list(self.npoints)+[4], dtype=np.float64)
             kgrid = [np.fft.fftfreq(self.npoints[alpha],d=self.spacings[alpha]) for alpha in range(3)]
             gridpoints = np.meshgrid(kgrid[0],kgrid[1],kgrid[2], indexing='ij')
 
@@ -87,7 +87,7 @@ class Grid(object):
 
             # Lanczos kernel for the Fourier transform, to mitigate gibbs phenomenon due to fft
             kcut = 2*np.pi/np.array(self.spacings)
-            self.sigma_lanczos = np.sinc(self.kpoints[:,:,:,0]/kcut[0])*np.sinc(self.kpoints[:,:,:,1]/kcut[1])*np.sinc(self.kpoints[:,:,:,2]/kcut[2])
+            self.sigma_lanczos = (np.sinc(self.kpoints[:,:,:,0]/kcut[0])*np.sinc(self.kpoints[:,:,:,1]/kcut[1])*np.sinc(self.kpoints[:,:,:,2]/kcut[2])).astype(np.float64)
 
 
     def supercell(self, supercell):

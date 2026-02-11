@@ -86,12 +86,13 @@ class NanoporousHost(Host):
                 self.atoms = read(struct)
             except:
                 self.atoms = atoms_from_chk(struct)
+            self.atoms.center()
+            self.atoms.set_positions(self.atoms.positions*dist_unit)
             #shift molecule so that center of positions is the origin (as cDFT grid will be centered around this origin)
             if shift:
                 positions = self.atoms.get_positions()
                 positions -= positions.sum(axis=0)/len(positions)
-                self.atoms.set_positions(positions*dist_unit)
-            rvecs = np.array(self.atoms.get_cell())* dist_unit
+            rvecs = np.array(self.atoms.get_cell()) * dist_unit
             cell = Cell(rvecs)
             super().__init__(name, cell)
             self.struct = struct

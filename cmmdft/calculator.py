@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
-import os, sys, numpy as np, matplotlib.pyplot as plt, copy, re
+import os, sys, matplotlib.pyplot as plt, copy, re
+import numpy as np
 from pathlib import Path
 import scipy.optimize as opt
 from scipy.special import logsumexp
@@ -58,11 +59,10 @@ class Calculator(object):
         label : str, optional
             Optional label for identification.
         """
-        self.program = program.copy()
         self.name_dict = program.name_dict
         self.workdir = program.workdir
-        self.grid = program.grid.copy()
-        self.fener = program.fener.copy()
+        self.grid = program.grid
+        self.fener = program.fener
         self.host = program.system.host
         self.guest = program.system.guest
         self.ncomp = program.system.guest.nspecies
@@ -93,7 +93,7 @@ class Calculator(object):
         fn = self.workdir / f'rho_{file_suff}.npy'
         assert fn.is_file(), f'No file found at {fn}'
 
-        rho = np.load(fn)
+        rho = np.load(fn, dtype=np.float32)
         return rho.mean(), rho.min(), rho.max(), rho.std()
 
     def loading(self, temp, chempot, mask=None):
@@ -767,79 +767,97 @@ class Calculator(object):
                 value = np.sum(value)
         return value
     
-    def collective_variable(self, diffusion_path=None, ring_indices=None, dist_from_axis=None,
-                             supercell=False, step_dist=0.5*angstrom, cvs_limits=None):
-        """
-        Calculate collective variables for a given diffusion path or ring indices.
+    def collective_variable(self, diffusion_path=None, ring_indices=None,
+                                    dist_from_axis=None, supercell=False,
+                                    step_dist=0.5*angstrom, cvs_limits=None,
+                                    batch_size=16):
 
-        Parameters
-        ----------
-        diffusion_path : array-like, optional
-            2D array defining the diffusion path (start and end points).
-        ring_indices : array-like, optional
-            Indices of atoms forming the ring for diffusion.
-        dist_from_axis : float, optional
-            Maximum distance from the diffusion axis for inclusion.
-        supercell : bool, optional
-            If True, use supercell for calculations.
-        step_dist : float, optional
-            Distance between CV grid points, default 0.5 Angstrom.
-        cvs_limits : tuple, optional
-            Tuple constraining CV values (min, max).
 
-        Returns
-        -------
-        tuple
-            (cvs, cvs_mat, dist_mask): CV array, CV matrix, and distance mask.
+        assert diffusion_path is not None or ring_indices is not None, \
+            "Must provide diffusion_path or ring_indices"
 
-        Raises
-        ------
-        AssertionError
-            If neither diffusion_path nor ring_indices is provided.
-        ValueError
-            If cvs_limits is not a 2-element tuple.
-        """
-        
-        assert diffusion_path is not None or ring_indices is not None, "Must provide a diffusion path (diffusion_path) or indices of the atom which form the ring through which the diffusion takes place (ring_indices)"
-
+        # ---------- Infer diffusion path ----------
         if ring_indices is not None and diffusion_path is None:
-            #calculate the distance from the ring through which the diffusion  takes place
-            diffusion_path = np.empty((2,3))
+            diffusion_path = np.empty((2, 3))
             center = np.mean(self.host.atoms.positions[ring_indices], axis=0)
-            points = self.host.atoms.positions[ring_indices] - center
-            u, s, vh = np.linalg.svd(points)            
+            pts = self.host.atoms.positions[ring_indices] - center
+            _, _, vh = np.linalg.svd(pts)
             diffusion_path[0] = center
-            diffusion_path[1] = (vh[-1,:] + center)/np.linalg.norm(vh[-1,:] + center)
-        
-        # Calculate the collective variables of the points in the grid and list them in ascending order
-        points = self.grid.points[:,:,:,:-1]
+            diffusion_path[1] = (vh[-1] + center) / np.linalg.norm(vh[-1] + center)
 
-        unit_vector = (diffusion_path[1] - diffusion_path[0])/np.linalg.norm(diffusion_path[1] - diffusion_path[0])
-        shifted_points = points - diffusion_path[0]
-        cvs_mat = shifted_points@unit_vector
-        
+        unit_vector = diffusion_path[1] - diffusion_path[0]
+        unit_vector /= np.linalg.norm(unit_vector)
+
+        base_points = self.grid.points[:, :, :, :-1]
+        base_shape = base_points.shape[:3]
+
+        # ---------- Supercell layout ----------
         if supercell:
-            points = make_supercell(points, grid_spacings=self.grid.spacings, repetitions=[3,3,3], periodic=False)
-            cvs_mat = (points - diffusion_path[0])@unit_vector
-        cvs_pos = np.arange(0, np.max(cvs_mat) + step_dist, step_dist)
-        cvs_neg = np.arange(0, np.min(cvs_mat) - step_dist, -step_dist)[::-1]
+            reps = (3, 3, 3)
+            grid_spacings = np.array(self.grid.spacings)
+            offsets = list(itertools.product(range(3), repeat=3))
+            out_shape = tuple(base_shape[d] * reps[d] for d in range(3))
+        else:
+            offsets = [(0, 0, 0)]
+            grid_spacings = np.zeros(3)
+            out_shape = base_shape
+
+        # ---------- Allocate outputs ----------
+        cvs_mat = np.empty(out_shape, dtype=np.float32)
+        dist_mask = np.ones(out_shape, dtype=bool)
+
+        # ---------- Streaming min/max ----------
+        cv_min = np.inf
+        cv_max = -np.inf
+
+        # ---------- SINGLE PASS ----------
+        for ox, oy, oz in offsets:
+            offset_vec = np.array([ox, oy, oz]) * grid_spacings * base_shape
+
+            x0 = ox * base_shape[0]
+            x1 = x0 + base_shape[0]
+
+            y0 = oy * base_shape[1]
+            y1 = y0 + base_shape[1]
+
+            z_base = oz * base_shape[2]
+
+            for z0 in range(0, base_shape[2], batch_size):
+                z1 = min(z0 + batch_size, base_shape[2])
+
+                chunk = base_points[:, :, z0:z1] + offset_vec
+                shifted = chunk - diffusion_path[0]
+
+                cvs_chunk = shifted @ unit_vector
+
+                # write CVs
+                out_z0 = z_base + z0
+                out_z1 = z_base + z1
+                cvs_mat[x0:x1, y0:y1, out_z0:out_z1] = cvs_chunk
+
+                # update min/max
+                cv_min = min(cv_min, cvs_chunk.min())
+                cv_max = max(cv_max, cvs_chunk.max())
+
+                # distance mask if requested
+                if dist_from_axis is not None:
+                    cross = np.cross(chunk - diffusion_path[0], unit_vector)
+                    distances = np.linalg.norm(cross, axis=-1)
+                    dist_mask[x0:x1, y0:y1, out_z0:out_z1] = distances < dist_from_axis
+
+        # ---------- Build CV axis AFTER streaming ----------
+        cvs_pos = np.arange(0, cv_max + step_dist, step_dist)
+        cvs_neg = np.arange(0, cv_min - step_dist, -step_dist)[::-1]
         cvs = np.concatenate((cvs_neg, cvs_pos[1:]))
 
+        # ---------- Apply CV limits ----------
         if cvs_limits is not None:
-            assert len(cvs_limits) == 2, 'cvs_limits must be a tuple of two numbers constraining the cvs values for which the free energy is calculated'
-            small_limit = np.min(np.array(cvs_limits))
-            large_limit = np.max(np.array(cvs_limits))
-            left_index = bisect_left(cvs, small_limit)
-            right_index = bisect_left(cvs, large_limit)
-            cvs = cvs[left_index: right_index]
+            small, large = sorted(cvs_limits)
+            left = bisect_left(cvs, small)
+            right = bisect_left(cvs, large)
+            cvs = cvs[left:right]
 
-        #construct a mask to filter out points which are too far from the diffusion axis
-        dist_mask = np.ones_like(cvs_mat)
-        if dist_from_axis is not None:
-            distances = np.linalg.norm(np.cross(points-diffusion_path[0], unit_vector),axis=-1) #calculate the distance to the axis
-            dist_mask = distances < dist_from_axis
-
-        return cvs, cvs_mat, dist_mask
+        return cvs, cvs_mat, dist_mask    
 
     def project_density(self, temperature, chempot, cvs, cvs_mat, dist_mask, rewrite=False, supercell=True, normalize=False, save=True):
         """
@@ -1655,7 +1673,7 @@ class Calculator(object):
                 if 'ExtPot' in self.fener.part_names:
                     fn = self.workdir / f'ext_pot.npy'
                 elif 'EffExtPot' in self.fener.part_names:
-                    effepot_fn = Path(self.program.name_dict['prefix']) / self.program.name_dict['hostname'] / self.program.name_dict['guestname'] / self.program.name_dict['ff_suffix'] / self.program.name_dict['grid_suffix'] / self.program.name_dict['suffix'] #LOUIS: why does this line use self.program.name_dict instead of self.name_dict?
+                    effepot_fn = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] #LOUIS: why does this line use self.name_dict instead of self.name_dict?
                     effepot_fn.mkdir(parents=True, exist_ok=True)
                     fn = f'{effepot_fn}/eff_epot_{temperature:3.2f}.npy'
             np.save(fn, ext_pot.real)

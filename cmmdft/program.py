@@ -400,7 +400,7 @@ class Program(object):
         '''This function solves for the density profile at given a chemical potential and temperature'''
         if silent: log_level = 3
         else: log_level = 2
-        with log.section('PROGRAM', log_level, timer='Solve'):
+        with log.section('PROGRAM', log_level, timer=None):
             rho_old = self.rho0.copy()
             N, rho, converged = solver.solve(chempot, rho_old, log_level)
 

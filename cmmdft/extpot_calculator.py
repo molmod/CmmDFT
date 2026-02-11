@@ -1410,22 +1410,10 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, position_shift=True,
             mass_str = particle.get('mass')
             if mass_str:
                 xml_masses.append(float(mass_str))
-    
     # Use XML masses if available and more complete
     if len(xml_masses) == natom:
         masses = np.array(xml_masses)
         
-    elif lj_force is None:
-        NonBondedForce = root.findall('.//NonbondedForce')
-        for force in NonBondedForce:
-            particles = force.find('Particles')
-            for particle in particles.findall('Particle'):
-                epsilon_str = particle.get('eps')
-                sigma_str = particle.get('sig')
-                if sigma_str and epsilon_str:
-                    sigma = float(sigma_str)
-                    epsilon = float(epsilon_str)
-                    lj_params.append((sigma, epsilon))
 
     # Also extract charges from NonbondedForce for completeness
     charges = []

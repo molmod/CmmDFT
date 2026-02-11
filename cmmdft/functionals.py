@@ -3,7 +3,7 @@
 from __future__ import division
 import copy as copy_module
 
-import numpy as np, os, copy, re
+import numpy as np, os, copy, re, gc
 from pathlib import Path
 from .units_constants import kjmol, planck, boltzmann, angstrom
 
@@ -77,7 +77,7 @@ class HardSphereFunctional(Functional):
     
     name = 'HardSphere'
     
-    def __init__(self, grid, Rhs, m=None, version='MFMT'):
+    def __init__(self, grid, Rhs, m=None, version='MFMT', workdir='.'):
         """
         **Arguments:**
 
@@ -105,6 +105,7 @@ class HardSphereFunctional(Functional):
                 raise ValueError("Length of m should be equal to length of Rhs")
         version_array = decode_version(version)
         self.version = version_array
+        self.workdir=workdir
 
     # def copy(self):
     #     return copy_module.deepcopy(self)
@@ -114,7 +115,7 @@ class HardSphereFunctional(Functional):
         self.beta = 1/(boltzmann*temperature)        
         if not isinstance(Rhs, (list, np.ndarray)):
             Rhs = [Rhs]
-        self.R = np.array(Rhs)
+        self.R = np.array(Rhs, dtype=np.float64)
         self.krho = None
         self.nt = None
         self._init_weight_functions()
@@ -135,23 +136,22 @@ class HardSphereFunctional(Functional):
         omega = np.einsum('i,jkl->ijkl', self.R, k)
         mask = ~np.isclose(omega,0)
         
-        kw0 = sinc(omega)
-        kw0 *= self.grid.sigma_lanczos[None,...]
-        kw1 = np.einsum('i,ijkl->ijkl', self.R, kw0)
-        kw2 = 4.0*np.pi*np.einsum('i,ijkl->ijkl', self.R**2, kw0)
+        kw0 = (sinc(omega) * self.grid.sigma_lanczos[None,...]).astype(np.float64)
+        kw1 = np.einsum('i,ijkl->ijkl', self.R, kw0, dtype=np.float64)
+        kw2 = 4.0*np.pi*np.einsum('i,ijkl->ijkl', self.R**2, kw0, dtype=np.float64)
 
-        j2_basis = sph_bessel_3(omega)
-        j2_basis *= self.grid.sigma_lanczos
+        j2_basis = (sph_bessel_3(omega) * self.grid.sigma_lanczos).astype(np.float64)
 
-        kw3 = 4*np.pi/3.0*np.einsum('i,ijkl->ijkl', self.R**3, j2_basis)
+        kw3 = 4*np.pi/3.0*np.einsum('i,ijkl->ijkl', self.R**3, j2_basis, dtype=np.float64)
 
-        kwv2 = -1.j*np.einsum('ijkl,jklm->ijklm', kw3, self.grid.kpoints[:,:,:,:3])
+
+        kwv2 = -1.j*np.einsum('ijkl,jklm->ijklm', kw3, self.grid.kpoints[:,:,:,:3], dtype=np.complex128)
         kwv2[~mask] = 0.0
-        kwv1 = 1/(4*np.pi)*np.einsum('i,ijklm->ijklm', 1/self.R, kwv2)
+        kwv1 = 1/(4*np.pi)*np.einsum('i,ijklm->ijklm', 1/self.R, kwv2, dtype=np.complex128)
 
 
-        self.scalar_weight_functions = np.array([kw0, kw1, kw2, kw3])
-        self.vector_weight_functions = np.array([kwv1, kwv2])
+        self.scalar_weight_functions = (kw0, kw1, kw2, kw3)
+        self.vector_weight_functions = (kwv1, kwv2)
 
         if self.version[1] == 1:
             #tensor version taken from: https://doi.org/10.1063/5.0010974
@@ -172,18 +172,19 @@ class HardSphereFunctional(Functional):
 
             # scalar coefficients
             J2 = j2_basis - kw0
-            B = -4*np.pi*self.R[:,None,None,None]**2 * J2                   # multiplies (hat{k}_i hat{k}_j - δ_ij/3)
+            B = -4*np.pi*self.R[:,None,None,None]**2 * J2 # multiplies (hat{k}_i hat{k}_j - δ_ij/3)
 
             # build each component of w_ij(k) in the continuous convention
-            kwxx = B*(Hxx - 1/3) # + 1/3*kw2
-            kwxy = B*(Hxy - 0.0) # + 0.0*kw2
-            kwxz = B*(Hxz - 0.0) # + 0.0*kw2
-            kwyy = B*(Hyy - 1/3) # + 1/3*kw2
-            kwyz = B*(Hyz - 0.0) # + 0.0*kw2
-            kwzz = B*(Hzz - 1/3) # + 1/3*kw2
+            kwxx = B*(Hxx - 1/3).astype(np.float64)
+            kwxy = B*(Hxy - 0.0).astype(np.float64)
+            kwxz = B*(Hxz - 0.0).astype(np.float64)
+            kwyy = B*(Hyy - 1/3).astype(np.float64)
+            kwyz = B*(Hyz - 0.0).astype(np.float64)
+            kwzz = B*(Hzz - 1/3).astype(np.float64)
 
 
-            self.tensor_weight_functions = np.array([kwxx, kwxy, kwxz, kwyy, kwyz, kwzz])
+            self.tensor_weight_functions = (kwxx, kwxy, kwxz, kwyy, kwyz, kwzz)
+
 
     def _get_density_functions(self, krho):
         """
@@ -197,97 +198,39 @@ class HardSphereFunctional(Functional):
             The density in reciprocal space
         """
         with log.section('(M)FMT', 3, timer='density functions'):
-            kni = krho[np.newaxis, ...]*self.scalar_weight_functions
-            ni = self.grid.ifftn(kni)
-            ni = np.einsum('pnijk,n->pijk', ni, self.m)
-            n0, n1, n2, n3 = ni
-
             # # The scalar density functions
-            # kn0 = krho*self.scalar_weight_functions[0]
-            # n0 = self.grid.ifftn(kn0)
-            # n0 = np.sum(n0*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-            # kn1 = krho*self.scalar_weight_functions[1]
-            # n1 = self.grid.ifftn(kn1)
-            # n1 = np.sum(n1*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-            # kn2 = krho*self.scalar_weight_functions[2]
-            # n2 = self.grid.ifftn(kn2)
-            # n2 = np.sum(n2*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-            # kn3 = krho*self.scalar_weight_functions[3]
-            # n3 = self.grid.ifftn(kn3)
-            # n3 = np.sum(n3*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
+            n0 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[0]), self.m, axes=(0,0))
+            n1 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[1]), self.m, axes=(0,0))
+            n2 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[2]), self.m, axes=(0,0))
+            n3 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[3]), self.m, axes=(0,0))
 
             #When n3 approaches 1, things can go wrong because the functional
             # contains terms with log(1-n3) and 1/(1-n3)
             n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n3 is in [0, 1-1e-12]
             # The vector density functions
-
-            knvi = krho[np.newaxis,...,np.newaxis] * self.vector_weight_functions
-            nvi = self.grid.ifftn(knvi)
-            nvi = np.einsum('pnijkd,n->pijkd', nvi, self.m)
-            nv1, nv2 = nvi
-
-            # knv1 = krho[..., None] * self.vector_weight_functions[0]
-            # nv1 = self.grid.ifftn(knv1)
-            # nv1 = np.sum(nv1*self.m[:,None,None,None,None], axis=0)  #sum over components, weighted by m
-            # # nv1 = np.clip(nv1, 0.0, None)  # Ensure nv1 is non-negative
-
-            # knv2 = krho[..., None] * self.vector_weight_functions[1]
-            # nv2 = self.grid.ifftn(knv2)
-            # nv2 = np.sum(nv2*self.m[:,None,None,None,None], axis=0)  #sum over components, weighted by m
-            # # nv2 = np.clip(nv2, 0.0, None)  # Ensure nv2 is non-negative
+            nv1 = np.tensordot(self.grid.ifftn(krho[..., None] * self.vector_weight_functions[0]), self.m, axes=(0,0))
+            nv2 = np.tensordot(self.grid.ifftn(krho[..., None] * self.vector_weight_functions[1]), self.m, axes=(0,0))
 
             xi = None
             if self.version[0] == 1:
                 xi = (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)/((n2)**2+1e-16)
                 xi = np.clip(xi, 0.0, 1)  # Ensure xi is in [0, 1]
 
-            ln_n3 = np.log(1-n3)
-            # ln_n3 = 1
-            n3_2 = n3*n3
-            n3_3 = n3_2*n3
-
-            return n0,n1,n2,n3,ln_n3,n3_2,n3_3,nv1,nv2,xi
+            return n0,n1,n2,n3,nv1,nv2,xi
 
     def _get_tensor_density_functions(self, krho):
-        knii = krho[np.newaxis, ...]*self.tensor_weight_functions
-        nii = self.grid.ifftn(knii)
-        nii = np.einsum('tnijk,n->tijk', nii, self.m)
-        nxx, nxy, nxz, nyy, nyz, nzz = nii
+        nxx = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[0]), self.m, axes=(0,0))
+        nxy = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[1]), self.m, axes=(0,0))
+        nxz = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[2]), self.m, axes=(0,0))
+        nyy = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[3]), self.m, axes=(0,0))
+        nyz = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[4]), self.m, axes=(0,0))
+        nzz = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[5]), self.m, axes=(0,0))
 
-        # knxx = krho*self.tensor_weight_functions[0]
-        # knxy = krho*self.tensor_weight_functions[1]
-        # knxz = krho*self.tensor_weight_functions[2]
-        # knyy = krho*self.tensor_weight_functions[3]
-        # knyz = krho*self.tensor_weight_functions[4]
-        # knzz = krho*self.tensor_weight_functions[5]
-
-        # nxx = self.grid.ifftn(knxx)
-        # # nxx = np.clip(nxx, 0.0, None)  # Ensure nxx is non-negative
-        # nxx = np.sum(nxx*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        # nxy = self.grid.ifftn(knxy)
-        # # nxy = np.clip(nxy, 0.0, None)  # Ensure nxy is non-negative
-        # nxy = np.sum(nxy*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        # nxz = self.grid.ifftn(knxz)
-        # # nxz = np.clip(nxz, 0.0, None)  # Ensure nxz is non-negative
-        # nxz = np.sum(nxz*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        # nyy = self.grid.ifftn(knyy)
-        # # nyy = np.clip(nyy, 0.0, None)  # Ensure nyy is non-negative
-        # nyy = np.sum(nyy*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        # nyz = self.grid.ifftn(knyz)
-        # # nyz = np.clip(nyz, 0.0, None)  # Ensure nyz is non-negative
-        # nyz = np.sum(nyz*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        # nzz = self.grid.ifftn(knzz)
-        # # nzz = np.clip(nzz, 0.0, None)  # Ensure nzz is non-negative
-        # nzz = np.sum(nzz*self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-
-        tr2 = (nxx**2 + nyy**2 + nzz**2 + 2*(nxy**2 + nxz**2 + nyz**2))
-        tr3 = (nxx**3 + nyy**3 + nzz**3 + 3*(nxx*nxy*nxy + nxx*nxz*nxz + nyy*nxy*nxy + nyy*nyz*nyz + nzz*nxz*nxz + nzz*nyz*nyz) + 6*nxy*nxz*nyz)
-        return np.array([nxx, nxy, nxz, nyy, nyz, nzz, tr2, tr3])
+        
+        return [nxx, nxy, nxz, nyy, nyz, nzz]
 
     def get_n3(self, krho):
-        kn3 = krho*self.scalar_weight_functions[3]
-        n3 = np.sum(self.grid.ifftn(kn3) * self.m[:,None,None,None], axis=0)  #sum over components, weighted by m
-        return n3
+        return np.einsum('nijk,n->ijk',self.grid.ifftn(krho*self.scalar_weight_functions[3]), self.m, optimize='optimal')  #sum over components, weighted by m
 
     def set_density(self, krho):
         #check if current density is the same as previous one
@@ -318,12 +261,8 @@ class HardSphereFunctional(Functional):
             # functions with the corresponding weight function
             dFk_total = 0.0
 
-
-            # for get_dphi, kweight in zip(scalar_dphi, self.scalar_weight_functions):
-            #     dFk_total += self.grid.fftn(get_dphi(*self.weighted_densities, nt=self.nt, version=self.version))[None,...]*kweight
-
-            n3, ln_n3, n3_2, n3_3 = self.weighted_densities[3:7]
-            phi1, phi2, phi3 = _get_phi(n3, ln_n3, n3_2, n3_3, self.version)
+            n3 = self.weighted_densities[3]
+            phi1, phi2, phi3 = _get_phi(n3, self.version)
 
             dphi_stacked = _get_scalar_dphi(*self.weighted_densities, self.nt, phi1, phi2, phi3, version=self.version)
             kdphi_stacked = self.grid.fftn(dphi_stacked)
@@ -333,10 +272,6 @@ class HardSphereFunctional(Functional):
             dphi_stacked = _get_vector_dphi(*self.weighted_densities, self.nt, phi2, phi3, version=self.version)
             kdphi_stacked = self.grid.fftn(dphi_stacked)
             dFk_total += -np.einsum('pijkv,pnijkv->nijk', kdphi_stacked, self.vector_weight_functions)
-
-            # for get_dphi, kweight in zip(vector_dphi, self.vector_weight_functions):
-            #     kdphi = self.grid.fftn(get_dphi(*self.weighted_densities, nt=self.nt, version=self.version))
-            #     dFk_total += -(kdphi[None,...,0] * kweight[...,0] + kdphi[None,...,1] * kweight[...,1] + kdphi[None,...,2] * kweight[...,2])
 
             if self.version[1] == 1:
                 kdphi = self.grid.fftn(_get_dphi_nt(*self.weighted_densities, self.nt, phi3, version=self.version))
@@ -355,8 +290,8 @@ class HardSphereFunctional(Functional):
             else:
                 return self.grid.integrate(phi)/self.beta
 
-#@njit(cache=True)
-def get_phi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
+# @njit(cache=True)
+def get_phi(n0, n1, n2, n3, nv1, nv2, xi, nt, version):
     """
     Compute the functional value
 
@@ -366,7 +301,7 @@ def get_phi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
         The density functions, should be computed using _get_density_functions
     """
 
-    phi1, phi2, phi3 = _get_phi(n3, ln_n3, n3_2, n3_3, version)
+    phi1, phi2, phi3 = _get_phi(n3, version)
     phi = n0*phi1
     phi += (n1*n2 - (nv1[...,0]*nv2[...,0]+nv1[...,1]*nv2[...,1]+nv1[...,2]*nv2[...,2]))*phi2
     if version[0] == 1:
@@ -375,18 +310,19 @@ def get_phi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
         prefactor3 = (n2**3-3.0*n2*(nv2[...,0]**2+nv2[...,1]**2+nv2[...,2]**2))
 
     if version[1] == 1:
-        xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
+        xx, xy, xz, yy, yz, zz = nt
         
         prefactor3 += (9/2)*(xx*nv2[...,0]**2 + yy*nv2[...,1]**2 + zz*nv2[...,2]**2 
                             + 2*xy*nv2[...,0]*nv2[...,1] + 2*xz*nv2[...,0]*nv2[...,2] + 2*yz*nv2[...,1]*nv2[...,2]) #quadratic form nv2*nt*nv2
-
+        
+        tr3 = (xx**3 + yy**3 + zz**3 + 3*(xx*xy*xy + xx*xz*xz + yy*xy*xy + yy*yz*yz + zz*xz*xz + zz*yz*yz) + 6*xy*xz*yz)
         prefactor3 -= (9/2)*tr3
     phi += prefactor3*phi3
     return phi
 
-#@njit(cache=True)
-def _get_scalar_dphi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, phi1, phi2, phi3, version):
-    dphi1, dphi2, dphi3 = _get_dphidn(n3, ln_n3, n3_2, n3_3, version)
+# @njit(cache=True)
+def _get_scalar_dphi(n0, n1, n2, n3, nv1, nv2, xi, nt, phi1, phi2, phi3, version):
+    dphi1, dphi2, dphi3 = _get_dphidn(n3, version)
     _dphi_n0 = phi1
 
     _dphi_n1 = n2*phi2    
@@ -405,18 +341,19 @@ def _get_scalar_dphi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, phi1, 
         prefactor3 = (n2**3-3.0*n2*(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2))
     
     if version[1] == 1:
-        xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
+        xx, xy, xz, yy, yz, zz = nt
 
         prefactor3 += (9/2)*(xx*nv2[...,0]**2 + yy*nv2[...,1]**2 + zz*nv2[...,2]**2 + 
                    2*xy*nv2[...,0]*nv2[...,1] + 2*xz*nv2[...,0]*nv2[...,2] + 2*yz*nv2[...,1]*nv2[...,2]) #quadratic form nv2*nt*nv2
-
+        
+        tr3 = (xx**3 + yy**3 + zz**3 + 3*(xx*xy*xy + xx*xz*xz + yy*xy*xy + yy*yz*yz + zz*xz*xz + zz*yz*yz) + 6*xy*xz*yz)
         prefactor3 -= (9/2)*tr3
     _dphi_n3 += prefactor3*dphi3 
 
     return np.stack((_dphi_n0, _dphi_n1, _dphi_n2, _dphi_n3))
 
-#@njit(cache=True)
-def _get_vector_dphi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, phi2, phi3, version):
+# @njit(cache=True)
+def _get_vector_dphi(n0, n1, n2, n3, nv1, nv2, xi, nt, phi2, phi3, version):
     dphi_nv1 = - nv2 * phi2[..., None]
 
     dphi_nv2 = - nv1 * phi2[..., None]
@@ -430,7 +367,7 @@ def _get_vector_dphi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, phi2, 
     if version[1] == 1:
         vx, vy, vz = nv2[...,0], nv2[...,1], nv2[...,2]
 
-        xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
+        xx, xy, xz, yy, yz, zz = nt
         
         grad_nv = np.empty_like(nv2)
         grad_nv[...,0] = 2 * (xx * vx + xy * vy + xz * vz)
@@ -440,10 +377,10 @@ def _get_vector_dphi(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, phi2, 
         dphi_nv2 += (9/2)*grad_nv*phi3[..., None]
     return np.stack((dphi_nv1, dphi_nv2))
 
-#@njit(cache=True)
-def _get_dphi_nt(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, phi3, version):
+# @njit(cache=True)
+def _get_dphi_nt(n0, n1, n2, n3, nv1, nv2, xi, nt, phi3, version):
     vx, vy, vz = nv2[...,0], nv2[...,1], nv2[...,2]
-    xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
+    xx, xy, xz, yy, yz, zz = nt
 
     g_xx =  vx*vx - 3*(xx*xx + xy*xy + xz*xz)
     g_xy = (vx*vy - 3*(xx*xy + yy*xy + xz*yz))*2
@@ -461,8 +398,12 @@ def _get_dphi_nt(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, phi3, vers
     # grad_nt = np.stack([g_xx, g_xy, g_xz, g_yy, g_yz, g_zz], axis=-1)
     return (9/2)*grad_nt*phi3[...,None]
 
-#@njit(cache=True)
-def _get_phi(n3, ln_n3, n3_2, n3_3, version):
+# @njit(cache=True)
+def _get_phi(n3, version):
+    ln_n3 = np.log(1-n3)
+    n3_2 = n3*n3
+    n3_3 = n3_2*n3
+
     phi1 = -ln_n3
 
     if version[2] == 0 or version[2] == 1:
@@ -484,8 +425,12 @@ def _get_phi(n3, ln_n3, n3_2, n3_3, version):
                         -2*(n3 -3*n3_2 + n3_3 + ln_n3*n3_1_2)/((3*n3_2)*24*np.pi*n3_1_2))       
     return phi1, phi2, phi3 
 
-#@njit(cache=True)
-def _get_dphidn(n3, ln_n3, n3_2, n3_3, version):
+# @njit(cache=True)
+def _get_dphidn(n3, version):
+    ln_n3 = np.log(1-n3)
+    n3_2 = n3*n3
+    n3_3 = n3_2*n3
+
     dphi1 = 1.0/(1.0-n3)
 
     n3_1_2 = (1-2*n3 + n3_2)
@@ -509,130 +454,6 @@ def _get_dphidn(n3, ln_n3, n3_2, n3_3, version):
                         (7/3-n3/2+n3_2/10)/(36*np.pi*n3_1_3),
                         (2*n3-5*n3_2+6*n3_3-n3_2*n3_2 + 2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
     return dphi1, dphi2, dphi3
-
-# @njit
-# def _get_dphi_n0(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-#     return _phi1(n3, ln_n3)
-
-# @njit
-# def _get_dphi_n1(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-#     return n2*_phi2(n3, ln_n3, n3_2, version)    
-
-# @njit
-# def _get_dphi_n2(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-#     dphi = n1*_phi2(n3, ln_n3, n3_2, version)
-#     if version[0] == 1:
-#         dphi += (3*(n2**2)*(1+xi)*((1-xi)**2))*_phi3(n3, ln_n3, n3_2, n3_3, version)
-#     else:
-#         dphi += 3*(n2**2-(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2))*_phi3(n3, ln_n3, n3_2, n3_3, version)
-
-#     return dphi
-
-# @njit
-# def _get_dphi_n3(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-#     dphi = n0*_dphi1dn(n3)
-#     dphi += (n1*n2-(nv2[...,0]*nv1[...,0] + nv2[...,1]*nv1[...,1] + nv2[...,2]*nv1[...,2]))*_dphi2dn(n3, ln_n3, n3_2, version)
-#     if version[0] == 1:
-#         prefactor3 = (n2**3)*((1-xi)**3)
-#     else:
-#         prefactor3 = (n2**3-3.0*n2*(nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2))
-    
-#     if version[1] == 1:
-#         xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
-
-#         prefactor3 += (9/2)*(xx*nv2[...,0]**2 + yy*nv2[...,1]**2 + zz*nv2[...,2]**2 + 
-#                    2*xy*nv2[...,0]*nv2[...,1] + 2*xz*nv2[...,0]*nv2[...,2] + 2*yz*nv2[...,1]*nv2[...,2]) #quadratic form nv2*nt*nv2
-
-#         prefactor3 -= (9/2)*tr3
-#     dphi += prefactor3*_dphi3dn(n3, ln_n3, n3_2, n3_3, version)
-#     return dphi
-
-
-# @njit
-# def _get_dphi_nv1(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-#     dphi = - nv2 * _phi2(n3, ln_n3, n3_2, version)[..., None]
-#     return dphi
-
-# @njit
-# def _get_dphi_nv2(n0, n1, n2, n3, ln_n3, n3_2, n3_3, nv1, nv2, xi, nt, version):
-#     dphi = - nv1 * _phi2(n3, ln_n3, n3_2, version)[..., None]
-#     phi3 = _phi3(n3, ln_n3, n3_2, n3_3, version)
-#     if version[0] == 1:
-#         factor = -6*n2*((1-xi)**2)*phi3
-#         dphi += nv2 * factor[..., None]
-#     else:
-#         factor = -6*n2*phi3
-#         dphi += nv2 * factor[..., None]
-
-#     if version[1] == 1:
-#         vx, vy, vz = nv2[...,0], nv2[...,1], nv2[...,2]
-
-#         xx, xy, xz, yy, yz, zz, tr2, tr3 = nt
-        
-#         grad_nv = np.empty_like(nv2)
-#         grad_nv[...,0] = 2 * (xx * vx + xy * vy + xz * vz)
-#         grad_nv[...,1] = 2 * (xy * vx + yy * vy + yz * vz)
-#         grad_nv[...,2] = 2 * (xz * vx + yz * vy + zz * vz)
-
-#         dphi += (9/2)*grad_nv*phi3[..., None]
-#     return dphi
-
-
-# @njit
-# def _phi1(n3, ln_n3):
-#     return -ln_n3
-
-# @njit
-# def _dphi1dn(n3):
-#     return 1.0/(1.0-n3)
-
-# @njit
-# def _phi2(n3, ln_n3, n3_2, version):
-#     if version[2] == 0 or version[2] == 1:
-#         return 1/(1.0-n3)
-#     elif version[2] == 2:
-#         return np.where(n3<=1e-8,
-#                         (1+ n3_2/9)/(1-n3), 
-#                         (5*n3 - n3_2 + 2*(1-n3)*ln_n3)/(3*(n3-n3_2)))
-
-# @njit            
-# def _dphi2dn( n3, ln_n3, n3_2, version):
-#     n3_1_2 = (1-2*n3 + n3_2)
-#     if version[2] == 0 or version[2] == 1:
-#         return 1/n3_1_2
-#     elif version[2] == 2:
-#         return np.where(n3<=1e-8,
-#                         (1+ 2*n3/9 + n3_2/18)/n3_1_2,
-#                         -2*(n3 - 3*n3_2 + n3_1_2*ln_n3)/(3*n3_2*n3_1_2))
-
-# @njit
-# def _phi3(n3, ln_n3, n3_2, n3_3, version):
-#     n3_1_2 = (1-2*n3 + n3_2)
-#     if version[2] == 0:
-#         return 1/(24*np.pi*n3_1_2)
-#     elif version[2] == 1:
-#         return np.where(n3<=1e-8,
-#                         (1.0-2*n3/9-n3_2/18)/(24*np.pi*n3_1_2),
-#                         (n3+n3_1_2*ln_n3)/(36*np.pi*n3_2*n3_1_2))
-#     elif version[2] == 2:
-#         return np.where(n3<=1e-8,
-#                         (1-4*n3/9+n3_2/18)/(24*np.pi*n3_1_2),
-#                         -2*(n3 -3*n3_2 + n3_3 + ln_n3*n3_1_2)/((3*n3_2)*24*np.pi*n3_1_2))
-
-# @njit
-# def _dphi3dn(n3, ln_n3, n3_2, n3_3, version):
-#     n3_1_3 = (1-3*n3 + 3*n3_2 - n3_3)
-#     if version[2] == 0:
-#         return 1/(12*np.pi*n3_1_3)
-#     elif version[2] == 1:
-#         return np.where(n3<=1e-8,
-#                         (8/3-0.5*n3-0.1*n3_2)/(36*np.pi*n3_1_3),
-#                         -(2*n3-5*n3_2+n3_3+2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
-#     elif version[2] == 2:
-#         return np.where(n3<=1e-8,
-#                         (7/3-n3/2+n3_2/10)/(36*np.pi*n3_1_3),
-#                         (2*n3-5*n3_2+6*n3_3-n3_2*n3_2 + 2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
-
 
 # Universal model constants for a and b
 a_constants = np.array([
@@ -754,47 +575,33 @@ class PCSAFTFunctional(Functional):
                     self.m2_eps_sig3 += self.fractions[i]*self.fractions[j]*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])*self.sigma_mix[i,j]**3
                     self.m2_eps2_sig3 += self.fractions[i]*self.fractions[j]*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])**2*self.sigma_mix[i,j]**3
 
-    def _get_weighted_densities(self, rho, krho):
-        wrho_chain = np.clip(self.grid.ifftn(krho*self.kwchain), 0, None)
-        lambda_chain = self.grid.ifftn(krho*self.kwlambda)
-        lambda_chain = np.clip(lambda_chain, 1e-30, None)
-        zeta2 = np.pi/6*np.sum((self.m*(self.dhs**2))[:,None,None,None]*wrho_chain, axis=0)
-        zeta2 = np.clip(zeta2, 0, None)
-        zeta3 = np.pi/6*np.sum((self.m*(self.dhs**3))[:,None,None,None]*wrho_chain, axis=0)
-        zeta3 = np.clip(zeta3, 0, 0.99)
-
-        wrho_disp = np.clip(self.grid.ifftn(krho*self.kwdisp), 1e-30, None)
-
-        rho_reg = np.clip(wrho_disp, 1e-30, None)
-        self.m_avg = np.sum(self.m[:,None,None,None]*rho_reg, axis=0)/np.sum(rho_reg, axis=0) #local average of m
-
-        prefac_shape = [7] + list(self.grid.npoints)
-        self.a_prefact = np.zeros(prefac_shape)
-        self.b_prefact = np.zeros(prefac_shape)
-
-        for i in range(7):
-            self.a_prefact[i] =  (a_constants[i,0] + (self.m_avg - 1)/self.m_avg*a_constants[i,1] + (self.m_avg - 1)/self.m_avg*(self.m_avg - 2)/self.m_avg*a_constants[i,2])
-            self.b_prefact[i] =  (b_constants[i,0] + (self.m_avg - 1)/self.m_avg*b_constants[i,1] + (self.m_avg - 1)/self.m_avg*(self.m_avg - 2)/self.m_avg*b_constants[i,2])
-
-        eta_disp = np.pi/6*np.sum(self.m[:,None,None,None]*(self.dhs**3)[:,None,None,None]*wrho_disp, axis=0)
-        eta_disp = np.clip(eta_disp, 0, 0.99)
-
+    def _get_weighted_densities(self, krho):
+        wrho_chain = np.clip(self.grid.ifftn(krho*self.kwchain), 0, None).astype(np.float64)
+        lambda_chain = np.clip(self.grid.ifftn(krho*self.kwlambda), 1e-30, None).astype(np.float64)
+        zeta2 = np.clip(np.pi/6*np.einsum('nijk,n->ijk', wrho_chain, self.m*self.dhs**2), 0, None).astype(np.float64)
+        zeta3 = np.clip(np.pi/6*np.einsum('nijk,n->ijk', wrho_chain, self.m*self.dhs**3), 0, 0.99).astype(np.float64)
+        wrho_disp = np.clip(self.grid.ifftn(krho*self.kwdisp), 1e-30, None).astype(np.float64)
+        eta_disp = np.clip(np.pi/6*np.einsum('nijk,n->ijk', wrho_disp, self.m*self.dhs**3), 0, 0.99).astype(np.float64)
         return lambda_chain, zeta2, zeta3, wrho_disp, eta_disp
+
+    def _get_mavg_a_b_prefact(self, wrho_disp):        
+        rho_reg = np.clip(wrho_disp, 1e-30, None)
+        m_avg = np.einsum('nijk,n->ijk', wrho_disp, self.m)/np.sum(rho_reg, axis=0) #local average of m
+
+        a_prefact = [(a_constants[i,0] + (m_avg - 1)/m_avg*a_constants[i,1] + (m_avg - 1)/m_avg*(m_avg - 2)/m_avg*a_constants[i,2]) for i in range(7)]
+        b_prefact = [(b_constants[i,0] + (m_avg - 1)/m_avg*b_constants[i,1] + (m_avg - 1)/m_avg*(m_avg - 2)/m_avg*b_constants[i,2]) for i in range(7)]
+        return m_avg, a_prefact, b_prefact
 
     def value_chain(self, rho, lambda_chain, zeta2, zeta3):
         phi_chain = 0
-        # phi_chain = np.zeros((len(self.m),) + tuple(self.grid.npoints), dtype=np.float64)
         z3_1 = 1/(1-zeta3)
         for i in range(len(self.m)):
-            z2d = self.dhs[i]*zeta2
-            yii = z2d*z3_1*z3_1*(z2d*z3_1 * 0.5 + 1.5) + z3_1
-            rho_reg = np.clip(rho[i], 1e-30, None)
+            yii = self.dhs[i]*zeta2*z3_1*z3_1*(self.dhs[i]*zeta2*z3_1 * 0.5 + 1.5) + z3_1
             rho_ref = np.mean(rho[rho > 1e-10])
             eps = 1e-2
             ratio = (lambda_chain[i] + eps*rho_ref) / (rho[i] + eps*rho_ref)
             yii_lambdai_rhoi = np.clip(yii*ratio, 1e-14, None)
             phi_chain += (1 - self.m[i])*self.grid.integrate(rho[i]*(np.log(yii_lambdai_rhoi)))
-            # phi_chain += (1 - self.m[i])*rho[i]*(np.log(yii_lambdai_rhoi))
 
         return phi_chain/self.beta
     
@@ -804,26 +611,23 @@ class PCSAFTFunctional(Functional):
         phi_chain = np.zeros((len(self.m),) + tuple(self.grid.npoints), dtype=np.float64)
         z3_1 = 1/(1-zeta3)
         for i in range(len(self.m)):
-            z2d = self.dhs[i]*zeta2
-            yii = z2d*z3_1*z3_1*(z2d*z3_1 * 0.5 + 1.5) + z3_1
+            yii = self.dhs[i]*zeta2*z3_1*z3_1*(self.dhs[i]*zeta2*z3_1 * 0.5 + 1.5) + z3_1
             rho_reg = np.clip(rho[i], 1e-30, None)
-            # yii_lambdai_rhoi = np.clip(yii*lambda_chain[i]/rho_reg, 1e-14, None)
             yii_lambdai = np.clip(yii*lambda_chain[i], 1e-14, None)
-            # phi_chain += (1 - self.m[i])*self.grid.integrate(rho[i]*(np.log(yii_lambdai_rhoi)))
             phi_chain[i] += (1 - self.m[i])*rho[i]*(np.log(yii_lambdai)-1)
             phi_id[i] += -(1-self.m[i])*rho[i]*(np.log(rho_reg)-1)
-
         return phi_chain/self.beta, phi_id/self.beta
     
-    def value_disp(self, rho, wrho_disp, eta_disp):
+    def value_disp(self, wrho_disp, eta_disp):
+        m_avg, a_prefact, b_prefact = self._get_mavg_a_b_prefact(wrho_disp)
         I1 = np.zeros(self.grid.npoints, dtype=np.float64)
         I2 = np.zeros(self.grid.npoints, dtype=np.float64)
         for i in range(7):
-            I1 += self.a_prefact[i]*eta_disp**i
-            I2 += self.b_prefact[i]*eta_disp**i
+            I1 += a_prefact[i]*eta_disp**i
+            I2 += b_prefact[i]*eta_disp**i
         
-        C1 = (1 + self.m_avg*(8*eta_disp - 2*eta_disp**2)/(1-eta_disp)**4 + (1 - self.m_avg)*(20*eta_disp - 27*eta_disp**2 + 12*eta_disp**3 - 2*eta_disp**4)/((1-eta_disp)*(2-eta_disp))**2)**(-1)
-        m_I2_C1 = self.m_avg*I2*C1
+        C1 = (1 + m_avg*(8*eta_disp - 2*eta_disp**2)/(1-eta_disp)**4 + (1 - m_avg)*(20*eta_disp - 27*eta_disp**2 + 12*eta_disp**3 - 2*eta_disp**4)/((1-eta_disp)*(2-eta_disp))**2)**(-1)
+        m_I2_C1 = m_avg*I2*C1
         integrand = np.zeros(self.grid.npoints, dtype=np.float64)
 
         for i in range(len(self.m)):
@@ -835,12 +639,8 @@ class PCSAFTFunctional(Functional):
             wrho_disp[i] = np.clip(wrho_disp[i], 1e-30, None)
         
         return self.grid.integrate(integrand)/self.beta
-        # return integrand/self.beta
-
-        # a = -2*np.pi*self.m2_eps_sig3*wrho_disp*I1 - np.pi*self.m2_eps2_sig3*wrho_disp*self.m_avg*I2*C1
-        # return self.grid.integrate(wrho_disp*a)/self.beta
     
-    def derive_chain(self, rho, krho, lambda_chain, zeta2, zeta3, sigma_smooth=None):
+    def derive_chain(self, rho, lambda_chain, zeta2, zeta3, sigma_smooth=None):
         ns = len(self.m)
         eps = 1e-14
         der_shape = [self.n_components] + list(self.grid.npoints)
@@ -851,42 +651,47 @@ class PCSAFTFunctional(Functional):
         yii = np.zeros(der_shape, dtype=np.float64)
         for i in range(len(self.m)):
             di = self.dhs[i]
-            z2di = di*zeta2
-            yii[i] = z2di*z3_2*(z2di*z3_1 * 0.5 + 1.5) + z3_1
+            yii[i] = di*zeta2*z3_2*(di*zeta2*z3_1 * 0.5 + 1.5) + z3_1
 
         for k in range(len(self.m)):
             dk = self.dhs[k]
             rho_dyik_yii = np.zeros(self.grid.npoints, dtype=np.complex128)
             for i in range(len(self.m)):
                 di = self.dhs[i]
-                z2di = di*zeta2
                 dyidnk = np.pi/6*self.m[k]*dk**2*(3/2*di*z3_2 + di**2*zeta2*z3_2*z3_1)
                 dyidnk += np.pi/6*self.m[k]*dk**3*z3_2*(1+3*di*zeta2*z3_1 + 3/2*di**2*zeta2**2*z3_2)
                 rho_dyik_yii += ((1 - self.m[i]) * (rho[i]*(dyidnk/np.clip(yii[i], eps, None))))
-
-            krho_dyik_yii = self.grid.fftn(rho_dyik_yii)
-
-            # Convolution with chain kernel    
-            kdphi_chain = krho_dyik_yii*self.kwchain[k]
-
-            dphi_ch = self.grid.ifftn(kdphi_chain)
             
             # Lambda contribution (indirect):
             rho_ref = np.mean(rho[rho > 1e-10])
             eps = 1e-2
-            ratio = (lambda_chain[k] + eps*rho_ref) / (rho[k] + eps*rho_ref)
+            rho_lambda = 1/((lambda_chain[k] + eps*rho_ref) / (rho[k] + eps*rho_ref))
 
-            rho_lambda = 1/ratio
             k_rho_lambda = self.grid.fftn(rho_lambda)
-            dphi_rho_lambda = (1-self.m[k])*self.grid.ifftn(k_rho_lambda*self.kwlambda[k])
-            dphi_chain[k] += dphi_ch + dphi_rho_lambda
+            dphi_chain[k] += self.grid.ifftn(self.grid.fftn(rho_dyik_yii)*self.kwchain[k]) + (1-self.m[k])*self.grid.ifftn(k_rho_lambda*self.kwlambda[k])
 
-            dphi_chain[k] += (1 - self.m[k]) * (np.log(np.clip(yii[k]*ratio, 1e-20, None)) - 1) # direct part
+            dphi_chain[k] += (1 - self.m[k]) * (np.log(np.clip(yii[k]/rho_lambda, 1e-20, None)) - 1) # direct part
 
         return dphi_chain/self.beta
 
-    def derive_disp(self, rho, krho, wrho_disp, eta_disp):
+    def derive_disp(self, wrho_disp, eta_disp):
+        m_avg, a_prefact, b_prefact = self._get_mavg_a_b_prefact(wrho_disp)
         der_shape = [self.n_components] + list(self.grid.npoints)
+
+        eta_1 = 1/(1-eta_disp)
+        eta_1_4 = eta_1**4
+        eta_2 = eta_disp**2
+        eta_3 = eta_2*eta_disp
+
+        C1 = (1 + m_avg*(8*eta_disp - 2*eta_2)*eta_1_4 + (1 - m_avg)*(20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_disp**2)/((1-eta_disp)*(2-eta_disp))**2)**(-1)
+        dC1deta = -C1**2*( m_avg*(8 + 20*eta_disp - 4*eta_2)*eta_1*eta_1_4 + 2*(1 - m_avg)*(20 - 24*eta_disp + 6*eta_2 + eta_3)/((1-eta_disp)*(2-eta_disp))**3 )
+        dC1dm = -C1**2*( (8*eta_disp - 2*eta_2)*eta_1_4 - (20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_disp**2)/((1-eta_disp)*(2-eta_disp))**2 )
+        del eta_1
+        del eta_1_4
+        del eta_2
+        del eta_3
+        gc.collect()
+
 
         I1 = np.zeros(self.grid.npoints, dtype=np.float64)
         I2 = np.zeros(self.grid.npoints, dtype=np.float64)
@@ -895,32 +700,19 @@ class PCSAFTFunctional(Functional):
         dI2deta = np.zeros(self.grid.npoints, dtype=np.float64)
         dI2dm = np.zeros(self.grid.npoints, dtype=np.float64)
 
-        m_2 = self.m_avg**(-2)
+        m_2 = m_avg**(-2)
         for i in range(0, 7, 1):
             eta_i = eta_disp**i
-            I1 += self.a_prefact[i]*eta_i
-            I2 += self.b_prefact[i]*eta_i
+            I1 += a_prefact[i]*eta_i
+            I2 += b_prefact[i]*eta_i
 
-            daidm = m_2*(a_constants[i,1] + (3*self.m_avg - 4)/self.m_avg*a_constants[i,2])
-            dbidm = m_2*(b_constants[i,1] + (3*self.m_avg - 4)/self.m_avg*b_constants[i,2])
-            dI1dm += daidm*eta_i
-            dI2dm += dbidm*eta_i
+            dI1dm += m_2*(a_constants[i,1] + (3*m_avg - 4)/m_avg*a_constants[i,2])*eta_i
+            dI2dm += m_2*(b_constants[i,1] + (3*m_avg - 4)/m_avg*b_constants[i,2])*eta_i
             if i < 6:
-                dI1deta += (i+1)*self.a_prefact[i+1]*eta_i
-                dI2deta += (i+1)*self.b_prefact[i+1]*eta_i
-
-        eta_1 = 1/(1-eta_disp)
-        eta_1_4 = eta_1**4
-        eta_2 = eta_disp**2
-        eta_3 = eta_2*eta_disp
-        eta_4 = eta_2**2
-    
-        C1 = (1 + self.m_avg*(8*eta_disp - 2*eta_2)*eta_1_4 + (1 - self.m_avg)*(20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_4)/((1-eta_disp)*(2-eta_disp))**2)**(-1)
-        dC1deta = -C1**2*( self.m_avg*(8 + 20*eta_disp - 4*eta_2)*eta_1*eta_1_4 + 2*(1 - self.m_avg)*(20 - 24*eta_disp + 6*eta_2 + eta_3)/((1-eta_disp)*(2-eta_disp))**3 )
-        dC1dm = -C1**2*( (8*eta_disp - 2*eta_2)*eta_1_4 - (20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_4)/((1-eta_disp)*(2-eta_disp))**2 )
+                dI1deta += (i+1)*a_prefact[i+1]*eta_i
+                dI2deta += (i+1)*b_prefact[i+1]*eta_i
 
         I2_C1 = I2*C1
-        m_I2_C1 = self.m_avg*I2_C1
 
         # derivative of m_avg to wrhok
         dmdk = np.zeros(der_shape, dtype=np.float64)
@@ -937,17 +729,16 @@ class PCSAFTFunctional(Functional):
         da2 = np.zeros(der_shape, dtype=np.float64)
         for k in range(len(self.m)):
             da1[k] = (dmdk[k]*dI1dm + detadk[k]*dI1deta)
-            da2[k] = (dmdk[k]*I2_C1 + self.m_avg*(dmdk[k]*dI2dm + detadk[k]*dI2deta)*C1 + self.m_avg*I2*(dmdk[k]*dC1dm + detadk[k]*dC1deta))
+            da2[k] = (dmdk[k]*I2_C1 + m_avg*(dmdk[k]*dI2dm + detadk[k]*dI2deta)*C1 + m_avg*I2*(dmdk[k]*dC1dm + detadk[k]*dC1deta))
+        
         dphi_disp = np.zeros(der_shape, dtype=np.float64)
-
         for k in range(len(self.m)):
             dphidk = np.zeros(self.grid.npoints, dtype=np.float64)
             for i in range(len(self.m)):
-                fki = -2*np.pi*self.m[i]*self.m[k]*(self.beta*self.epsilon_mix[i,k])*self.sigma_mix[i,k]**3*I1
-                fki += -np.pi*self.m[i]*self.m[k]*(self.beta*self.epsilon_mix[i,k])**2*self.sigma_mix[i,k]**3*m_I2_C1
+                dphiijdk = -2*np.pi*self.m[i]*self.m[k]*(self.beta*self.epsilon_mix[i,k])*self.sigma_mix[i,k]**3*I1
+                dphiijdk += -np.pi*self.m[i]*self.m[k]*(self.beta*self.epsilon_mix[i,k])**2*self.sigma_mix[i,k]**3*m_avg*I2_C1
+                dphiijdk *= 2
 
-                dphiijdk = np.zeros(self.grid.npoints, dtype=np.float64)
-                dphiijdk += 2*fki
                 for j in range(len(self.m)):
                     pre1 = -2*np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])*self.sigma_mix[i,j]**3
                     pre2 = -np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])**2*self.sigma_mix[i,j]**3
@@ -969,16 +760,16 @@ class PCSAFTFunctional(Functional):
             The density in reciprocal space
         """
         with log.section('PC-SAFT', 3, timer='PC-SAFT derive'):
-            lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(rho, krho)
-            dphi_chain = self.derive_chain(rho, krho, lambda_chain, zeta2, zeta3)
-            dphi_disp = self.derive_disp(rho, krho, wrho_disp, eta_disp)
+            lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(krho)
+            dphi_chain = self.derive_chain(rho, lambda_chain, zeta2, zeta3)
+            dphi_disp = self.derive_disp(wrho_disp, eta_disp)
             return dphi_chain + dphi_disp
     
     def value(self, rho, krho):
         with log.section('PC-SAFT', 3, timer='PC-SAFT value'):
-            lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(rho, krho)
+            lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(krho)
             val_chain = self.value_chain(rho, lambda_chain, zeta2, zeta3)
-            val_disp = self.value_disp(rho, wrho_disp, eta_disp)
+            val_disp = self.value_disp(wrho_disp, eta_disp)
             return val_chain + val_disp
 
 class MFAFunctional(Functional):
@@ -1408,7 +1199,7 @@ class WDAVFunctional(LDAFunctional):
         """
         with log.section('WDA', 3, timer='WDA initialize'):
             k = self.grid.kpoints[:,:,:,3]
-            omega = np.einsum('i,jkl->ijkl', self.D, k)
+            omega = np.einsum('i,jkl->ijkl', self.D, k, optimize='optimal')
             mask = ~np.isclose(omega,0)
             self.kw = np.zeros_like(omega, dtype=np.complex128)
             self.kw[mask] = 3*(np.sin(omega[mask])-omega[mask]*np.cos(omega[mask]))/omega[mask]**3

@@ -458,7 +458,6 @@ class Program(object):
                 rho = np.load(self.rho_fn)
                 N = self.grid.integrate(rho)
                 return N, rho, True
-
             self._set_initial_density(Ninit=Ninit, chempot=chempot, rewrite=rewrite)    
             if isinstance(self.solver, list):
                 self._cascade_solver(self.solver, chempot, silent=silent)    

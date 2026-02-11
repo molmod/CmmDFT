@@ -392,7 +392,7 @@ class EquationOfState(object):
         """
         return np.logspace(-10,0,npoints)/angstrom**3
     
-    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000):    
+    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=5000):    
         r"""
         Solve EOS for density as function of chemical potential at fixed temperature.
 
@@ -452,7 +452,7 @@ class EquationOfState(object):
                 
         return densities
 
-    def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000):
+    def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=5000):
         r"""
         Solve EOS for density as function of pressure at fixed temperature.
 
@@ -855,7 +855,7 @@ class EOS_MIX(EquationOfState):
         rho, rho_sum, x = self._get_fractional_coefficients(rho_orig)
         return x * P * np.exp(mu_res/(kT))
     
-    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=1000):
+    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=5000):
         """
         Solve EOS for density as function of chemical potential at fixed temperature.
 

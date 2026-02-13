@@ -594,125 +594,6 @@ def get_external_potential_derivatives_jit(points, host_data, host_ff_dict, sigm
     Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz  = _compute_vext_derivatives(points, host_pos, sigma_mixed_arr, epsilon_mixed_arr, rvecs, inv_rvecs, cutoff, np.array(spacings))
     return np.array([ Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz]).reshape((8,)+points_shape[:-1])
 
-def compute_batch_insertion_energy_typed(
-    guest_positions, 
-    FF_dict, sigmaff, epsilonff, host_syst,
-    r_cut=15.0*angstrom, shift=False
-):
-    """
-    Compute vectorized insertion energy for typed guest atoms in a host system.
-
-    Uses Lorentz-Berthelot mixing rules and cell list algorithm for efficiency.
-
-    Parameters
-    ----------
-    guest_positions : ndarray
-        Guest atom positions, shape (M, 3).
-    FF_dict : dict
-        Force field parameters for host atom types.
-    sigmaff : float
-        Sigma parameter for guest atom.
-    epsilonff : float
-        Epsilon parameter for guest atom.
-    host_syst : object
-        Host system object with pos, ffatype_ids, and cell.
-    r_cut : float, optional
-        Cutoff distance, default 15.0*angstrom.
-    shift : bool, optional
-        If True, apply potential shift at cutoff, default False.
-
-    Returns
-    -------
-    ndarray
-        Insertion energy for each guest atom, shape (M,).
-
-    Raises
-    ------
-    NotImplementedError
-        Always raised; function not yet implemented.
-    """
-    raise NotImplementedError("Typed insertion energy calculation is not implemented yet.")
-    if guest_positions.ndim == 1:
-        guest_positions = np.expand_dims(guest_positions, axis=0)
-    box = np.asarray(np.linalg.norm(host_syst.cell.rvecs, axis=1))
-    inv_box = 1.0 / box
-    n_cells = np.floor(box / r_cut).astype(int)
-    n_cells = np.maximum(n_cells, 3)
-    cell_size = box / n_cells
-
-    n_dim = 3
-    # Assign host atoms to cells
-    host_cell_indices = np.floor(host_syst.pos * inv_box * n_cells).astype(int) % n_cells
-    host_cell_dict = {}
-    for idx, cidx in enumerate(map(tuple, host_cell_indices)):
-        host_cell_dict.setdefault(cidx, []).append(idx)
-    # shift guest atoms into box
-    guest_positions = guest_positions % box
-    # Assign guest atoms to cells
-    guest_cell_indices = np.floor(guest_positions * inv_box * n_cells).astype(int) % n_cells
-
-    # Generate neighbor cell shifts that could bring host atoms within r_cut
-    max_shift = np.ceil(r_cut / cell_size).astype(int)
-    shift_range = [range(-s, s + 1) for s in max_shift]
-    neighbor_shifts = np.array(list(product(*shift_range)))
-
-    insertion_energies = np.zeros(len(guest_positions))
-    for gidx, gpos in enumerate(guest_positions):
-        gcell = guest_cell_indices[gidx]
-        E = 0.0
-        for neigh_shift in neighbor_shifts:
-            # Neighbor cell index
-            ncell = gcell + neigh_shift
-
-            # Compute image shift for wrapped dimensions
-            image_shift = np.zeros(n_dim)
-            wrapped_ncell = np.empty_like(ncell)
-
-            for i in range(n_dim):
-                if ncell[i] < 0:
-                    image_shift[i] = -1
-                    wrapped_ncell[i] = ncell[i] + n_cells[i]
-                elif ncell[i] >= n_cells[i]:
-                    image_shift[i] = 1
-                    wrapped_ncell[i] = ncell[i] - n_cells[i]
-                else:
-                    image_shift[i] = 0
-                    wrapped_ncell[i] = ncell[i]
-                
-            shift_vector = image_shift * box
-            host_idxs = host_cell_dict.get(tuple(wrapped_ncell), [])
-            if not host_idxs:
-                continue
-
-            hpos_shifted = host_syst.pos[host_idxs] + shift_vector
-            rvecs = hpos_shifted - gpos
-            dists = np.linalg.norm(rvecs, axis=1)
-
-            host_typeids = host_syst.ffatype_ids[host_idxs]
-            htypes = np.array([host_syst.ffatypes[host_typeid] for host_typeid in host_typeids])
-
-            mask = (dists < r_cut) & (dists > 1e-16)
-            if not np.any(mask):
-                continue
-
-            d = dists[mask]
-            h_selected = htypes[mask]
-            sig_host, eps_host = np.array([FF_dict[htype] for htype in h_selected]).T
-
-            eps_mix = np.sqrt(epsilonff * eps_host)
-            sig_mix = 0.5 * (sigmaff + sig_host)
-
-            inv_r6 = (sig_mix / d)**6
-            V = 4 * eps_mix * (inv_r6**2 - inv_r6)
-
-            if shift:
-                inv_rc6 = (sig_mix / r_cut)**6
-                V -= 4 * eps_mix * (inv_rc6**2 - inv_rc6)
-
-            E += np.sum(V)
-
-        insertion_energies[gidx] = E
-    return insertion_energies
 
 def generate_rotation_matrix(degree, dimension):
     """
@@ -1293,19 +1174,19 @@ def read_pars_file_dict(pars_file):
         FF_dict[atom] = (sigma, epsilon)
     return FF_dict
 
-def get_system_data(struct_fn, pars_fn, position_shift=True,
+def get_system_data(struct_fn, pars_fn,
                     unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au'):
     struct_fn = Path(struct_fn)
     pars_fn = Path(pars_fn)
     if struct_fn.suffix == '.chk' and pars_fn.suffix=='.txt':
-        return _get_system_data_chk(str(struct_fn), str(pars_fn), position_shift=position_shift)
+        return _get_system_data_chk(str(struct_fn), str(pars_fn))
     elif struct_fn.suffix=='.pdb' and pars_fn.suffix=='.xml':
-        return _get_system_data_from_pdb_xml(struct_fn, pars_fn, position_shift=position_shift, 
+        return _get_system_data_from_pdb_xml(struct_fn, pars_fn, 
                                              unit_energy=unit_energy, unit_sigma=unit_sigma, unit_distance=unit_distance, unit_charge=unit_charge, unit_mass=unit_mass)
     else:
         raise ValueError("Structure and forcefield files must be either \'.chk\' and \'.txt\' (compatible with YAFF) or \'.pdb\' and \'.xml\' compatible with openMM")
 
-def _get_system_data_chk(chk_fn, pars_file, position_shift=False):
+def _get_system_data_chk(chk_fn, pars_file):
     """
     Extract system data and force field parameters from checkpoint (.chk) and pars files.
 
@@ -1325,8 +1206,6 @@ def _get_system_data_chk(chk_fn, pars_file, position_shift=False):
     """
     kwargs = load_chk(chk_fn)
     pos = kwargs['pos']
-    if position_shift:
-        pos -= np.mean(pos, axis=0)
     masses = kwargs['masses']
     ffatypes = list(kwargs['ffatypes'])
     ffatype_ids = kwargs['ffatype_ids']
@@ -1336,7 +1215,7 @@ def _get_system_data_chk(chk_fn, pars_file, position_shift=False):
         rvecs = kwargs['rvecs']
     else:
         rvecs = np.zeros((3, 3))
-
+    # TODO: add centering function
     """ Read parameters from a pars file """
     LJpar = Parameters.from_file(str(pars_file)).sections['LJ']
     units = [parse_unit(unit[1].split()[1]) for unit in LJpar.definitions['UNIT'].lines]
@@ -1356,7 +1235,7 @@ def _get_system_data_chk(chk_fn, pars_file, position_shift=False):
     return (pos, masses, ffatypes, ffatype_ids, natom, rvecs), FF_dict
 
 
-def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, position_shift=True, 
+def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, 
                                   unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au'):
     """
     Extract system data and force field parameters from PDB topology and XML system files.
@@ -1386,9 +1265,8 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, position_shift=True,
     mass_unit = parse_unit(unit_mass)
     # Read PDB file for positions and atom information using ASE
     atoms = read(pdb_fn)
+    atoms.center()
     pos = atoms.get_positions()
-    if position_shift:
-        pos -= np.mean(pos, axis=0)
     natom = len(pos)
     
     # Get masses from PDB (ASE provides standard atomic masses)

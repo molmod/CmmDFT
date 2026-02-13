@@ -577,7 +577,7 @@ class Anderson(Picard):
                 if self.curr_step < 3:
                     self.it_eps0 = self.it_eps
 
-            AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true or self.curr_step > 10
+            AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 3) or self.And_true or self.curr_step > 8
             if AND_condition:
                 rho_new, krho_new, C1_new = self.update_rho_Anderson()
                 Grho_new = self.get_new_rho(C1_new, self.fugacity)

@@ -237,6 +237,7 @@ def _lj_batched(R, sigma, epsilon, cutoff):
         r = R[i]
         if r >= cutoff:
             out[i] = 0.0
+            continue
         r6 = (sigma / r) ** 6
         r12 = r6 * r6
         out[i] = 4.0 * epsilon * (r12 - r6) - V_shift
@@ -1163,7 +1164,7 @@ def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest
                                     tmp_spacing=0.15*angstrom, cutoff=12*angstrom, max_size=5e+6, max_pot=200*kjmol, 
                                     degree=11, int_method='tricubic', remove_tmp=True):
         
-        cell = Cell(host_data[-2])
+        cell = Cell(host_data[-1])
         epot_grid = Grid(cell, spacing=tmp_spacing)
         epot_fn_dict = {}
         for atom in range(len(guest_ff_dict)):
@@ -1175,7 +1176,7 @@ def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest
             np.save(part_epot_fn, epot)
             epot_fn_dict[atom_name] = part_epot_fn
 
-        int_dict = get_interpolator_dict(epot_fn_dict, points, np.array([0.15, 0.15, 0.15])*angstrom, int_method=int_method)
+        int_dict = get_interpolator_dict(epot_fn_dict, tmp_points[0], np.array([0.15, 0.15, 0.15])*angstrom, int_method=int_method)
 
         potential = generate_effective_potential(points, beta, guest_data, int_dict, degree=3, max_size=max_size)
         potential_mask = potential <  max_pot
@@ -1261,7 +1262,7 @@ def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_di
         sigmaff, epsilonff = guest_ff_dict[i]
         if mic:
             key = guest_ffatypes[i]
-            external_potential_dict[key] = partial(get_external_potential, host_data=host_data, FF_dict=host_ff_dict, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
+            external_potential_dict[key] = partial(get_external_potential, host_data=host_data, host_ff_dict=host_ff_dict, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
         else:
             raise NotImplementedError("Non-MIC external potentials are not implemented yet.")
             # external_potential_dict[key] = partial(compute_batch_insertion_energy_typed, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst)
@@ -1327,9 +1328,11 @@ def _get_system_data_chk(chk_fn, pars_file, position_shift=False):
     pos = kwargs['pos']
     if position_shift:
         pos -= np.mean(pos, axis=0)
-    masses = kwargs['masses']
+    masses_ids = kwargs['masses']
     ffatypes = list(kwargs['ffatypes'])
     ffatype_ids = kwargs['ffatype_ids']
+    masses =np.array([masses_ids[ff_id] for ff_id in ffatype_ids])
+
     natom = len(pos)
     
     if 'rvecs' in kwargs.keys():

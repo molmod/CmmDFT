@@ -444,7 +444,7 @@ class EquationOfState(object):
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
-            if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
             # densities[i,:len(solutions)] = np.array(solutions)
             if len(solutions) > 0:
                 stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
@@ -504,7 +504,7 @@ class EquationOfState(object):
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
-            if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
             if len(solutions) > 0:
                 stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
                 densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
@@ -909,7 +909,7 @@ class EOS_MIX(EquationOfState):
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
-            if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
             if len(solutions) > 0:
                 stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
                 densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
@@ -2535,6 +2535,10 @@ class PCSAFTEOS(EquationOfState):
             fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
         fchain = self._chain_contribution(zeta2, zeta3)
         fdisp = self._dispersion_contribution(rho, eta)
+        # print(boltzmann*self.temperature*(fhs)/kjmol)
+        # print(boltzmann*self.temperature*(fchain)/kjmol)
+        # print(boltzmann*self.temperature*(fdisp)/kjmol)
+        # return boltzmann*self.temperature*(np.array([fhs, fchain, fdisp]))        
         return boltzmann*self.temperature*(fhs + fchain + fdisp)
     
     def derivative_excess_free_energy_particle(self, rho):
@@ -2547,6 +2551,11 @@ class PCSAFTEOS(EquationOfState):
         dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
         dfdisp = self._derivative_dispersion_contribution(rho, eta)
         
+        # print(boltzmann*self.temperature*(dfhs)/kjmol)
+        # print(boltzmann*self.temperature*(dfchain)/kjmol)
+        # print(boltzmann*self.temperature*(dfdisp)/kjmol)
+
+        # return boltzmann*self.temperature*(np.array([dfhs, dfchain, dfdisp]))
         return boltzmann*self.temperature*(dfhs + dfchain + dfdisp)
 
     def derivative2_excess_free_energy_particle(self, rho):

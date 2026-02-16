@@ -216,7 +216,8 @@ class NonSphericalGuest(Guest):
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
     def __init__(self, name, mass, sigma, epsilon, struct, par, ffname='', m=1, hs_def='bh'):
         NonSphericalGuest.__init__(self, name, struct, par, ffname)
-        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def)
+        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def) 
+        self.natom = self.guest_data[-2] #SphericalLJGuest overwrites natom
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)

@@ -51,6 +51,8 @@ def sinc(x):
     out[mask] = np.sin(x[mask]) / x[mask]
     return out
 
+def smooth_floor(x, eps=1e-12, alpha=50.0):
+    return eps + (1.0/alpha)*np.log1p(np.exp(alpha*(x - eps)))
 
 FMT_NAMES = ['FMT', 'aFMT', 'tFMT', 'atFMT', 'taFMT']
 MFMT_NAMES = ['MFMT', 'aMFMT', 'tMFMT', 'atMFMT', 'taMFMT']
@@ -113,6 +115,7 @@ class HardSphereFunctional(Functional):
     def set_temperature(self, temperature, Rhs, **kwargs):
         self.temperature = temperature
         self.beta = 1/(boltzmann*temperature)        
+        print('MFMT', Rhs)
         if not isinstance(Rhs, (list, np.ndarray)):
             Rhs = [Rhs]
         self.R = np.array(Rhs, dtype=np.float64)
@@ -136,11 +139,11 @@ class HardSphereFunctional(Functional):
         omega = np.einsum('i,jkl->ijkl', self.R, k)
         mask = ~np.isclose(omega,0)
         
-        kw0 = (sinc(omega) * self.grid.sigma_lanczos[None,...]).astype(np.float64)
+        kw0 = (sinc(omega) * self.grid.sigma_lanczos[None,...]**2).astype(np.float64)
         kw1 = np.einsum('i,ijkl->ijkl', self.R, kw0, dtype=np.float64)
         kw2 = 4.0*np.pi*np.einsum('i,ijkl->ijkl', self.R**2, kw0, dtype=np.float64)
 
-        j2_basis = (sph_bessel_3(omega) * self.grid.sigma_lanczos).astype(np.float64)
+        j2_basis = (sph_bessel_3(omega) * self.grid.sigma_lanczos**2).astype(np.float64)
 
         kw3 = 4*np.pi/3.0*np.einsum('i,ijkl->ijkl', self.R**3, j2_basis, dtype=np.float64)
 
@@ -197,20 +200,27 @@ class HardSphereFunctional(Functional):
         krho
             The density in reciprocal space
         """
-        with log.section('(M)FMT', 3, timer='density functions'):
+        with log.section('(M)FMT', 3, timer='density functions'):          
             # # The scalar density functions
             n0 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[0]), self.m, axes=(0,0))
             n1 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[1]), self.m, axes=(0,0))
             n2 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[2]), self.m, axes=(0,0))
             n3 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[3]), self.m, axes=(0,0))
 
-            #When n3 approaches 1, things can go wrong because the functional
-            # contains terms with log(1-n3) and 1/(1-n3)
+            n0 = np.clip(n0, 0, None)
+            n1 = np.clip(n1, 0, None)
+            n2 = np.clip(n2, 0, None)
+            n3 = np.clip(n3, 0, None)
+
+            # #When n3 approaches 1, things can go wrong because the functional
+            # # contains terms with log(1-n3) and 1/(1-n3)
             n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n3 is in [0, 1-1e-12]
-            # The vector density functions
+            # # The vector density functions
             nv1 = np.tensordot(self.grid.ifftn(krho[..., None] * self.vector_weight_functions[0]), self.m, axes=(0,0))
             nv2 = np.tensordot(self.grid.ifftn(krho[..., None] * self.vector_weight_functions[1]), self.m, axes=(0,0))
-
+            # nv1 = np.clip(nv1, 0, None)
+            # nv2 = np.clip(nv2, 0, None)
+            
             xi = None
             if self.version[0] == 1:
                 xi = (nv2[...,0]**2 + nv2[...,1]**2 + nv2[...,2]**2)/((n2)**2+1e-16)
@@ -226,11 +236,17 @@ class HardSphereFunctional(Functional):
         nyz = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[4]), self.m, axes=(0,0))
         nzz = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[5]), self.m, axes=(0,0))
 
-        
-        return [nxx, nxy, nxz, nyy, nyz, nzz]
+        # nxx = np.clip(nxx, 0, None)
+        # nxy = np.clip(nxy, 0, None)
+        # nxz = np.clip(nxz, 0, None)
+        # nyy = np.clip(nyy, 0, None)
+        # nyz = np.clip(nyz, 0, None)
+        # nzz = np.clip(nzz, 0, None)
 
+        return [nxx, nxy, nxz, nyy, nyz, nzz]
+    
     def get_n3(self, krho):
-        return np.einsum('nijk,n->ijk',self.grid.ifftn(krho*self.scalar_weight_functions[3]), self.m, optimize='optimal')  #sum over components, weighted by m
+        return np.einsum('nijk,n->ijk',self.grid.ifftn(krho*self.scalar_weight_functions[3]), self.m)  #sum over components, weighted by m
 
     def set_density(self, krho):
         #check if current density is the same as previous one
@@ -556,37 +572,44 @@ class PCSAFTFunctional(Functional):
 
         # self.kwlambda = np.einsum('i,ijkl->ijkl', self.dhs, sinc(omega))
         self.kwlambda = sinc(omega)
-        self.kwlambda *= self.grid.sigma_lanczos[None,...]
+        self.kwlambda *= self.grid.sigma_lanczos[None,...]**2
 
         self.kwchain = sph_bessel_3(omega)
-        self.kwchain *= self.grid.sigma_lanczos[None,...]
+        self.kwchain *= self.grid.sigma_lanczos[None,...]**2
 
         self.kwdisp = sph_bessel_3(self.psi*omega)
-        self.kwdisp *= self.grid.sigma_lanczos[None,...]
-
-        if self.n_components == 1:
-            self.m2_eps_sig3 = self.m**2*(self.beta*self.epsilon_mix)*self.sigma_mix**3
-            self.m2_eps2_sig3 = self.m**2*(self.beta*self.epsilon_mix)**2*self.sigma_mix**3
-        else:
-            self.m2_eps_sig3 = 0.0
-            self.m2_eps2_sig3 = 0.0
-            for i in range(len(self.m)):
-                for j in range(len(self.m)):
-                    self.m2_eps_sig3 += self.fractions[i]*self.fractions[j]*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])*self.sigma_mix[i,j]**3
-                    self.m2_eps2_sig3 += self.fractions[i]*self.fractions[j]*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])**2*self.sigma_mix[i,j]**3
+        self.kwdisp *= self.grid.sigma_lanczos[None,...]**2
 
     def _get_weighted_densities(self, krho):
-        wrho_chain = np.clip(self.grid.ifftn(krho*self.kwchain), 0, None).astype(np.float64)
-        lambda_chain = np.clip(self.grid.ifftn(krho*self.kwlambda), 1e-30, None).astype(np.float64)
-        zeta2 = np.clip(np.pi/6*np.einsum('nijk,n->ijk', wrho_chain, self.m*self.dhs**2), 0, None).astype(np.float64)
-        zeta3 = np.clip(np.pi/6*np.einsum('nijk,n->ijk', wrho_chain, self.m*self.dhs**3), 0, 0.99).astype(np.float64)
-        wrho_disp = np.clip(self.grid.ifftn(krho*self.kwdisp), 1e-30, None).astype(np.float64)
-        eta_disp = np.clip(np.pi/6*np.einsum('nijk,n->ijk', wrho_disp, self.m*self.dhs**3), 0, 0.99).astype(np.float64)
+        wrho_chain = self.grid.ifftn(krho*self.kwchain)
+
+        lambda_chain = self.grid.ifftn(krho*self.kwlambda)
+
+        zeta2 = np.pi/6*np.einsum('nijk,n->ijk',
+                                wrho_chain,
+                                self.m*(self.dhs**2))
+
+        zeta3 = np.pi/6*np.einsum('nijk,n->ijk',
+                                wrho_chain,
+                                self.m*(self.dhs**3))
+        zeta3 = np.clip(zeta3, 0,0.99)
+
+        wrho_disp = self.grid.ifftn(krho*self.kwdisp)
+
+
+        eta_disp = np.pi/6*np.einsum('nijk,n->ijk',
+                                    wrho_disp,
+                                    self.m*(self.dhs**3))
+        eta_disp = np.clip(eta_disp, 0,0.99)
+
         return lambda_chain, zeta2, zeta3, wrho_disp, eta_disp
 
     def _get_mavg_a_b_prefact(self, wrho_disp):        
-        rho_reg = np.clip(wrho_disp, 1e-30, None)
-        m_avg = np.einsum('nijk,n->ijk', wrho_disp, self.m)/np.sum(rho_reg, axis=0) #local average of m
+        eps = 1e-12
+
+        rho_sum = np.sum(wrho_disp, axis=0)
+
+        m_avg = np.einsum('nijk,n->ijk', wrho_disp, self.m) / (rho_sum + eps)
 
         a_prefact = [(a_constants[i,0] + (m_avg - 1)/m_avg*a_constants[i,1] + (m_avg - 1)/m_avg*(m_avg - 2)/m_avg*a_constants[i,2]) for i in range(7)]
         b_prefact = [(b_constants[i,0] + (m_avg - 1)/m_avg*b_constants[i,1] + (m_avg - 1)/m_avg*(m_avg - 2)/m_avg*b_constants[i,2]) for i in range(7)]
@@ -594,13 +617,13 @@ class PCSAFTFunctional(Functional):
 
     def value_chain(self, rho, lambda_chain, zeta2, zeta3):
         phi_chain = 0
-        z3_1 = 1/(1-zeta3)
+        eps = 1e-10
+        z3_1 = 1/(1-zeta3 + eps)
         for i in range(len(self.m)):
             yii = self.dhs[i]*zeta2*z3_1*z3_1*(self.dhs[i]*zeta2*z3_1 * 0.5 + 1.5) + z3_1
-            rho_ref = np.mean(rho[rho > 1e-10])
-            eps = 1e-2
-            ratio = (lambda_chain[i] + eps*rho_ref) / (rho[i] + eps*rho_ref)
-            yii_lambdai_rhoi = np.clip(yii*ratio, 1e-14, None)
+            ratio = np.clip((lambda_chain[i] + eps) / (rho[i] + eps), 1e-8,1e8)            
+
+            yii_lambdai_rhoi = yii * ratio + eps
             phi_chain += (1 - self.m[i])*self.grid.integrate(rho[i]*(np.log(yii_lambdai_rhoi)))
 
         return phi_chain/self.beta
@@ -619,14 +642,21 @@ class PCSAFTFunctional(Functional):
         return phi_chain/self.beta, phi_id/self.beta
     
     def value_disp(self, wrho_disp, eta_disp):
+        eps = 1e-14
+
         m_avg, a_prefact, b_prefact = self._get_mavg_a_b_prefact(wrho_disp)
+    
+
         I1 = np.zeros(self.grid.npoints, dtype=np.float64)
         I2 = np.zeros(self.grid.npoints, dtype=np.float64)
         for i in range(7):
             I1 += a_prefact[i]*eta_disp**i
             I2 += b_prefact[i]*eta_disp**i
-        
-        C1 = (1 + m_avg*(8*eta_disp - 2*eta_disp**2)/(1-eta_disp)**4 + (1 - m_avg)*(20*eta_disp - 27*eta_disp**2 + 12*eta_disp**3 - 2*eta_disp**4)/((1-eta_disp)*(2-eta_disp))**2)**(-1)
+            
+        one_minus_eta = (1 - eta_disp + eps)
+        two_minus_eta = (2 - eta_disp + eps)
+        C1 = (1 + m_avg*(8*eta_disp - 2*eta_disp**2)/(one_minus_eta**4 )
+                + (1 - m_avg)*(20*eta_disp - 27*eta_disp**2 + 12*eta_disp**3 - 2*eta_disp**4)/(one_minus_eta*two_minus_eta)**2)**(-1)
         m_I2_C1 = m_avg*I2*C1
         integrand = np.zeros(self.grid.npoints, dtype=np.float64)
 
@@ -635,18 +665,16 @@ class PCSAFTFunctional(Functional):
                 fij = -2*np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])*self.sigma_mix[i,j]**3*I1
                 fij += -np.pi*self.m[i]*self.m[j]*(self.beta*self.epsilon_mix[i,j])**2*self.sigma_mix[i,j]**3*m_I2_C1
                 integrand += wrho_disp[i]*wrho_disp[j]*fij
-
-            wrho_disp[i] = np.clip(wrho_disp[i], 1e-30, None)
         
         return self.grid.integrate(integrand)/self.beta
     
     def derive_chain(self, rho, lambda_chain, zeta2, zeta3, sigma_smooth=None):
         ns = len(self.m)
-        eps = 1e-14
+        eps = 0
         der_shape = [self.n_components] + list(self.grid.npoints)
         dphi_chain = np.zeros(der_shape, dtype=np.float64)
 
-        z3_1 = 1/(1-zeta3)
+        z3_1 = 1/(1-zeta3 + 1e-8)
         z3_2 = z3_1*z3_1
         yii = np.zeros(der_shape, dtype=np.float64)
         for i in range(len(self.m)):
@@ -660,17 +688,27 @@ class PCSAFTFunctional(Functional):
                 di = self.dhs[i]
                 dyidnk = np.pi/6*self.m[k]*dk**2*(3/2*di*z3_2 + di**2*zeta2*z3_2*z3_1)
                 dyidnk += np.pi/6*self.m[k]*dk**3*z3_2*(1+3*di*zeta2*z3_1 + 3/2*di**2*zeta2**2*z3_2)
-                rho_dyik_yii += ((1 - self.m[i]) * (rho[i]*(dyidnk/np.clip(yii[i], eps, None))))
+                rho_dyik_yii += ((1 - self.m[i]) * (rho[i]*(dyidnk/(yii[i] + eps))))
             
             # Lambda contribution (indirect):
-            rho_ref = np.mean(rho[rho > 1e-10])
-            eps = 1e-2
-            rho_lambda = 1/((lambda_chain[k] + eps*rho_ref) / (rho[k] + eps*rho_ref))
+            rho_min = 1e-14
+            rho_safe = np.maximum(rho[k], rho_min)
+            lambda_safe = np.maximum(lambda_chain[k], rho_min)
+            direct_term = (
+                np.log(yii[k] + eps)
+                + np.log(lambda_safe)
+                - np.log(rho_safe)
+                - 1
+            )
 
-            k_rho_lambda = self.grid.fftn(rho_lambda)
+            rho_cut = 1e-10
+            mask = rho[k] > rho_cut
+            direct_term *= mask
+
+            k_rho_lambda = self.grid.fftn(rho_safe / lambda_safe)
             dphi_chain[k] += self.grid.ifftn(self.grid.fftn(rho_dyik_yii)*self.kwchain[k]) + (1-self.m[k])*self.grid.ifftn(k_rho_lambda*self.kwlambda[k])
 
-            dphi_chain[k] += (1 - self.m[k]) * (np.log(np.clip(yii[k]/rho_lambda, 1e-20, None)) - 1) # direct part
+            dphi_chain[k] += (1 - self.m[k]) * direct_term # direct part
 
         return dphi_chain/self.beta
 
@@ -683,9 +721,9 @@ class PCSAFTFunctional(Functional):
         eta_2 = eta_disp**2
         eta_3 = eta_2*eta_disp
 
-        C1 = (1 + m_avg*(8*eta_disp - 2*eta_2)*eta_1_4 + (1 - m_avg)*(20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_disp**2)/((1-eta_disp)*(2-eta_disp))**2)**(-1)
+        C1 = (1 + m_avg*(8*eta_disp - 2*eta_2)*eta_1_4 + (1 - m_avg)*(20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_2**2)/((1-eta_disp)*(2-eta_disp))**2)**(-1)
         dC1deta = -C1**2*( m_avg*(8 + 20*eta_disp - 4*eta_2)*eta_1*eta_1_4 + 2*(1 - m_avg)*(20 - 24*eta_disp + 6*eta_2 + eta_3)/((1-eta_disp)*(2-eta_disp))**3 )
-        dC1dm = -C1**2*( (8*eta_disp - 2*eta_2)*eta_1_4 - (20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_disp**2)/((1-eta_disp)*(2-eta_disp))**2 )
+        dC1dm = -C1**2*( (8*eta_disp - 2*eta_2)*eta_1_4 - (20*eta_disp - 27*eta_2 + 12*eta_3 - 2*eta_2**2)/((1-eta_disp)*(2-eta_disp))**2 )
         del eta_1
         del eta_1_4
         del eta_2
@@ -1058,6 +1096,7 @@ class ExternalPotential(Functional):
         self.kpotential = self.grid.fftn(self.potential)
 
     def set_temperature(self, temperature, **kwargs):
+        return
         if isinstance(self.guest, GuestMixture):
             new_potential = np.zeros((self.nspecies,) + tuple(self.grid.npoints), dtype='float64')
             epot_fn = self.epot_dr / f'eff_epot_{temperature:#3.2f}K.npy'
@@ -1085,7 +1124,7 @@ class ExternalPotential(Functional):
         points = self.grid.points[...,:3]
         host_data = host.host_data
         host_ff_dict = host.host_ff_dict
-        if isinstance(real_guest, SphericalLJGuest):
+        if real_guest.natom == 1:
             potential = real_guest.m * get_external_potential(points, host_data, host_ff_dict, real_guest.sigma, real_guest.epsilon, cutoff=self.cutoff)
         else:
             guest_data = real_guest.guest_data
@@ -1094,7 +1133,7 @@ class ExternalPotential(Functional):
             if self.interpolate:
                 potential = interpolate_effective_potential(1/temperature/boltzmann, points, host_data, host_ff_dict, guest_data, guest_ff_dict, self.epot_dr, 
                                         tmp_spacing=0.15*angstrom, cutoff=self.cutoff,
-                                        degree=self.degree, int_method='tricubic', remove_tmp=True)
+                                        degree=self.degree, int_method='trilinear', remove_tmp=True)
             else:
                 potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host_data, host_ff_dict, guest_data, guest_ff_dict, degree=self.degree)
         return potential

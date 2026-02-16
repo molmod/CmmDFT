@@ -19,7 +19,7 @@ from .log import log
 __all__ = ['Cell', 'Grid']
 
 class Grid(object):
-    def __init__(self, cell, npoints=None, spacing=0.25*angstrom, shift=True):
+    def __init__(self, cell, npoints=None, spacing=0.25*angstrom):
         """
             cell
                     an instance of a cell object used for extracting the system dimensions.
@@ -37,7 +37,6 @@ class Grid(object):
         with log.section('GRID', 2, timer='Initializing'):    
             log.dump('Initializing grid')
             self.cell = cell
-            self.shift = shift
             if npoints is None:
                 lengths, angles = self.cell.parameters
                 self.npoints = [int(np.ceil(l/spacing)) for l in lengths]
@@ -63,10 +62,8 @@ class Grid(object):
             # Real space grid, centered at the origin, storing x,y,z and norm of 
             # vector of each grid point
             self.points = np.zeros((list(self.npoints)+[4]), dtype=np.float64)
-            if shift:
-                grid = [np.linspace(-0.5, 0.5, num=self.npoints[alpha], endpoint=False, dtype=np.float64) for alpha in range(3)]
-            else:
-                grid = [np.linspace(0, 1, num=self.npoints[alpha], endpoint=False, dtype=np.float64) for alpha in range(3)]
+
+            grid = [np.linspace(0, 1, num=self.npoints[alpha], endpoint=False, dtype=np.float64) for alpha in range(3)]
             gridpoints = np.asarray(np.meshgrid(grid[0],grid[1],grid[2], indexing='ij'))
             # Cartesian components of the real space grid
 
@@ -182,8 +179,6 @@ class Grid(object):
             else:
                 raise ValueError(f"Could not locate spatial block {npoints} in shape {shape}")
             
-
-
             # Conjugate phase factor
             factor = np.exp(-1j*np.pi*self.scalprod)
 
@@ -260,9 +255,6 @@ class Cell(object):
 
         # Cartesian -> fractional
         delta_frac = delta_cart @ self.inv_rvecs
-
-        # Wrap into [-0.5, 0.5)
-        delta_frac -= np.round(delta_frac)
 
         # Fractional -> Cartesian
         return delta_frac @ self.rvecs     

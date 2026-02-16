@@ -76,39 +76,13 @@ class Program(object):
             self.rho_fn = None
             self.pars_fn = None
     
-    # def copy(self):
-    #     '''Creates a copy of the current Program instance.'''
-    #     new_instance = Program(
-    #         prefix=self.name_dict['prefix'],
-    #         hostname=self.name_dict['hostname'],
-    #         guestname=self.name_dict['guestname'],
-    #         ff_suffix=self.name_dict['ff_suffix'],
-    #         funct_suffix=self.name_dict['funct_suffix'],
-    #         grid_suffix=self.name_dict['grid_suffix'],
-    #         suffix=self.name_dict['suffix'],
-    #         overwrite=self.overwrite,
-    #         logfile=None
-    #     )
-    #     new_instance.workdir = self.workdir
-    #     new_instance.rho_fn = self.rho_fn
-    #     new_instance.pars_fn = self.pars_fn
-    #     if hasattr(self, 'system'):
-    #         new_instance.system = self.system
-    #     if hasattr(self, 'grid'):
-    #         new_instance.grid = self.grid
-    #     if hasattr(self, 'fener'):
-    #         new_instance.fener = self.fener
-    #     if hasattr(self, 'solver'):
-    #         new_instance.solver = self.solver
-    #     return new_instance
-
     def copy(self):
         return copy_module.deepcopy(self)
     
     def set_system(self, host, guest):
         self.system = System(host, guest)
     
-    def set_grid(self, npoints=None, spacing=0.25*angstrom, shift=True):
+    def set_grid(self, npoints=None, spacing=0.25*angstrom):
         '''This function sets up a grid for a given program with a specified number of points or spacing. npoints or spacing must be provided
             
             Parameters
@@ -122,7 +96,7 @@ class Program(object):
         '''
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
-        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing, shift=shift)
+        self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing)
 
     def set_eos(self, eosname='PCSAFT', eos=None):
         with log.section('PROGRAM', 1, timer='Initializing'):

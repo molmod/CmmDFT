@@ -1186,7 +1186,7 @@ def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest
             np.save(part_epot_fn, epot)
             epot_fn_dict[atom_name] = part_epot_fn
 
-        int_dict = get_interpolator_dict(epot_fn_dict, tmp_points[0], np.array([0.15, 0.15, 0.15])*angstrom, int_method='trilinear')
+        int_dict = get_interpolator_dict(epot_fn_dict, tmp_points[0], np.array([0.15, 0.15, 0.15])*angstrom, int_method=int_method)
 
         potential = generate_effective_potential(points, beta, guest_data, int_dict, degree=3, max_size=max_size)
         potential_mask = potential <  max_pot
@@ -1304,19 +1304,19 @@ def read_pars_file_dict(pars_file):
         FF_dict[atom] = (sigma, epsilon)
     return FF_dict
 
-def get_system_data(struct_fn, pars_fn, position_shift=True,
+def get_system_data(struct_fn, pars_fn,
                     unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au'):
     struct_fn = Path(struct_fn)
     pars_fn = Path(pars_fn)
     if struct_fn.suffix == '.chk' and pars_fn.suffix=='.txt':
-        return _get_system_data_chk(str(struct_fn), str(pars_fn), position_shift=position_shift)
+        return _get_system_data_chk(str(struct_fn), str(pars_fn))
     elif struct_fn.suffix=='.pdb' and pars_fn.suffix=='.xml':
-        return _get_system_data_from_pdb_xml(struct_fn, pars_fn, position_shift=position_shift, 
+        return _get_system_data_from_pdb_xml(struct_fn, pars_fn, 
                                              unit_energy=unit_energy, unit_sigma=unit_sigma, unit_distance=unit_distance, unit_charge=unit_charge, unit_mass=unit_mass)
     else:
         raise ValueError("Structure and forcefield files must be either \'.chk\' and \'.txt\' (compatible with YAFF) or \'.pdb\' and \'.xml\' compatible with openMM")
 
-def _get_system_data_chk(chk_fn, pars_file, position_shift=False):
+def _get_system_data_chk(chk_fn, pars_file):
     """
     Extract system data and force field parameters from checkpoint (.chk) and pars files.
 
@@ -1336,19 +1336,18 @@ def _get_system_data_chk(chk_fn, pars_file, position_shift=False):
     """
     kwargs = load_chk(chk_fn)
     pos = kwargs['pos']
-    if position_shift:
-        pos -= np.mean(pos, axis=0)
-    masses = kwargs['masses']
+    masses_ids = kwargs['masses']
     ffatypes = list(kwargs['ffatypes'])
     ffatype_ids = kwargs['ffatype_ids']
-    # charges = kwargs['charges']
+    masses =np.array([masses_ids[ff_id] for ff_id in ffatype_ids])
+
     natom = len(pos)
     
     if 'rvecs' in kwargs.keys():
         rvecs = kwargs['rvecs']
     else:
         rvecs = np.zeros((3, 3))
-
+    # TODO: add centering function
     """ Read parameters from a pars file """
     LJpar = Parameters.from_file(str(pars_file)).sections['LJ']
     units = [parse_unit(unit[1].split()[1]) for unit in LJpar.definitions['UNIT'].lines]
@@ -1368,7 +1367,7 @@ def _get_system_data_chk(chk_fn, pars_file, position_shift=False):
     return (pos, masses, ffatypes, ffatype_ids, natom, rvecs), FF_dict
 
 
-def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, position_shift=True, 
+def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, 
                                   unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au'):
     """
     Extract system data and force field parameters from PDB topology and XML system files.
@@ -1400,8 +1399,6 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, position_shift=True,
     atoms = read(pdb_fn)
     atoms.center()
     pos = atoms.get_positions()
-    if position_shift:
-        pos -= np.mean(pos, axis=0)
     natom = len(pos)
     
     # Get masses from PDB (ASE provides standard atomic masses)

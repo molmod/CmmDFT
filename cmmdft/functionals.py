@@ -1102,9 +1102,9 @@ class ExternalPotential(Functional):
             epot_fn = self.epot_dr / f'eff_epot_{temperature:#3.2f}K.npy'
             if not epot_fn.exists():
                 for e, g in enumerate(self.guest.guests):
-                    if isinstance(g, NonSphericalGuest):
+                    if g.natom > 1:
                         new_potential[e] = self._generate_pot(self.host, g, temperature)
-                    elif isinstance(g, SphericalLJGuest):
+                    else:
                         new_potential[e] = self.potential[e]
                 self.potential = new_potential
                 self.kpotential = self.grid.fftn(self.potential)
@@ -1112,7 +1112,7 @@ class ExternalPotential(Functional):
             else:
                 self.load_potential(epot_fn)
 
-        elif isinstance(self.guest, NonSphericalGuest):
+        elif self.guest.natom > 1:
             epot_fn = self.epot_dr / f'eff_epot_{temperature:#3.2f}K.npy'
             if not epot_fn.exists():
                 self.generate_potential(temperature)
@@ -1124,18 +1124,21 @@ class ExternalPotential(Functional):
         points = self.grid.points[...,:3]
         host_data = host.host_data
         host_ff_dict = host.host_ff_dict
-        if real_guest.natom == 1:
-            potential = real_guest.m * get_external_potential(points, host_data, host_ff_dict, real_guest.sigma, real_guest.epsilon, cutoff=self.cutoff)
-        else:
+        if real_guest.natom > 1:
             guest_data = real_guest.guest_data
             guest_ff_dict = real_guest.guest_ff_dict
 
             if self.interpolate:
+                print('interpolating')
                 potential = interpolate_effective_potential(1/temperature/boltzmann, points, host_data, host_ff_dict, guest_data, guest_ff_dict, self.epot_dr, 
                                         tmp_spacing=0.15*angstrom, cutoff=self.cutoff,
                                         degree=self.degree, int_method='trilinear', remove_tmp=True)
             else:
+                print('precalculating')
                 potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host_data, host_ff_dict, guest_data, guest_ff_dict, degree=self.degree)
+        else:
+            print('UA model')
+            potential = real_guest.m * get_external_potential(points, host_data, host_ff_dict, real_guest.sigma, real_guest.epsilon, cutoff=self.cutoff)
         return potential
 
     def generate_potential(self, temperature=None):

@@ -66,7 +66,7 @@ class Host(object):
 
     
 class NanoporousHost(Host):
-    def __init__(self, name, struct, par, ffname='', shift=True,
+    def __init__(self, name, struct, par, ffname='',
                  unit_distance='au', unit_sigma='au', unit_energy='au', unit_charge='au', unit_mass='au'):
         '''This function initializes a nanoporous host system
         
@@ -86,19 +86,18 @@ class NanoporousHost(Host):
                 self.atoms = read(struct)
             except:
                 self.atoms = atoms_from_chk(struct)
+
             self.atoms.center()
-            self.atoms.set_positions(self.atoms.positions*dist_unit)
-            #shift molecule so that center of positions is the origin (as cDFT grid will be centered around this origin)
-            if shift:
-                positions = self.atoms.get_positions()
-                positions -= positions.sum(axis=0)/len(positions)
-            rvecs = np.array(self.atoms.get_cell()) * dist_unit
+            positions = self.atoms.get_positions()
+
+            self.atoms.set_positions(positions)
+            rvecs = self.atoms.get_cell().T * dist_unit
             cell = Cell(rvecs)
             super().__init__(name, cell)
             self.struct = struct
             self.par = par
             self.ffname = ffname
-            self.host_data, self.host_ff_dict = get_system_data(struct, par, position_shift=shift, 
+            self.host_data, self.host_ff_dict = get_system_data(struct, par, 
                                                                 unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
 
     
@@ -205,7 +204,7 @@ class NonSphericalGuest(Guest):
             self.par = par
             mass = None
             mass = np.sum(self.atoms.get_masses())
-            self.guest_data, self.guest_ff_dict = get_system_data(struct, par, position_shift=True, 
+            self.guest_data, self.guest_ff_dict = get_system_data(struct, par, 
                                                                 unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
             Guest.__init__(self, name, mass, ffname)
 
@@ -216,8 +215,8 @@ class NonSphericalGuest(Guest):
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
     def __init__(self, name, mass, sigma, epsilon, struct, par, ffname='', m=1, hs_def='bh'):
         NonSphericalGuest.__init__(self, name, struct, par, ffname)
-        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def) 
-        self.natom = self.guest_data[-2] #SphericalLJGuest overwrites natom
+        SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def)
+        self.natom = self.guest_data[-2]
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)

@@ -2536,6 +2536,10 @@ class PCSAFTEOS(EquationOfState):
             fhs = self.m_mix*self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
         fchain = self._chain_contribution(zeta2, zeta3)
         fdisp = self._dispersion_contribution(rho, eta)
+        # print(boltzmann*self.temperature*(fhs)/kjmol)
+        # print(boltzmann*self.temperature*(fchain)/kjmol)
+        # print(boltzmann*self.temperature*(fdisp)/kjmol)
+        # return boltzmann*self.temperature*(np.array([fhs, fchain, fdisp]))        
         return boltzmann*self.temperature*(fhs + fchain + fdisp)
     
     def derivative_excess_free_energy_particle(self, rho):
@@ -2548,6 +2552,11 @@ class PCSAFTEOS(EquationOfState):
         dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
         dfdisp = self._derivative_dispersion_contribution(rho, eta)
         
+        # print(boltzmann*self.temperature*(dfhs)/kjmol)
+        # print(boltzmann*self.temperature*(dfchain)/kjmol)
+        # print(boltzmann*self.temperature*(dfdisp)/kjmol)
+
+        # return boltzmann*self.temperature*(np.array([dfhs, dfchain, dfdisp]))
         return boltzmann*self.temperature*(dfhs + dfchain + dfdisp)
 
     def derivative2_excess_free_energy_particle(self, rho):

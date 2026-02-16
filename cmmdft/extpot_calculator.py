@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from ase.io import read
 
 from numba import njit, prange
-from scipy.special import logsumexp
+from scipy.special import logsumexp, erfc
 
 from .rotations.AngGrid import AngularGrid
 from .rotations._stroud_1969 import *
@@ -232,8 +232,7 @@ def _lj_batched(R, sigma, epsilon, cutoff):
 
     rc6 = (sigma / cutoff) ** 6
     V_shift = 4.0 * epsilon * (rc6 * rc6 - rc6)
-
-    for i in range(R_n):
+    for i in prange(R_n):
         r = R[i]
         if r >= cutoff:
             out[i] = 0.0
@@ -243,153 +242,267 @@ def _lj_batched(R, sigma, epsilon, cutoff):
         out[i] = 4.0 * epsilon * (r12 - r6) - V_shift
     return out.reshape(R_shape)
 
-# @njit(cache=True, parallel=True)
-@njit(cache=True, parallel=True)
-def _compute_vext(points, host_pos, sigma_mixed, epsilon_mixed, rvecs, inv_rvecs, cutoff):
-    npoints = points.shape[0]
-    natoms = host_pos.shape[0]
-    Vext = np.zeros(npoints, dtype=points.dtype)
-    cutoff2 = cutoff * cutoff
-    for p in prange(npoints):
-        px = points[p, 0]
-        py = points[p, 1]
-        pz = points[p, 2]
-        acc = 0.0
-        for i in range(natoms):
-            rx = px - host_pos[i, 0]
-            ry = py - host_pos[i, 1]
-            rz = pz - host_pos[i, 2]
-
-            # minimum image convention: delta_frac = delta_cart @ inv_rvecs
-            df0 = rx * inv_rvecs[0, 0] + ry * inv_rvecs[1, 0] + rz * inv_rvecs[2, 0]
-            df1 = rx * inv_rvecs[0, 1] + ry * inv_rvecs[1, 1] + rz * inv_rvecs[2, 1]
-            df2 = rx * inv_rvecs[0, 2] + ry * inv_rvecs[1, 2] + rz * inv_rvecs[2, 2]
-
-            # wrap
-            df0 = df0 - np.rint(df0)
-            df1 = df1 - np.rint(df1)
-            df2 = df2 - np.rint(df2)
-
-            # back to cart: delta_frac @ rvecs
-            dx = df0 * rvecs[0, 0] + df1 * rvecs[1, 0] + df2 * rvecs[2, 0]
-            dy = df0 * rvecs[0, 1] + df1 * rvecs[1, 1] + df2 * rvecs[2, 1]
-            dz = df0 * rvecs[0, 2] + df1 * rvecs[1, 2] + df2 * rvecs[2, 2]
-
-            r2 = dx * dx + dy * dy + dz * dz
-            if r2 < cutoff2:
-                R = np.sqrt(r2) + 1e-12
-                # Inline LJ calculation (same as _lj_scalar_numba) to avoid numba typing/call overhead
-                sigma_i = sigma_mixed[i]
-                eps_i = epsilon_mixed[i]
-                rc6 = (sigma_i / cutoff) ** 6
-                V_shift = 4.0 * eps_i * (rc6 * rc6 - rc6)
-                r6 = (sigma_i / R) ** 6
-                r12 = r6 * r6
-                acc += 4.0 * eps_i * (r12 - r6) - V_shift
-        Vext[p] = acc
-    return Vext
-
-@njit(cache=True, parallel=True)
-def _compute_vext_derivatives(points, host_pos, sigma_mixed, epsilon_mixed, rvecs, inv_rvecs, cutoff, spacings):
-    npoints = points.shape[0]
-    natoms = host_pos.shape[0]
-
-    Vext = np.zeros(npoints, dtype=points.dtype)
-    dVdx = np.zeros(npoints, dtype=points.dtype)
-    dVdy = np.zeros(npoints, dtype=points.dtype)
-    dVdz = np.zeros(npoints, dtype=points.dtype)
-    dVdxy = np.zeros(npoints, dtype=points.dtype)
-    dVdxz = np.zeros(npoints, dtype=points.dtype)
-    dVdyz = np.zeros(npoints, dtype=points.dtype)
-    dVdxyz = np.zeros(npoints, dtype=points.dtype)
-
-    cutoff2 = cutoff * cutoff
-    for p in prange(npoints):
-        px = points[p, 0]
-        py = points[p, 1]
-        pz = points[p, 2]
-
-        acc = 0.0
-        accx = 0.0
-        accy = 0.0
-        accz = 0.0
-        accxy = 0.0
-        accxz = 0.0
-        accyz = 0.0
-        accxyz = 0.0
-
-        for i in range(natoms):
-            rx = px - host_pos[i, 0]
-            ry = py - host_pos[i, 1]
-            rz = pz - host_pos[i, 2]
-
-            # minimum image convention: delta_frac = delta_cart @ inv_rvecs
-            df0 = rx * inv_rvecs[0, 0] + ry * inv_rvecs[1, 0] + rz * inv_rvecs[2, 0]
-            df1 = rx * inv_rvecs[0, 1] + ry * inv_rvecs[1, 1] + rz * inv_rvecs[2, 1]
-            df2 = rx * inv_rvecs[0, 2] + ry * inv_rvecs[1, 2] + rz * inv_rvecs[2, 2]
-
-            # wrap
-            df0 = df0 - np.rint(df0)
-            df1 = df1 - np.rint(df1)
-            df2 = df2 - np.rint(df2)
-
-            # back to cart: delta_frac @ rvecs
-            dx = df0 * rvecs[0, 0] + df1 * rvecs[1, 0] + df2 * rvecs[2, 0]
-            dy = df0 * rvecs[0, 1] + df1 * rvecs[1, 1] + df2 * rvecs[2, 1]
-            dz = df0 * rvecs[0, 2] + df1 * rvecs[1, 2] + df2 * rvecs[2, 2]
-
-            r2 = dx * dx + dy * dy + dz * dz
-            if r2 < cutoff2:
-                R = np.sqrt(r2) + 1e-12
-                # Inline LJ calculation (same as _lj_scalar_numba) to avoid numba typing/call overhead
-                sigma_i = sigma_mixed[i]
-                eps_i = epsilon_mixed[i]
-                rc6 = (sigma_i / cutoff) ** 6
-                V_shift = 4.0 * eps_i * (rc6 * rc6 - rc6)
-                r6 = (sigma_i / R) ** 6
-                r12 = r6 * r6
-                acc += 4.0 * eps_i * (r12 - r6) - V_shift
-                dV = 24 * eps_i * (r6 - 2 * r12) / R**2
-                ddV = 96 * eps_i * (7 * r12 - 2 * r6) / R**4
-                dddV = 384 * eps_i * (5 * r6 - 28 * r12) / R**6
-                accx += dV * dx
-                accy += dV * dy
-                accz += dV * dz
-                accxy += ddV * dx * dy
-                accxz += ddV * dx * dz
-                accyz += ddV * dy * dz
-                accxyz += dddV * dx * dy * dz
-        Vext[p] = acc
-        dVdx[p] = accx
-        dVdy[p] = accy
-        dVdz[p] = accz
-        dVdxy[p] = accxy
-        dVdxz[p] = accxz
-        dVdyz[p] = accyz
-        dVdxyz[p] = accxyz
-    dx, dy, dz = spacings
-    max_value = 1e+6*kjmol
-    V_mask = Vext > max_value
-    Vext = np.clip(Vext, -max_value, max_value)
-    dVdx = np.clip(dVdx, -max_value, max_value)
-    dVdy = np.clip(dVdy, -max_value, max_value)
-    dVdz = np.clip(dVdz, -max_value, max_value)
-    dVdxy[V_mask] = 0.0
-    dVdxz[V_mask] = 0.0
-    dVdyz[V_mask] = 0.0
-    dVdxyz[V_mask] = 0.0
-
-    # transform to unit cube format
-    dVdx *= dx
-    dVdy *= dy
-    dVdz *= dz  
-    dVdxy *= dx * dy
-    dVdxz *= dx * dz
-    dVdyz *= dy * dz
-    dVdxyz *= dx * dy * dz
     
-    return Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
+@njit(cache=True)
+def _coulomb_batched(R, q_host, q_guest, alpha, rvecs, epsilon_r=1.0, ke=1.0):
+    """
+    Batched Coulomb potential using Ewald summation for a single host atom (real-space part).
+    
+    Loop structure matches _lj_batched() - one host atom at a time.
+    
+    Parameters
+    ----------
+    R : ndarray
+        Distance array from one host atom to all grid points, shape (N,).
+    q_host : float
+        Charge of the host atom.
+    q_guest : float
+        Charge of the guest atom.
+    alpha : float
+        Ewald damping parameter.
+    rvecs : ndarray
+        Cell vectors, shape (3, 3).
+    epsilon_r : float, optional
+        Relative permittivity, default 1.0.
+    ke : float, optional
+        Coulomb constant in atomic units, 1.0
+    
+    Returns
+    -------
+    V : ndarray
+        Coulomb potential contribution at each grid point (real-space), shape (N,).
+    """
+    
+    
+    R_shape = R.shape
+    R_flat = R.ravel()
+    N = len(R_flat)
+    V = np.zeros(N, dtype=np.float64)
+    
+    cutoff_real = 6.0 / alpha
+    q_prod = ke * q_host * q_guest / epsilon_r
+    
+    # Real-space contribution
+    mask = (R_flat < cutoff_real) & (R_flat > 1e-16)
+    r = R_flat[mask]
+    
+    erfc_val = erfc(alpha * r)
+    V[mask] = q_prod * erfc_val / r
+    
+    return V.reshape(R_shape)
 
+
+@njit(cache=True)
+def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, rvecs, epsilon_r=1.0, ke=1):
+    """
+    Batched Coulomb potential and derivatives using Ewald summation (real-space part).
+    
+    Parameters
+    ----------
+    R : ndarray
+        Distance array from one host atom to all grid points, shape (N,).
+    q_host : float
+        Charge of the host atom.
+    q_guest : float
+        Charge of the guest atom.
+    alpha : float
+        Ewald damping parameter.
+    dr : ndarray
+        Distance vectors from host atom to grid points, shape (N, 3).
+    rvecs : ndarray
+        Cell vectors, shape (3, 3).
+    epsilon_r : float, optional
+        Relative permittivity, default 1.0.
+    ke : float, optional
+        Coulomb constant, default 1 (atomic units).
+    
+    Returns
+    -------
+    tuple
+        (V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz) all shape (N,) or (N, 3, 3, 3)
+    """
+    
+    N = len(R)
+    V = np.zeros(N, dtype=np.float64)
+    dVdx = np.zeros(N, dtype=np.float64)
+    dVdy = np.zeros(N, dtype=np.float64)
+    dVdz = np.zeros(N, dtype=np.float64)
+    dVdxy = np.zeros(N, dtype=np.float64)
+    dVdxz = np.zeros(N, dtype=np.float64)
+    dVdyz = np.zeros(N, dtype=np.float64)
+    dVdxyz = np.zeros(N, dtype=np.float64)
+    
+    cutoff_real = 6.0 / alpha
+    q_prod = ke * q_host * q_guest / epsilon_r
+    alpha2 = alpha * alpha
+    sqrt_pi = np.sqrt(np.pi)
+    
+    # Real-space contribution
+    mask = (R < cutoff_real) & (R > 1e-16)
+    
+    if np.any(mask):
+        r = R[mask]
+        erfc_val = erfc(alpha * r)
+        exp_val = np.exp(-alpha2 * r * r)
+        
+        # Potential
+        V[mask] = q_prod * erfc_val / r
+        
+        # First derivative: dV/dr
+        dv_dr = q_prod * (-erfc_val / (r * r) - 2.0 * alpha * exp_val / (sqrt_pi * r))
+        
+        # Second derivative: d2V/dr2
+        ddv_dr2 = q_prod * (2.0 * erfc_val / (r * r * r) + 4.0 * alpha * exp_val / (sqrt_pi * r * r) - 
+                           2.0 * alpha2 * exp_val / sqrt_pi)
+        
+        # Third derivative: d3V/dr3
+        dddv_dr3 = q_prod * (-6.0 * erfc_val / (r * r * r * r) - 12.0 * alpha * exp_val / (sqrt_pi * r * r * r) + 
+                            8.0 * alpha2 * alpha * exp_val / (sqrt_pi * r))
+        
+        rx = dr[mask, 0]
+        ry = dr[mask, 1]
+        rz = dr[mask, 2]
+        
+        dVdx[mask] = dv_dr * rx / r
+        dVdy[mask] = dv_dr * ry / r
+        dVdz[mask] = dv_dr * rz / r
+        dVdxy[mask] = ddv_dr2 * rx * ry / (r * r)
+        dVdxz[mask] = ddv_dr2 * rx * rz / (r * r)
+        dVdyz[mask] = ddv_dr2 * ry * rz / (r * r)
+        dVdxyz[mask] = dddv_dr3 * rx * ry * rz / (r * r * r)
+    
+    return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
+
+
+@njit(cache=True)
+def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alpha, kmax, rvecs, inv_rvecs, epsilon_r=1.0, ke=1.0, derivatives=False):
+    """
+    Reciprocal-space Ewald contribution (computed once for all grid points).
+    
+    Parameters
+    ----------
+    points : ndarray
+        All grid points, shape (npoints, 3).
+    host_pos : ndarray
+        Host atom positions, shape (natoms, 3).
+    host_charges : ndarray
+        Host atom charges, shape (natoms,).
+    guest_charge : float
+        Guest atom charge.
+    alpha : float
+        Ewald damping parameter.
+    kmax : int
+        Reciprocal space cutoff order.
+    rvecs : ndarray
+        Cell vectors, shape (3, 3).
+    inv_rvecs : ndarray
+        Inverse cell vectors, shape (3, 3).
+    epsilon_r : float, optional
+        Relative permittivity, default 1.0.
+    ke : float, optional
+        Coulomb constant, default 1.0.
+    
+    Returns
+    -------
+    tuple
+        (V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz) all shape (npoints,)
+    """
+    npoints = points.shape[0]
+    natoms = host_pos.shape[0]
+    
+    V = np.zeros(npoints, dtype=np.float64)
+    if derivatives:
+        dVdx = np.zeros(npoints, dtype=np.float64)
+        dVdy = np.zeros(npoints, dtype=np.float64)
+        dVdz = np.zeros(npoints, dtype=np.float64)
+        dVdxy = np.zeros(npoints, dtype=np.float64)
+        dVdxz = np.zeros(npoints, dtype=np.float64)
+        dVdyz = np.zeros(npoints, dtype=np.float64)
+        dVdxyz = np.zeros(npoints, dtype=np.float64)
+    
+    volume = np.abs(np.linalg.det(rvecs))
+    q_prod = ke * guest_charge / epsilon_r
+    alpha2 = alpha * alpha
+    inv_volume = 1.0 / volume
+    
+    for n1 in range(-kmax, kmax + 1):
+        for n2 in range(-kmax, kmax + 1):
+            for n3 in range(-kmax, kmax + 1):
+                if n1 == 0 and n2 == 0 and n3 == 0:
+                    continue
+                
+                # Reciprocal lattice vector
+                kvec = 2.0 * np.pi * (n1 * inv_rvecs[:, 0] + n2 * inv_rvecs[:, 1] + n3 * inv_rvecs[:, 2])
+                k2 = kvec[0] * kvec[0] + kvec[1] * kvec[1] + kvec[2] * kvec[2]
+                
+                if k2 < 1e-16:
+                    continue
+                
+                # Structure factor: sum over host atoms
+                rho_k_real = 0.0
+                rho_k_imag = 0.0
+                for i in range(natoms):
+                    phase = kvec[0] * host_pos[i, 0] + kvec[1] * host_pos[i, 1] + kvec[2] * host_pos[i, 2]
+                    rho_k_real += host_charges[i] * np.cos(phase)
+                    rho_k_imag += host_charges[i] * np.sin(phase)
+                
+                # Reciprocal space factors
+                exp_factor = np.exp(-k2 / (4.0 * alpha2))
+                k_factor = 2.0 * np.pi * exp_factor / (k2 * volume)
+                
+                # Phase at all evaluation points
+                phase_guest = points @ kvec  # (npoints,)
+                cos_phase = np.cos(phase_guest)
+                sin_phase = np.sin(phase_guest)
+                
+                # Potential contribution
+                contrib = k_factor * (rho_k_real * cos_phase - rho_k_imag * sin_phase)
+                V += q_prod * contrib
+                if derivatives:
+                    # First derivatives
+                    dV_coeff = k_factor * (rho_k_real * (-sin_phase) - rho_k_imag * cos_phase)
+                    dVdx += q_prod * dV_coeff * kvec[0]
+                    dVdy += q_prod * dV_coeff * kvec[1]
+                    dVdz += q_prod * dV_coeff * kvec[2]
+                    
+                    # Second derivatives
+                    contrib_2nd = -k_factor * (rho_k_real * cos_phase - rho_k_imag * sin_phase)
+                    dVdxy += q_prod * contrib_2nd * kvec[0] * kvec[1]
+                    dVdxz += q_prod * contrib_2nd * kvec[0] * kvec[2]
+                    dVdyz += q_prod * contrib_2nd * kvec[1] * kvec[2]
+                    
+                    # Third derivative
+                    contrib_3rd = -k_factor * (rho_k_real * (-sin_phase) - rho_k_imag * cos_phase)
+                    dVdxyz += q_prod * contrib_3rd * kvec[0] * kvec[1] * kvec[2]
+    if derivatives:
+        return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
+    else:
+        return V
+
+def compute_ewald_parameters(rvecs, eta=5.0):
+    """
+    Auto-compute Ewald parameters for a given unit cell.
+    
+    Parameters
+    ----------
+    rvecs : ndarray
+        Cell vectors, shape (3, 3).
+    eta : float, optional
+        Ewald parameter controlling real/reciprocal balance (default 5.0).
+        Larger eta favors real space, smaller eta favors reciprocal space.
+    
+    Returns
+    -------
+    alpha : float
+        Ewald damping parameter.
+    kmax : int
+        Reciprocal space cutoff order.
+    """
+    volume = np.abs(np.linalg.det(rvecs))
+    L = volume ** (1/3)
+    alpha = np.sqrt(eta) * np.pi / L
+    kmax = max(3, int(np.ceil(2.0 * alpha * L / np.pi)))
+    return alpha, kmax
 
 def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
     """
@@ -437,47 +550,91 @@ def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, 
         Vext += lennard_jones(R, sigma_mixed, epsilon_mixed, cutoff=cutoff)  # (N,)
         
     return Vext
-    
-def get_external_potential_jit(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
+
+def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, guest_charge=0.0, cutoff=12*angstrom, use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
     """
-    Calculate the external potential using Lennard-Jones interactions.
+    Calculate the external potential using Lennard-Jones and optionally Coulomb interactions.
 
     Parameters
     ----------
     points : ndarray
         Grid points at which to evaluate the potential, shape (N, 3).
     host_data : tuple
-        Host system data containing positions, ffatype_ids, and cell vectors.
-    FF_dict : dict
+        Host system data containing positions, ffatype_ids, charges, and cell vectors.
+    host_ff_dict : dict
         Dictionary mapping atom types to (sigma, epsilon) force field parameters.
     sigmaff : float
         Sigma parameter for the guest atom in Angstrom.
     epsilonff : float
         Epsilon parameter for the guest atom in energy units.
+    guest_charge : float, optional
+        Guest atom charge in elementary charges, default 0.0.
     cutoff : float, optional
         Cutoff distance for Lennard-Jones interactions, default 12*angstrom.
+    use_coulomb : bool, optional
+        If True, include Coulomb interactions with Ewald summation, default False.
+    coulomb_alpha : float, optional
+        Ewald damping parameter. If None, auto-computed.
+    coulomb_kmax : int, optional
+        Ewald reciprocal space cutoff. If None, auto-computed.
+    coulomb_epsilon_r : float, optional
+        Relative permittivity for Coulomb interactions, default 1.0.
 
     Returns
     -------
     Vext : ndarray
         External potential at each grid point, shape (N,).
     """
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
+
+    (host_pos, masses, ffatypes, ffatype_ids, charges, natom, rvecs) = host_data
+
+    cell = Cell(rvecs)
     inv_rvecs = np.linalg.inv(rvecs)
 
-    # Build per-atom mixed parameters so the numba kernel can index them
-    natoms = len(ffatype_ids)
-    sigma_mixed_arr = np.empty(natoms, dtype=float)
-    epsilon_mixed_arr = np.empty(natoms, dtype=float)
+    Vext = np.zeros(points.shape[:-1])
+    
+    # Lennard-Jones contribution
     for i, atom_id in enumerate(ffatype_ids):
-        sigma, epsilon = host_ff_dict[atom_id]
-        sigma_mixed_arr[i] = 0.5 * (sigma + sigmaff)
-        epsilon_mixed_arr[i] = np.sqrt(epsilon * epsilonff)
-    points_shape = points.shape
-    points = points.reshape(-1,3)
-    # Call the numba-parallel kernel once for all atoms
-    Vext = _compute_vext(points, host_pos, sigma_mixed_arr, epsilon_mixed_arr, rvecs, inv_rvecs, cutoff)
-    return Vext.reshape(points_shape[:-1])
+        sigma, epsilon = host_ff_dict[atom_id]    
+
+        sigma_mixed = 0.5*(sigma + sigmaff)
+        epsilon_mixed = np.sqrt(epsilon * epsilonff)
+
+        host_position = host_pos[i]
+
+        dr = points - host_position
+        dr = cell.mic(dr)
+        R = np.sqrt(np.sum(dr*dr, axis=-1)) + 1e-12
+
+        Vext += _lj_batched(R, sigma_mixed, epsilon_mixed, cutoff=cutoff)
+
+    # Coulomb contribution (if requested)
+    if use_coulomb and guest_charge != 0.0 and np.any(charges != 0.0):
+        if coulomb_alpha is None or coulomb_kmax is None:
+            coulomb_alpha, coulomb_kmax = compute_ewald_parameters(rvecs)
+        
+        # Real-space: loop over host atoms
+        for i, atom_id in enumerate(ffatype_ids):
+            if charges[i] == 0.0:
+                continue
+            
+            host_position = host_pos[i]
+            dr = points - host_position
+            dr = cell.mic(dr)
+            R = np.sqrt(np.sum(dr*dr, axis=-1)) + 1e-12
+            
+            V_coul = _coulomb_batched(R, charges[i], guest_charge, coulomb_alpha, rvecs, coulomb_epsilon_r)
+            Vext += V_coul
+        
+        # Reciprocal-space: computed once
+        V_recip = _coulomb_reciprocal_space(
+            points, host_pos, charges, guest_charge, coulomb_alpha, coulomb_kmax, 
+            rvecs, inv_rvecs, coulomb_epsilon_r, derivatives=False
+        )
+        Vext += V_recip
+
+    return Vext
+    
 
 def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
     """
@@ -568,33 +725,6 @@ def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff,
     dVdxyz *= dx * dy * dz
 
     return np.array([Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz])
-
-
-def get_external_potential_derivatives_jit(points, host_data, host_ff_dict, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
-    """
-    JIT-compatible wrapper for computing external potential and derivatives.
-
-    This function preserves the `_jit` API but delegates to the
-    well-tested numpy implementation `get_external_potential_derivatives`.
-    Keeping the wrapper lets callers switch to a true numba kernel later
-    without changing call sites.
-    """
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
-    inv_rvecs = np.linalg.inv(rvecs)
-
-    # Build per-atom mixed parameters so the numba kernel can index them
-    natoms = len(ffatype_ids)
-    sigma_mixed_arr = np.empty(natoms, dtype=float)
-    epsilon_mixed_arr = np.empty(natoms, dtype=float)
-    for i, atom_id in enumerate(ffatype_ids):
-        sigma, epsilon = host_ff_dict[atom_id]
-        sigma_mixed_arr[i] = 0.5 * (sigma + sigmaff)
-        epsilon_mixed_arr[i] = np.sqrt(epsilon * epsilonff)
-    points_shape = points.shape
-    points = points.reshape(-1,3)
-    # Call the numba-parallel kernel once for all atoms
-    Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz  = _compute_vext_derivatives(points, host_pos, sigma_mixed_arr, epsilon_mixed_arr, rvecs, inv_rvecs, cutoff, np.array(spacings))
-    return np.array([ Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz]).reshape((8,)+points_shape[:-1])
 
 
 def generate_rotation_matrix(degree, dimension):
@@ -1394,5 +1524,5 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn,
         ffatypes.append(ffatype_name)
         FF_dict[type_idx] = np.array([param_info['sigma'], param_info['epsilon']])
     
-    return (pos*distance_unit, masses*mass_unit, ffatypes, ffatype_ids, natom, rvecs*distance_unit), FF_dict
+    return (pos*distance_unit, masses*mass_unit, ffatypes, ffatype_ids, charges, natom, rvecs*distance_unit), FF_dict
 

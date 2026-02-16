@@ -223,7 +223,7 @@ def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
 
 
 # numba-friendly scalar Lennard-Jones (with shift) for a single distance
-@njit(cache=True)
+@njit
 def _lj_batched(R, sigma, epsilon, cutoff):
     R_shape = R.shape
     R = R.ravel()
@@ -434,7 +434,7 @@ def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, 
         dr = cell.mic(dr)
         R = np.sqrt(np.sum(dr*dr, axis=-1)) + 1e-12
 
-        Vext += _lj_batched(R, sigma_mixed, epsilon_mixed, cutoff=cutoff)  # (N,)
+        Vext += lennard_jones(R, sigma_mixed, epsilon_mixed, cutoff=cutoff)  # (N,)
         
     return Vext
     
@@ -508,6 +508,8 @@ def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff,
     """
     (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
 
+    cell = Cell(rvecs)
+
     Vext = np.zeros(len(points))
     dVdx = np.zeros(len(points))
     dVdy = np.zeros(len(points))
@@ -525,18 +527,17 @@ def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff,
         sigma, epsilon = host_ff_dict[atom_id]
         sigma_mixed = 0.5*(sigma + sigmaff)
         epsilon_mixed = np.sqrt(epsilon * epsilonff)
-        
-        rx = X - host_pos[i,0]
-        ry = Y - host_pos[i,1]
-        rz = Z - host_pos[i,2]
 
-        # apply minimum image convention
-        rx -= L[0]*(rx/L[0]).round() #periodic BC
-        ry -= L[1]*(ry/L[1]).round() #periodic BC
-        rz -= L[2]*(rz/L[2]).round() #periodic BC
+        host_position = host_pos[i]
+        # apply minimum image convention        
+        dr = points - host_position
+        dr = cell.mic(dr)
+        R = np.sqrt(np.sum(dr*dr, axis=-1)) + 1e-12
 
-        R = np.sqrt(rx**2 + ry**2 + rz**2+1e-16) # to avoid zero
         V, dV, ddV, dddV = lennard_jones(R, sigma_mixed, epsilon_mixed, derivative=True, cutoff=cutoff)  # (N,)
+
+        rx, ry, rz = dr
+
         Vext += V
         dVdx += dV * rx
         dVdy += dV * ry
@@ -1043,7 +1044,7 @@ def precalculate_effective_potential(points, beta, host_data, host_ff_dict, gues
 
 def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest_data, guest_ff_dict, tmp_epot_dr, 
                                     tmp_spacing=0.15*angstrom, cutoff=12*angstrom, max_size=5e+6, max_pot=200*kjmol, 
-                                    degree=11, int_method='tricubic', remove_tmp=True):
+                                    degree=11, int_method='trilinear', remove_tmp=True):
         
         cell = Cell(host_data[-1])
         epot_grid = Grid(cell, spacing=tmp_spacing)
@@ -1053,7 +1054,7 @@ def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest
             atom_name = guest_data[2][atom]
             sigmaff, epsilonff = guest_ff_dict[atom]
             tmp_points = epot_grid.points[...,:3].reshape(-1,3)
-            epot = get_external_potential_derivatives(tmp_points, host_data, host_ff_dict, sigmaff, epsilonff, epot_grid.spacings, cutoff=cutoff).reshape((8, )+ tuple(epot_grid.npoints))
+            epot = get_external_potential(tmp_points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=cutoff).reshape(epot_grid.npoints)
             np.save(part_epot_fn, epot)
             epot_fn_dict[atom_name] = part_epot_fn
 
@@ -1210,7 +1211,7 @@ def _get_system_data_chk(chk_fn, pars_file):
     masses_ids = kwargs['masses']
     ffatypes = list(kwargs['ffatypes'])
     ffatype_ids = kwargs['ffatype_ids']
-    masses =np.array([masses_ids[ff_id] for ff_id in ffatype_ids])
+    masses = np.array([masses_ids[ff_id] for ff_id in ffatype_ids])
 
     natom = len(pos)
     

@@ -256,6 +256,9 @@ class Cell(object):
         # Cartesian -> fractional
         delta_frac = delta_cart @ self.inv_rvecs
 
+        # Wrap into [-0.5, 0.5)
+        delta_frac -= np.round(delta_frac)
+        
         # Fractional -> Cartesian
         return delta_frac @ self.rvecs     
             

@@ -1093,7 +1093,7 @@ class ExternalPotential(Functional):
                 print('interpolating')
                 potential = interpolate_effective_potential(1/temperature/boltzmann, points, host_data, host_ff_dict, guest_data, guest_ff_dict, self.epot_dr, 
                                         tmp_spacing=0.15*angstrom, cutoff=self.cutoff,
-                                        degree=self.degree, int_method='tricubic', remove_tmp=True)
+                                        degree=self.degree, int_method='trilinear', remove_tmp=True)
             else:
                 print('precalculating')
                 potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host_data, host_ff_dict, guest_data, guest_ff_dict, degree=self.degree)

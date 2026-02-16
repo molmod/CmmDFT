@@ -444,7 +444,7 @@ class EquationOfState(object):
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
-            if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
             # densities[i,:len(solutions)] = np.array(solutions)
             if len(solutions) > 0:
                 stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
@@ -504,9 +504,10 @@ class EquationOfState(object):
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
-            if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
             if len(solutions) > 0:
                 stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
+
                 densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
                 
         return densities
@@ -909,7 +910,7 @@ class EOS_MIX(EquationOfState):
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
-            if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
             if len(solutions) > 0:
                 stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
                 densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))

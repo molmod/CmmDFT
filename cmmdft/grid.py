@@ -19,20 +19,49 @@ from .log import log
 __all__ = ['Cell', 'Grid']
 
 class Grid(object):
+    """
+    Discrete spatial grid for classical DFT calculations.
+    
+    Discretizes the simulation domain into real-space and reciprocal-space grids
+    for efficient computation of functionals and Fourier transforms. Provides
+    integration and FFT operations on fields defined on the grid.
+    
+    Attributes
+    ----------
+    cell : Cell
+        Cell object defining the simulation domain
+    npoints : ndarray
+        Number of grid points in each direction [nx, ny, nz]
+    spacings : ndarray
+        Grid spacing in each direction (Angstrom)
+    points : ndarray
+        Real-space grid point coordinates with shape (nx, ny, nz, 4),
+        where last dimension contains [x, y, z, r]
+    kpoints : ndarray
+        Reciprocal-space grid point coordinates with shape (nx, ny, nz, 4),
+        where last dimension contains [kx, ky, kz, |k|]
+    dr : float
+        Volume element in real space
+    dk : float
+        Volume element in reciprocal space
+    sigma_lanczos : ndarray
+        Lanczos kernel for FFT to reduce Gibbs phenomenon
+    """
     def __init__(self, cell, npoints=None, spacing=0.25*angstrom):
         """
-            cell
-                    an instance of a cell object used for extracting the system dimensions.
-            
-            npoints 
-                    simple list with grid dimensions (assumes equal spacing 
-                    grid). If single integer is given, equal dimensions in each
-                    direction is assumed.
-           
-           spacing
-                    spacing between grid points. This value is only used to
-                    determine the number of grid points if npoints is not 
-                    given.
+        Initialize a discrete spatial grid.
+        
+        Parameters
+        ----------
+        cell : Cell
+            Cell object defining the simulation domain
+        npoints : int or list, optional
+            Grid dimensions [nx, ny, nz]. If a single integer is given, equal
+            dimensions in each direction are assumed. If None, grid points are
+            determined from cell dimensions and spacing. Default is None
+        spacing : float, optional
+            Spacing between grid points in Angstrom. Only used to determine
+            npoints if npoints is None. Default is 0.25 Angstrom
         """
         with log.section('GRID', 2, timer='Initializing'):    
             log.dump('Initializing grid')
@@ -88,22 +117,74 @@ class Grid(object):
 
 
     def supercell(self, supercell):
+        """
+        Create a supercell grid with repeated unit cells.
+        
+        Parameters
+        ----------
+        supercell : array_like
+            Repetition factors [nx, ny, nz] for each lattice vector
+        
+        Returns
+        -------
+        Grid
+            New Grid object for the expanded supercell
+        """
         supercell = np.asarray(supercell)
         sup_cell = Cell(self.cell.rvecs*supercell)
         npoints = self.npoints*supercell
         return Grid(sup_cell, npoints=list(npoints))
 
     def copy(self):
+        """
+        Create a deep copy of the grid.
+        
+        Returns
+        -------
+        Grid
+            Independent copy of this grid object
+        """
         return copy_module.deepcopy(self)
     
     def integrate(self, data):
+        """
+        Integrate a field over the entire grid domain.
+        
+        Parameters
+        ----------
+        data : ndarray
+            Field values with spatial dimensions (nx, ny, nz)
+        
+        Returns
+        -------
+        float or complex
+            Integral of the field over the domain
+        """
         with log.section('GRID', 2, timer='Integrating'):
             return np.sum(data)*self.dr
     
     def integrate_n(self, data):
         """
-        integrate along the 3 spatial axes (matching self.npoints)
-        Supports fields with arbitrary leading/trailing dimensions
+        Integrate a field over the entire grid domain.
+        
+        Integrates along the 3 spatial axes (matching self.npoints).
+        Supports fields with arbitrary leading/trailing dimensions.
+        
+        Parameters
+        ----------
+        data : ndarray
+            Field values with spatial dimensions (nx, ny, nz) anywhere in
+            the shape. Supports arbitrary leading/trailing dimensions
+        
+        Returns
+        -------
+        float or complex
+            Integral of the field over the domain
+        
+        Raises
+        ------
+        ValueError
+            If spatial block (nx, ny, nz) is not found in input shape
         """
         
         with log.section('GRID', 2, timer='Integrating'):
@@ -120,15 +201,59 @@ class Grid(object):
             return np.sum(data, axis=axes)*self.dr
     
     def fft(self, rdata):
+        """
+        Fast Fourier transform a real-space field with phase correction.
+        
+        Applies FFT with phase factor correction.
+        Legacy method for single-component grids with shape (nx, ny, nz).
+        For fields with additional dimensions, use fftn() instead.
+        
+        Parameters
+        ----------
+        rdata : ndarray
+            Real-space field with shape (nx, ny, nz)
+        
+        Returns
+        -------
+        ndarray
+            Reciprocal-space field (complex)
+        
+        See Also
+        --------
+        fftn : More general FFT supporting arbitrary dimensions
+        ifft : Inverse FFT
+        """
         with log.section('GRID', 2, timer='fft'):
 
             return fft.fftn(rdata, norm=None)*np.exp(1j*np.pi*self.scalprod)/np.prod(self.npoints)
     
     def fftn(self, rdata):
         """
-        Fourier transform along the 3 spatial axes (matching self.npoints).
-        Supports fields with arbitrary leading/trailing dimensions, e.g.:
-        (N,N,N), (N,N,N,M), (M,N,N,N), (M1,N,N,N,M2), etc.
+        Fourier transform along the 3 spatial axes with phase correction.
+        
+        Applies FFT with phase factor correction and supports fields with
+        arbitrary leading/trailing dimensions beyond the spatial block.
+        
+        Parameters
+        ----------
+        rdata : ndarray
+            Real-space field with spatial dimensions (nx, ny, nz) anywhere
+            in the shape, e.g.: (N,N,N), (N,N,N,M), (M,N,N,N), (M1,N,N,N,M2)
+        
+        Returns
+        -------
+        ndarray
+            Reciprocal-space field (complex) with same shape as input
+        
+        Raises
+        ------
+        ValueError
+            If spatial block (nx, ny, nz) is not found in input shape
+        
+        See Also
+        --------
+        fft : Legacy method for simple (N,N,N) shaped grids
+        ifftn : Inverse FFT
         """
         with log.section('GRID', 2, timer='fft'):
             shape = rdata.shape
@@ -157,15 +282,59 @@ class Grid(object):
             return F * factor
     
     def ifft(self, fdata):
+        """
+        Inverse Fourier transform a reciprocal-space field with phase correction.
+        
+        Applies inverse FFT with phase factor correction. Legacy method for
+        single-component grids with shape (nx, ny, nz).
+        For fields with additional dimensions, use ifftn() instead.
+        
+        Parameters
+        ----------
+        fdata : ndarray
+            Reciprocal-space field (complex) with shape (nx, ny, nz)
+        
+        Returns
+        -------
+        ndarray
+            Real-space field (real values)
+        
+        See Also
+        --------
+        ifftn : More general inverse FFT supporting arbitrary dimensions
+        fft : Forward FFT
+        """
         with log.section('GRID', 2, timer='ifft'):
             return fft.ifftn(fdata*np.exp(-1j*np.pi*self.scalprod), norm=None).real*np.prod(self.npoints)
     
     
     def ifftn(self, fdata):
         """
-        Inverse Fourier transform along the 3 spatial axes (matching self.npoints).
-        Supports arbitrary leading/trailing dims, e.g.
-        (N,N,N), (N,N,N,M), (M,N,N,N), (M1,N,N,N,M2), etc.
+        Inverse Fourier transform along the 3 spatial axes with phase correction.
+        
+        Applies inverse FFT with phase factor correction and supports fields
+        with arbitrary leading/trailing dimensions beyond the spatial block.
+        
+        Parameters
+        ----------
+        fdata : ndarray
+            Reciprocal-space field (complex) with spatial dimensions (nx, ny, nz)
+            anywhere in the shape, e.g.: (N,N,N), (N,N,N,M), (M,N,N,N), etc.
+        
+        Returns
+        -------
+        ndarray
+            Real-space field (real values) with same shape as input
+        
+        Raises
+        ------
+        ValueError
+            If spatial block (nx, ny, nz) is not found in input shape
+        
+        See Also
+        --------
+        ifft : Legacy method for simple (N,N,N) shaped grids
+        fftn : Forward FFT
         """
         with log.section('GRID', 2, timer='ifft'):
             shape = fdata.shape
@@ -194,14 +363,60 @@ class Grid(object):
         
 
 class Cell(object):
+    """
+    Simulation cell with periodicity information.
+    
+    Represents the simulation box geometry defined by lattice vectors,
+    and provides coordinate transformation utilities. Supports orthogonal
+    and non-orthogonal (triclinic) cells.
+    
+    Attributes
+    ----------
+    rvecs : ndarray
+        Lattice vectors as rows: [[a_x, a_y, a_z], 
+                                  [b_x, b_y, b_z],
+                                  [c_x, c_y, c_z]]
+    volume : float
+        Cell volume
+    lengths : tuple
+        Lengths of lattice vectors (a, b, c)
+    angles : tuple
+        Angles between lattice vectors in degrees (alpha, beta, gamma)
+    parameters : tuple
+        (lengths, angles) tuple
+    inv_rvecs : ndarray
+        Inverse of the lattice vector matrix
+    """
     def __init__(self, rvecs):
+        """
+        Initialize a simulation cell.
+        
+        Parameters
+        ----------
+        rvecs : array_like
+            3x3 matrix of lattice vectors as rows, shape (3, 3)
+        """
         self.rvecs = rvecs
         self._update_cached_quantities()
 
     def copy(self):
+        """
+        Create a deep copy of the cell.
+        
+        Returns
+        -------
+        Cell
+            Independent copy of this cell object
+        """
         return copy_module.deepcopy(self)
 
     def _update_cached_quantities(self):
+        """
+        Update cached cell parameters from lattice vectors.
+        
+        Recomputes all derived quantities: lengths, angles, volume,
+        and inverse matrix. Called automatically after rvecs changes.
+        """
         self.a_vec, self.b_vec, self.c_vec = self.rvecs
 
         # Lengths
@@ -227,28 +442,111 @@ class Cell(object):
 
     @staticmethod
     def _angle(v1, v2):
-        """Return angle between two vectors in degrees."""
+        """
+        Calculate angle between two vectors in degrees.
+        
+        Parameters
+        ----------
+        v1 : array_like
+            First vector
+        v2 : array_like
+            Second vector
+        
+        Returns
+        -------
+        float
+            Angle between vectors in degrees (0-180)
+        """
         cosang = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
         cosang = np.clip(cosang, -1.0, 1.0)
         return np.degrees(np.arccos(cosang))
 
     def frac_to_cart(self, frac_coords):
         """
-        Convert fractional coordinates to Cartesian coordinates.
+        Convert fractional (reduced) coordinates to Cartesian coordinates.
+        
+        Parameters
+        ----------
+        frac_coords : array_like
+            Fractional coordinates with shape (..., 3), where last dimension
+            contains fractional coordinates in basis of lattice vectors
+        
+        Returns
+        -------
+        ndarray
+            Cartesian coordinates with same shape as input
+        
+        Examples
+        --------
+        >>> cell = Cell(np.eye(3) * 5.0)
+        >>> cart = cell.frac_to_cart([0.5, 0.5, 0.5])
+        >>> np.allclose(cart, [2.5, 2.5, 2.5])
+        True
         """
         frac_coords = np.asarray(frac_coords, dtype=float)
         return frac_coords @ self.rvecs
 
     def cart_to_frac(self, cart_coords):
         """
-        Convert Cartesian coordinates to fractional coordinates.
+        Convert Cartesian coordinates to fractional (reduced) coordinates.
+        
+        Parameters
+        ----------
+        cart_coords : array_like
+            Cartesian coordinates with shape (..., 3)
+        
+        Returns
+        -------
+        ndarray
+            Fractional coordinates with same shape as input, where each
+            coordinate is expressed as a linear combination of lattice vectors
+        
+        Examples
+        --------
+        >>> cell = Cell(np.eye(3) * 5.0)
+        >>> frac = cell.cart_to_frac([2.5, 2.5, 2.5])
+        >>> np.allclose(frac, [0.5, 0.5, 0.5])
+        True
         """
         cart_coords = np.asarray(cart_coords, dtype=float)
         return cart_coords @ self.inv_rvecs
 
     def mic(self, delta_cart):
         """
-        Apply the minimum image convention to a displacement vector.
+        Apply the minimum image convention (MIC) to displacement vectors.
+        
+        Maps displacement vectors to their nearest periodic images by
+        converting to fractional coordinates, wrapping to [-0.5, 0.5),
+        and converting back to Cartesian.
+        
+        Parameters
+        ----------
+        delta_cart : array_like
+            Cartesian displacement vectors with shape (..., 3), where
+            last dimension contains the 3D displacement
+        
+        Returns
+        -------
+        ndarray
+            Shortest displacement vectors under periodic boundary conditions,
+            same shape as input
+        
+        Raises
+        ------
+        ValueError
+            If last dimension is not size 3
+        
+        Notes
+        -----
+        Essential for simulating systems with periodic boundary conditions.
+        Ensures distances are calculated using periodic neighbors.
+        
+        Examples
+        --------
+        >>> cell = Cell(np.eye(3) * 10.0)
+        >>> delta = cell.mic([8.0, 0.0, 0.0])  # > a/2
+        >>> np.allclose(np.linalg.norm(delta), 2.0)  # Should wrap to -2
+        True
         """
         if delta_cart.shape[-1] != 3:
             raise ValueError("Last dimension must be of size 3")

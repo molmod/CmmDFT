@@ -11,6 +11,7 @@ from itertools import product
 from functools import partial
 from collections import defaultdict
 from pathlib import Path
+import math
 
 import xml.etree.ElementTree as ET
 from ase.io import read
@@ -221,7 +222,7 @@ def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
     else:
         return V
     
-@njit(cache=True, parallel=True)
+@njit
 def _lj_batched(R, sigma, epsilon, cutoff):
     R_shape = R.shape
     R = R.ravel()
@@ -240,6 +241,40 @@ def _lj_batched(R, sigma, epsilon, cutoff):
         out[i] = 4.0 * epsilon * (r12 - r6) - V_shift
     return out.reshape(R_shape)
 
+@njit
+def _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
+                  cell_matrix, cell_inv, cutoff):
+    N = points.shape[0]
+    M = host_pos.shape[0]
+    Vext = np.zeros(N, dtype=np.float64)
+
+    for j in range(N):  # parallel over grid points
+        v = 0.0
+        for i in range(M):
+            dx = points[j, 0] - host_pos[i, 0]
+            dy = points[j, 1] - host_pos[i, 1]
+            dz = points[j, 2] - host_pos[i, 2]
+
+            # mic: convert to fractional, round, convert back
+            fx = cell_inv[0,0]*dx + cell_inv[0,1]*dy + cell_inv[0,2]*dz
+            fy = cell_inv[1,0]*dx + cell_inv[1,1]*dy + cell_inv[1,2]*dz
+            fz = cell_inv[2,0]*dx + cell_inv[2,1]*dy + cell_inv[2,2]*dz
+
+            fx -= round(fx)
+            fy -= round(fy)
+            fz -= round(fz)
+
+            dx = cell_matrix[0,0]*fx + cell_matrix[0,1]*fy + cell_matrix[0,2]*fz
+            dy = cell_matrix[1,0]*fx + cell_matrix[1,1]*fy + cell_matrix[1,2]*fz
+            dz = cell_matrix[2,0]*fx + cell_matrix[2,1]*fy + cell_matrix[2,2]*fz
+
+            r2 = dx*dx + dy*dy + dz*dz
+            r = r2**0.5 + 1e-12
+            if r < cutoff:
+                r6 = (sigmas_mixed[i] / r) ** 6
+                v += 4.0 * epsilons_mixed[i] * (r6*r6 - r6) - v_shifts[i]
+        Vext[j] = v
+    return Vext
     
 @njit(cache=True)
 def _coulomb_batched(R, q_host, q_guest, alpha, rvecs, epsilon_r=1.0, ke=1.0):
@@ -288,7 +323,6 @@ def _coulomb_batched(R, q_host, q_guest, alpha, rvecs, epsilon_r=1.0, ke=1.0):
     V[mask] = q_prod * erfc_val / r
     
     return V.reshape(R_shape)
-
 
 @njit(cache=True)
 def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, rvecs, epsilon_r=1.0, ke=1):
@@ -370,7 +404,6 @@ def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, rvecs, epsilon_r
         dVdxyz[mask] = dddv_dr3 * rx * ry * rz / (r * r * r)
     
     return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
-
 
 @njit(cache=True)
 def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alpha, kmax, rvecs, inv_rvecs, epsilon_r=1.0, ke=1.0, derivatives=False):
@@ -503,6 +536,21 @@ def compute_ewald_parameters(rvecs, eta=5.0):
     return alpha, kmax
 
 def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
+    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
+
+    sigmas_mixed   = np.array([0.5*(host_ff_dict[aid][0] + sigmaff) for aid in ffatype_ids])
+    epsilons_mixed = np.array([np.sqrt(host_ff_dict[aid][1] * epsilonff) for aid in ffatype_ids])
+    rc6     = (sigmas_mixed / cutoff) ** 6
+    v_shifts = 4 * epsilons_mixed * (rc6**2 - rc6)
+
+    cell_matrix = rvecs.astype(np.float64)
+    cell_inv    = np.linalg.inv(cell_matrix)
+
+    return _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
+                         cell_matrix, cell_inv, cutoff)
+
+
+def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones interactions.
 
@@ -1186,7 +1234,7 @@ def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest
             np.save(part_epot_fn, epot)
             epot_fn_dict[atom_name] = part_epot_fn
 
-        int_dict = get_interpolator_dict(epot_fn_dict, tmp_points[0], np.array([0.15, 0.15, 0.15])*angstrom, int_method=int_method)
+        int_dict = get_interpolator_dict(epot_fn_dict, tmp_points[0], epot_grid.spacings, int_method=int_method)
 
         potential = generate_effective_potential(points, beta, guest_data, int_dict, degree=3, max_size=max_size)
         potential_mask = potential <  max_pot

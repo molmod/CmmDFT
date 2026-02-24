@@ -19,7 +19,28 @@ __all__ = ['Solver', 'Picard', 'Anderson', 'Fire', 'QuasiNewton']
 
 class Solver(object):
     """
-    Generic solver class for DFT calculations.
+    Base solver class for cDFT density functional theory calculations.
+    
+    Manages the iterative solution of the cDFT Euler-Lagrange equations
+    for finding the equilibrium density distribution. Handles convergence
+    checking, energy tracking, and provides common utilities for all solver types.
+    
+    Attributes
+    ----------
+    grid : Grid
+        Spatial discretization grid
+    fener : FreeEnergy
+        Free energy functional manager
+    nsteps : int
+        Maximum number of optimization steps
+    criterion : list of str
+        Convergence criteria ('RIUE', 'RES', 'DER')
+    threshold : list of float
+        Convergence thresholds for each criterion
+    track_history : bool
+        Whether to record convergence history
+    history : ndarray
+        Convergence metrics at each step (if tracked)
     """
 
     name = 'SOLVER'
@@ -27,25 +48,33 @@ class Solver(object):
     def __init__(self, program, nsteps=250, threshold=1e-6, criterion='RIUE', a_tol=1e-6, r_tol=1e-4, min_iter=1,
                   track_history=False):
         """
-        Initialize the solver with the given parameters.
-        Parameters:
-        grid : object
-            The grid object used for the solver.
-        fener : object
-            The free energy object containing functionals.
+        Initialize the base solver.
+        
+        Parameters
+        ----------
+        program : Program
+            Program object containing grid and free energy
         nsteps : int, optional
-            The maximum number of steps for the solver (default is 250).
-        threshold : float, optional
-            The convergence threshold for the solver (default is 1e-6).
-        criterion : str, optional
-            The criterion for convergence ('RIUE', 'RES', or 'DER') (default is 'RIUE').
+            Maximum number of optimization steps. Default is 250
+        threshold : float or list, optional
+            Convergence threshold(s). Default is 1e-6
+        criterion : str or list, optional
+            Convergence criterion: 'RIUE' (relative integrated unsigned error),
+            'RES' (residual error), or 'DER' (derivative error).
+            Default is 'RIUE'
         a_tol : float, optional
-            The absolute tolerance for convergence (default is 1e-6) only used for DER.
+            Absolute tolerance for DER criterion. Default is 1e-6
         r_tol : float, optional
-            The relative tolerance for convergence (default is 1e-4) only used for DER.
-        Raises:
+            Relative tolerance for DER criterion. Default is 1e-4
+        min_iter : int, optional
+            Minimum iterations before checking convergence. Default is 1
+        track_history : bool, optional
+            Track convergence metrics at each step. Default is False
+        
+        Raises
+        ------
         AssertionError
-            If the criterion is not one of 'RIUE', 'RES', or 'DER'.
+            If criterion not in ['RIUE', 'RES', 'DER']
         """
         self.grid = program.grid
         self.fener = program.fener
@@ -90,7 +119,16 @@ class Solver(object):
 
     def _initiate_solving(self, chempot):
         """
-        Routine which is called before the solving starts to reset the solver if necessary.
+        Reset solver state before starting optimization.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray
+            Chemical potential(s) for the calculation
+        
+        Notes
+        -----
+        Computes fugacity from chemical potential and initializes counters.
         """
         chempot = np.atleast_1d(chempot)
         self.fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
@@ -103,6 +141,25 @@ class Solver(object):
             self.history = np.zeros((self.nsteps+1, 7)) 
 
     def _get_Omega(self, rho, krho):
+        """
+        Calculate the grand canonical potential (Omega).
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Density field in real space
+        krho : ndarray
+            Fourier transform of density
+        
+        Returns
+        -------
+        float
+            Grand potential Omega = F_ideal + F_parts - mu*N
+        
+        Notes
+        -----
+        Also stores tracking information and omega0 for convergence monitoring.
+        """
         with log.section(self.name, self.log_level, timer='Omega'):
             N = np.asarray([self.grid.integrate_n(rho[e]) for e in range(self.nspecies)])
             rho_reg = self._clip_density(rho)
@@ -122,6 +179,16 @@ class Solver(object):
             return G
     
     def _track_energy(self, rho, krho):
+        """
+        Record grand potential and its components to file.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Density field
+        krho : ndarray
+            Fourier transform of density
+        """
         if self.fener.fn_tracking is not None:
             if self.curr_step != self.tracking_step:
                 self._get_Omega(rho, krho)
@@ -129,13 +196,66 @@ class Solver(object):
                 f.write(self.tracking_line + '\n')
 
     def get_new_rho(self, C1, fugacity):
+        """
+        Compute new density from functional derivative.
+        
+        Parameters
+        ----------
+        C1 : ndarray
+            Functional derivative (one-body potential)
+        fugacity : float or ndarray
+            Fugacity or chemical potential factor
+        
+        Returns
+        -------
+        ndarray
+            Updated density field
+        
+        Notes
+        -----
+        Uses Boltzmann distribution: rho_new = fugacity * exp(-beta*C1)
+        """
         fug = np.atleast_1d(fugacity)
         return self.fener.beta*np.einsum('ijkl,i->ijkl',np.exp(-self.fener.beta*C1), fug)
 
     def _get_dOmega(self, rho, C1):
+        """
+        Calculate the functional derivative of the grand potential from C1.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Density field
+        C1 : ndarray
+            Functional derivative from parts
+        
+        Returns
+        -------
+        ndarray
+            Functional derivative
+        
+        Notes
+        -----
+        delta(Omega)/delta(rho) = (1/beta) * ln(Lambda^3 * rho) + C1 - mu
+        """
         return np.log(np.einsum('i,ijkl->ijkl',self.fener.wavelength**3,self._clip_density(rho)), dtype='float64') / self.fener.beta + C1 - self.chempot[:, np.newaxis, np.newaxis, np.newaxis]
 
     def _get_C1(self, rho, krho=None):
+        """
+        Calculate the first derivative of all functionals
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Density field
+        krho : ndarray, optional
+            Fourier transform of density. Computed if not provided.
+        
+        Returns
+        -------
+        ndarray
+            C1 = sum of functional derivatives
+        """
         with log.section(self.name, self.log_level, timer='C1'):
             if krho is None:
                 krho = self.grid.fftn(rho)
@@ -145,16 +265,77 @@ class Solver(object):
             return C1
 
     def _clip_density(self, rho):
+        """
+        Clip density to prevent numerical issues with log(rho).
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Density field
+        
+        Returns
+        -------
+        ndarray
+            Clipped density with minimum value 1e-30
+        """
         return np.where(rho < self.lower_density, 1e-30, rho)
     
     def pack_rhos(self, rho_list):
-        """rho_list: list of arrays shape (nx,ny,nz) -> 1D vector"""
+        """
+        Flatten density field(s) to 1D vector.
+        
+        Parameters
+        ----------
+        rho_list : ndarray
+            Density field with shape (ncomp, nx, ny, nz) or similar
+        
+        Returns
+        -------
+        ndarray
+            Flattened 1D vector
+        """
         return rho_list.ravel()
 
     def unpack_rhos(self, rho_packed):
+        """
+        Reshape flattened density vector back to full shape.
+        
+        Parameters
+        ----------
+        rho_packed : ndarray
+            Flattened 1D density vector
+        
+        Returns
+        -------
+        ndarray
+            Reshaped density field
+        """
         return rho_packed.reshape(*self.rho_shape)
 
     def _get_alpha_max(self, rho, krho, Grho, krho_new=None):
+        """
+        Calculate maximum safe step size from hard-sphere constraints.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        Grho : ndarray
+            Target density (e.g., from Boltzmann distribution)
+        krho_new : ndarray, optional
+            Fourier transform of new density. Computed if not provided.
+        
+        Returns
+        -------
+        float
+            Maximum step size keeping n3 < ~0.9 (packing fraction constraint)
+        
+        Notes
+        -----
+        Uses hard-sphere weighted density n3 to avoid unphysical overlaps.
+        """
         if krho_new is None:
             krho_new = self.grid.fftn(Grho)
 
@@ -173,7 +354,29 @@ class Solver(object):
 
     def _check_convergence(self, rho_new, krho_new, C1_new, rho, N_new):
         """
-        Check the convergence of the solver.
+        Check if optimization has converged.
+        
+        Parameters
+        ----------
+        rho_new : ndarray
+            Updated density field
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        rho : ndarray
+            Previous density field
+        N_new : float
+            Total number of particles (loading)
+        
+        Returns
+        -------
+        bool
+            True if all active criteria meet their thresholds
+        
+        Notes
+        -----
+        Computes RIUE, RES, and DER metrics and logs progress.
         """
         with log.section(self.name, self.log_level, timer='Convergence'):
             CRIT_PASS = True
@@ -239,25 +442,34 @@ class Solver(object):
         
     def _solve(self, chempot, rho, log_level):
         """
-        Solve the density functional theory (DFT) problem for a given chemical potential.
-        Parameters:
-        -----------
-        chempot : float
-            The chemical potential for which the density is to be calculated.
-        rho : numpy.ndarray
-            The initial guess for the density distribution.
+        Core optimization loop for density functional theory.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray
+            Chemical potential(s) for the calculation
+        rho : ndarray
+            Initial density guess
         log_level : int
-            The logging level to control the verbosity of the output.
-        Returns:
-        --------
-        N_new : float
-            The integrated density over the grid.
-        rho_new : numpy.ndarray
-            The updated density distribution after solving.
-        Raises:
+            Logging verbosity level
+        
+        Returns
         -------
+        N_new : float
+            Total number of adsorbed particles (loading)
+        rho_new : ndarray
+            Optimized density field
+        converged : bool
+            Whether convergence was achieved
+        
+        Raises
+        ------
         FloatingPointError
-            If the new density contains non-finite values, indicating a failure in the Picard iteration.
+            If density becomes non-finite (NaN or Inf)
+        
+        Notes
+        -----
+        Iteratively calls update_rho() until convergence or max steps reached.
         """
         self.log_level = log_level
         converged = False
@@ -323,18 +535,33 @@ class Solver(object):
 
     def solve(self, chempot, rho, log_level):
         """
-            
-            A function surrounding the general solver with an added failsafe of correction factors on the mixing parameter in case of floatingpoint errors.
-            
-            **arguments**
-            
-            chempot
-                The chemical potential
-            
-            rho
-                The initial guess of the one particle density that we need to 
-                solve for.
-            
+        Solve for density with automatic recovery from numerical errors.
+        
+        Wrapper around _solve() that handles floating point errors by
+        automatically reducing mixing parameters and retrying.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray
+            Chemical potential(s) for the calculation
+        rho : ndarray
+            Initial density guess
+        log_level : int
+            Logging verbosity level
+        
+        Returns
+        -------
+        N_new : float
+            Total number of adsorbed particles
+        rho_new : ndarray
+            Optimized density field
+        converged : bool
+            Whether convergence achieved
+        
+        Raises
+        ------
+        NoSolutionError
+            If all retry attempts fail
         """
         self.log_level = log_level
         self.correction_factor = 1
@@ -357,35 +584,53 @@ class Solver(object):
 
 class Picard(Solver):
     """
-    Picard solver with different methods to update the density.
+    Picard iterative solver for DFT with static or hybrid damping.
+    
+    Implements simple fixed-point iteration with exponential mixing.
+    Can use either constant mixing (static) or adaptive mixing (hybrid)
+    with quadratic approximation in the density space.
+    
+    Attributes
+    ----------
+    alpha_mix : float
+        Linear mixing parameter (0 < alpha < 1)
+    method : str
+        Iteration method: 'static' or 'hybrid'
+    break_nstep : int
+        Step number to switch methods (if applicable)
+    
+    See Also
+    --------
+    Anderson : Accelerated iterative solver
+    Fire : Inertial relaxation method
     """
 
     name = 'PICARD'
 
     def __init__(self, program, nsteps=250, 
                  alpha_mix=0.1, method='hybrid', break_nstep = 80, correction_factor=1, thresh=1*kjmol, **kwargs):
-        '''This function initializes the solver object for the program.
+        """
+        Initialize Picard iteration solver.
         
         Parameters
         ----------
-        grid
-            The `grid` parameter in the `__init__` method is used to store a grid object, which likely
-        represents a grid or lattice structure for some computational calculations or simulations.
-        fener
-            The free energy object
-        nsteps
-            The max number of steps in the calculation process. Default is 250.
-        threshold
-           Convergence threshold. Default is 1e-6
-        alpha_mix
-           The mixing parameter for the Picard iterative scheme. Default is 0.1
-        method
-            String parameter that defines the method to be used in the solver. Choices are 'hybrid', 'static'
-        correction_factor, optional
-            Dampening value on all mixing parameters, used for unstable simulations
-        thresh
-            Threshold for choosing the SLSQP solver in the hybrid solver        
-        '''
+        program : Program
+            Program object containing grid and free energy
+        nsteps : int, optional
+            Maximum optimization steps. Default is 250
+        alpha_mix : float, optional
+            Mixing parameter for convergence (0-1). Default is 0.1
+        method : {'static', 'hybrid'}, optional
+            Iteration strategy. Default is 'hybrid'
+        break_nstep : int, optional
+            Step to potentially switch between methods. Default is 80
+        correction_factor : float, optional
+            Damping applied to alpha_mix for stability. Default is 1
+        thresh : float, optional
+            Threshold for SLSQP selection in hybrid mode. Default is 1 kJ/mol
+        **kwargs
+            Additional arguments passed to parent Solver class
+        """
         super().__init__(program, nsteps, **kwargs)
 
         self.alpha_mix = alpha_mix
@@ -400,6 +645,32 @@ class Picard(Solver):
                   
 
     def update_rho_static(self, rho, krho, C1):
+        """
+        Update density using simple linear mixing.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        C1 : ndarray
+            One-body potential
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        
+        Notes
+        -----
+        rho_new = (1 - alpha) * rho + alpha * G(rho)
+        where G is the Boltzmann operator with chemical potential.
+        """
         with log.section(self.name, self.log_level, timer='Update rho'):
             alpha_mix_cor = self.alpha_mix*self.correction_factor
             rho_new = (1.0-alpha_mix_cor)*rho+alpha_mix_cor*self.get_new_rho(C1, self.fugacity)
@@ -410,6 +681,35 @@ class Picard(Solver):
             return rho_new, krho_new, C1_new
 
     def update_rho_hybrid(self, rho, krho, C1):
+        """
+        Update density using adaptive mixing with quadratic line search.
+        
+        Fits a quadratic to the grand potential vs. mixing parameter and
+        finds the optimal step size that minimizes potential energy.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        C1 : ndarray
+            One-body potential
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        
+        Notes
+        -----
+        Uses SLSQP optimization if satisfies convergence criteria condition,
+        otherwise uses simple quadratic approximation for robust convergence.
+        """
         with log.section(self.name, self.log_level, timer='Update rho_hyb'): 
             prev_omega = self.omega0
             Grho = self.get_new_rho(C1, self.fugacity)
@@ -466,8 +766,27 @@ class Picard(Solver):
 
 class Anderson(Picard):
     """
-    Anderson and Hybrid-Anderson solver 
-    Based  on https://doi.org/10.1063/5.0067172
+    Anderson acceleration solver for DFT optimization.
+    
+    Implements Anderson mixing acceleration that uses limited memory
+    of previous iterations to extrapolate better density updates.
+    Based on: https://doi.org/10.1063/5.0067172
+    
+    Attributes
+    ----------
+    m : int
+        Memory size (number of previous iterations to store)
+    damping : float
+        Adaptive damping coefficient for acceleration
+    adaptive_damping : bool
+        Whether to adjust damping based on residual norm changes
+    minimize_method : str
+        Optimization method for line search
+    
+    See Also
+    --------
+    Picard : Non-accelerated iterative solver
+    Fire : Inertial relaxation method
     """
 
     name = 'ANDERSON'
@@ -476,22 +795,33 @@ class Anderson(Picard):
                  m=5, damping=0.3, delta=0.1, damping_max=0.8, damping_min=0.01, adaptive_damping=True,
                    **kwargs):
         """
-        Initialize the solver with the given parameters.
-        Parameters:
-        grid : object
-            The grid object used for the solver.
-        fener : object
-            The fener object used for the solver.
+        Initialize Anderson acceleration solver.
+        
+        Parameters
+        ----------
+        program : Program
+            Program object containing grid and free energy
         nsteps : int, optional
-            The number of steps for the solver (default is 100).
-        method : str, optional
-            The method used for solving (default is 'hybridanderson').
+            Maximum optimization steps. Default is 100
+        method : {'hybridanderson', 'anderson'}, optional
+            Solver method variant. Default is 'hybridanderson'
+        minimize_method : str, optional
+            Line search method (e.g., 'SLSQP_new'). Default is 'SLSQP_new'
         m : int, optional
-            Number of previous rho and Grho saved for the Anderson method (default is 5).
+            Memory depth for acceleration (cycles back with step size m).
+            Default is 5
+        damping : float, optional
+            Initial damping coefficient. Default is 0.3
         delta : float, optional
-            Threshold for choosing the Picard solver in the hybrid method (default is 0.01).
-        **kwargs : dict
-            Additional keyword arguments passed to the superclass initializer.
+            Threshold for switching to Picard (if applicable). Default is 0.1
+        damping_max : float, optional
+            Maximum damping allowed. Default is 0.8
+        damping_min : float, optional
+            Minimum damping allowed. Default is 0.01
+        adaptive_damping : bool, optional
+            Automatically adjust damping based on convergence. Default is True
+        **kwargs
+            Additional arguments passed to parent Picard class
         """
         
         super().__init__(program, nsteps, method=method, **kwargs)
@@ -509,7 +839,16 @@ class Anderson(Picard):
 
     def _initiate_solving(self, chempot):
         """
-        Reset the previous rhos and Grhos
+        Reset solver state and Anderson acceleration memory.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray
+            Chemical potential for calculation
+        
+        Notes
+        -----
+        Initializes prev_rhos and prev_Grhos arrays for limited-memory storage.
         """
         super()._initiate_solving(chempot)
         self.prev_rhos = np.zeros((self.m,np.prod(self.rho_shape)))
@@ -521,7 +860,20 @@ class Anderson(Picard):
 
     def _save_previous_rhos(self, rho, krho, Grho):
         """
-        Save the previous rho and Grho values for Anderson method.
+        Store current density and target density for acceleration.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform (not used, kept for API consistency)
+        Grho : ndarray
+            Target density from Boltzmann operator
+        
+        Notes
+        -----
+        Maintains circular buffers of size m for limited-memory storage.
         """
 
         self.prev_rhos = np.roll(self.prev_rhos, -1, axis=0)
@@ -530,6 +882,26 @@ class Anderson(Picard):
         self.prev_Grhos[-1] = np.copy(Grho).ravel()
 
     def _get_damping_coefficient(self, rho_result, Grho_result):
+        """
+        Adaptively adjust damping coefficient based on residual convergence.
+        
+        Parameters
+        ----------
+        rho_result : ndarray
+            Current density from Anderson acceleration
+        Grho_result : ndarray
+            Target density from Boltzmann operator
+        
+        Returns
+        -------
+        ndarray
+            Updated density with adjusted damping applied
+        
+        Notes
+        -----
+        Increases damping if residual decreasing, decreases if increasing.
+        Also ensures packing fraction stays below maximum.
+        """
         res_norm = np.linalg.norm(self.prev_Grhos[-1] - self.prev_rhos[-1])
         prev_res_norm = np.linalg.norm(self.prev_Grhos[-2] - self.prev_rhos[-2])
 
@@ -563,6 +935,33 @@ class Anderson(Picard):
         return rho_new, krho_new
     
     def update_rho(self, rho, krho, C1):
+        """
+        Update density with Anderson acceleration or fallback to Picard.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        C1 : ndarray
+            One-body potential
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        
+        Notes
+        -----
+        Uses hybrid method to switch between Picard and Anderson based on
+        convergence criteria. Falls back to hybrid Picard if Anderson step
+        produces worse residuals or unphysical densities.
+        """
         with log.section(self.name, self.log_level, timer='Update rho'):
 
             prev_omega = self.omega0
@@ -600,6 +999,21 @@ class Anderson(Picard):
             return rho_new, krho_new, C1_new
 
     def update_rho_Anderson_analytical(self):
+        """
+        Compute accelerated step using analytical Anderson mixing.
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Accelerated density estimate
+        Grho_new : ndarray
+            Boltzmann estimate at new density
+        
+        Notes
+        -----
+        Solves the least-squares system to find optimal weights for
+        previous iterations, minimizing residual norm via Gram matrix.
+        """
         mk = min(self.curr_step, self.m)
         residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
         t0 = time.time()
@@ -637,6 +1051,23 @@ class Anderson(Picard):
         return rho_new, krho_new, C1_new
     
     def update_rho_Anderson(self):
+        """
+        Compute accelerated step using numerical Anderson optimization.
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Accelerated density estimate
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        
+        Notes
+        -----
+        Minimizes squared residual norm with respect to blending weights
+        using SLSQP constrained optimization to enforce unit sum.
+        """
         mk = min(self.curr_step, self.m)
         residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
         
@@ -676,31 +1107,57 @@ class Anderson(Picard):
         
 class Fire(Solver):
     """
-    Fast Inertial Relaxation Engine (FIRE) solver
-    # ABC-Fire algorithm https://doi.org/10.1016/j.commatsci.2022.111978   
-    based on  https://doi.org/10.1007/s10450-024-00444-z
+    Fast Inertial Relaxation Engine (FIRE) solver.
+    
+    Implements the ABC-FIRE algorithm for fast density optimization
+    using inertial dynamics with adaptive timesteps and damping.
+    Referenced from: https://doi.org/10.1007/s10450-024-00444-z
+    
+    Uses velocity-based acceleration and deceleration to find minimum
+    energy configurations efficiently.
+    
+    Attributes
+    ----------
+    dt : float
+        Current adaptive timestep
+    alpha : float
+        Current damping coefficient
+    Npos : int
+        Counter for consecutive positive steps
+    Nneg : int
+        Counter for consecutive negative steps
+    
+    See Also
+    --------
+    Picard : Fixed-point iteration
+    Anderson : Accelerated iteration with memory
     """
 
     name = 'FIRE'
 
     def __init__(self, program, nsteps=100, method='abc-fire', alpha=0.2, dt=0.02, **kwargs):
         """
-        Initialize the solver with the given parameters.
-        Parameters:
-        grid : object
-            The grid object to be used in the solver.
-        fener : object
-            The energy function or object to be used in the solver.
+        Initialize FIRE solver for accelerated DFT optimization.
+        
+        Parameters
+        ----------
+        program : Program
+            Program object containing grid and free energy
         nsteps : int, optional
-            The number of steps for the solver to run (default is 100).
-        method : str, optional
-            The method to be used in the solver (default is 'abc-fire').
+            Maximum optimization steps. Default is 100
+        method : {'abc-fire', 'fire'}, optional
+            Algorithm variant (abc-fire recommended). Default is 'abc-fire'
         alpha : float, optional
-            The initial alpha value for the solver (default is 0.15).
+            Initial damping fraction (0-1). Default is 0.2
         dt : float, optional
-            The initial time step for the solver (default is 0.002).
-        **kwargs : dict
-            Additional keyword arguments to be passed to the parent class initializer.
+            Initial timestep. Default is 0.02
+        **kwargs
+            Additional arguments passed to parent Solver class
+        
+        Notes
+        -----
+        ABC-FIRE uses adaptive acceleration/deceleration of timesteps
+        and damping based on convergence progress.
         """
         super().__init__(program, nsteps, **kwargs)
 
@@ -721,7 +1178,16 @@ class Fire(Solver):
 
     def _initiate_solving(self, chempot):
         """
-        Routine which is called before the solving starts to reset the solver if necessary.
+        Reset FIRE solver state before starting optimization.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray
+            Chemical potential(s) for calculation
+        
+        Notes
+        -----
+        Initializes velocity field and resets adaptive timestep and damping.
         """
         super()._initiate_solving(chempot)
         self.V = np.zeros(self.rho_shape)
@@ -729,6 +1195,33 @@ class Fire(Solver):
         self.alpha = self.alpha0
 
     def update_rho(self, rho, krho, C1):
+        """
+        Update density using FIRE inertial relaxation dynamics.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density (not used, kept for API consistency)
+        C1 : ndarray
+            One-body potential
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        
+        Notes
+        -----
+        Propagates density using velocity field V that follows the potential gradient
+        with adaptive damping and timesteps. Implements ABC-FIRE algorithm with
+        acceleration factors for faster convergence.
+        """
         with log.section(self.name, self.log_level, timer='Update rho'):
             lnrho = np.log(rho, where=rho>0)
             F = -self.fener.beta*self._get_dOmega(rho, C1)
@@ -771,8 +1264,28 @@ class Fire(Solver):
 
 class QuasiNewton(Picard):
     """
-    Quasi-Newton solver for DFT calculations.
-    This solver uses a quasi-Newton method to update the density.
+    Quasi-Newton solver for accelerated DFT optimization.
+    
+    Implements limited-memory quasi-Newton methods (L-BFGS, L-Broyden, CG)
+    with adaptive line search and optional trust region constraint.
+    
+    Uses cone projection to enforce physical constraints like positive density.
+    
+    Attributes
+    ----------
+    QN_method : str
+        Quasi-Newton variant: 'bfgs', 'broyden', or 'cg'
+    m : int
+        Limited memory size (number of pairs stored)
+    hybrid : bool
+        Use hybrid mode for better initial convergence
+    alpha : float
+        Current line search step size
+    
+    See Also
+    --------
+    Anderson : Anderson acceleration
+    Fire : Inertial relaxation
     """
 
     name = 'QUASI_NEWTON'
@@ -780,16 +1293,36 @@ class QuasiNewton(Picard):
     def __init__(self, program, nsteps=100, m=10, method='bfgs', hybrid=True, delta=0.5,
                  alpha_init=0.05, c1=1e-4, c2=0.9, n_line_search=10, trust_radius=1, verbose=True, **kwargs):
         """
-        Initialize the Quasi-Newton solver with the given parameters.
-        Parameters:
-        grid : object
-            The grid object used for the solver.
-        fener : object
-            The free energy object containing functionals.
+        Initialize Quasi-Newton solver with limited-memory updates.
+        
+        Parameters
+        ----------
+        program : Program
+            Program object containing grid and free energy
         nsteps : int, optional
-            The number of steps for the solver (default is 100).
-        **kwargs : dict
-            Additional keyword arguments passed to the superclass initializer.
+            Maximum optimization steps. Default is 100
+        m : int, optional
+            Limited memory size (stored pairs). Default is 10
+        method : {'bfgs', 'broyden', 'cg'}, optional
+            Quasi-Newton variant. Default is 'bfgs'
+        hybrid : bool, optional
+            Use hybrid mode for initial phases. Default is True
+        delta : float, optional
+            Threshold for switching between methods. Default is 0.5
+        alpha_init : float, optional
+            Initial line search step size. Default is 0.05
+        c1 : float, optional
+            Armijo line search parameter. Default is 1e-4
+        c2 : float, optional
+            Wolfe curvature condition parameter. Default is 0.9
+        n_line_search : int, optional
+            Maximum line search iterations. Default is 10
+        trust_radius : float, optional
+            Trust region radius constraint. Default is 1
+        verbose : bool, optional
+            Logging verbosity. Default is True
+        **kwargs
+            Additional arguments passed to parent Picard class
         """
         super().__init__(program, nsteps, method=method, **kwargs)
         self.n = np.prod(self.rho_shape)
@@ -817,25 +1350,33 @@ class QuasiNewton(Picard):
 
     def flatten(self, x):
         """
-        Flatten the input array to a 1D array.
-        Parameters:
-        x : numpy.ndarray
-            Input array to be flattened.
-        Returns:
-        numpy.ndarray
-            Flattened 1D array.
+        Flatten array to 1D vector.
+        
+        Parameters
+        ----------
+        x : ndarray
+            Multi-dimensional array
+        
+        Returns
+        -------
+        ndarray
+            Flattened 1D array
         """
         return x.reshape(-1)
     
     def unflatten(self, x):
         """
-        Reshape the flattened array back to its original shape.
-        Parameters:
-        x : numpy.ndarray
-            Flattened input array.
-        Returns:
-        numpy.ndarray
-            Reshaped array with the original dimensions.
+        Reshape 1D vector back to original density shape.
+        
+        Parameters
+        ----------
+        x : ndarray
+            Flattened 1D array
+        
+        Returns
+        -------
+        ndarray
+            Reshaped array with density shape
         """
         return x.reshape(self.rho_shape)
 
@@ -861,6 +1402,21 @@ class QuasiNewton(Picard):
         self.k_QN = 0
 
     def _update_histories(self, rho_new, C1_new):
+        """
+        Record current state in limited-memory history for quasi-Newton.
+        
+        Parameters
+        ----------
+        rho_new : ndarray
+            Current density field
+        C1_new : ndarray
+            One-body potential
+        
+        Notes
+        -----
+        Maintains circular buffers X and G of size m for limited-memory storage.
+        Also updates omega_history with grand potential values.
+        """
         x_new = np.zeros(self.n)
         g_new = np.zeros(self.n)
 
@@ -907,8 +1463,24 @@ class QuasiNewton(Picard):
 
     def _find_direction(self, rho, g):
         """
-        Update the inverse Hessian approximation using the BFGS formula.
-        Parameters:
+        Compute search direction using limited-memory quasi-Newton method.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        g : ndarray
+            Gradient (one-body potential)
+        
+        Returns
+        -------
+        ndarray or None
+            Search direction for line search, or None if switching to Picard
+        
+        Notes
+        -----
+        Implements L-BFGS, L-Broyden, or CG descent based on configured method.
+        May return None to signal fallback to Picard iteration.
         """
         with log.section('Find Direction', self.log_level, timer='Find Direction'):
             dX, dG = self.compute_dX_dG()
@@ -937,6 +1509,36 @@ class QuasiNewton(Picard):
                 raise ValueError(f"Method {self.QN_method} not recognized. Choose from 'bfgs', 'broyden' or 'cg'.")
 
     def _line_search_feasible(self, rho, krho, g, p):
+        """
+        Perform constrained line search
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        g : ndarray
+            Gradient (negative of search direction)
+        p : ndarray
+            Search direction
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density after line search
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        alpha : float
+            Step size taken (for logging/analysis)
+        
+        Notes
+        -----
+        Uses cone projection to maintain feasibility (non-negative density).
+        Implements backtracking based on predicted sufficient decrease.
+        """
         with log.section('Line Search', self.log_level, timer='Line Search'):
             self.line_search_counter += 1
             lower = 1e-10
@@ -1010,6 +1612,39 @@ class QuasiNewton(Picard):
             raise SwitchToPicardError('Line search not converging')
 
     def _update_rho_QN(self, rho, krho, C1):
+        """
+        Update density using quasi-Newton optimization with line search.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        C1 : ndarray
+            One-body potential
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        Omega_new : float
+            Grand potential at new density
+        
+        Raises
+        ------
+        SwitchToPicardError
+            If QN step increases potential (fallback signal)
+        
+        Notes
+        -----
+        Computes search direction using L-BFGS/Broyden/CG, then performs
+        constrained line search with cone projection to maintain feasibility.
+        """
         with log.section(self.name, self.log_level, timer='Update rho QN'):
             rho_ravel = self.flatten(rho)
             g = self.G[-1]  # Gradient of the functional
@@ -1066,8 +1701,26 @@ class QuasiNewton(Picard):
 
 def cone_project_direction(x, d, lower=1e-10, rel_tol=1):
     """
-    Project d into the feasible cone at x for box constraint x >= lower.
-    Any component i with x_i <= lower+tol and d_i < 0 is set to 0.
+    Project direction into feasible cone for box constraints.
+    
+    Enforces x >= lower by setting d_i = 0 if x_i is at or near lower
+    and d_i would move away from feasible region.
+    
+    Parameters
+    ----------
+    x : ndarray
+        Current point
+    d : ndarray
+        Proposed direction
+    lower : float, optional
+        Lower bound on all components. Default is 1e-10
+    rel_tol : float, optional
+        Relative tolerance for active constraint detection. Default is 1
+    
+    Returns
+    -------
+    ndarray
+        Projected direction maintaining feasibility
     """
     d = d.copy()
     active = x <= (lower + lower*rel_tol)
@@ -1076,7 +1729,24 @@ def cone_project_direction(x, d, lower=1e-10, rel_tol=1):
     return d
 
 def apply_Minv(v, M_inv=None, eps=1e-12):
-    """Apply preconditioner inverse."""
+    """
+    Apply preconditioner (inverse Hessian approximation).
+    
+    Parameters
+    ----------
+    v : ndarray
+        Vector to precondition
+    M_inv : ndarray or callable, optional
+        Preconditioner: diagonal (1D array), full matrix (2D array),
+        or callable function. Default is None (identity)
+    eps : float, optional
+        Small value to avoid division by zero. Default is 1e-12
+    
+    Returns
+    -------
+    ndarray
+        Preconditioned vector M_inv @ v
+    """
     if M_inv is None:
         return v
     if callable(M_inv):

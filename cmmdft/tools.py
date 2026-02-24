@@ -75,59 +75,6 @@ def get_chempot_key(chempot):
         chempot_key = f'{chempot:#0.8f}'
     return chempot_key
 
-# def calculate_along_diffusion(ff, grid, ring_indices, natom, step_dist, cvs_limits=None, beta=1/boltzmann/300, degree=9):
-#     '''
-#     Calculate the external potential along a (diffusion) axis going through a ring
-#     '''
-#     neutral_pos = np.copy(ff.system.pos)
-#     diffusion_path = np.empty((2,3))
-#     center = np.mean(ff.system.pos[ring_indices], axis=0)
-#     points = ff.system.pos[ring_indices] - center
-#     u, s, vh = np.linalg.svd(points)            
-#     diffusion_path[0] = center
-#     diffusion_path[1] = (vh[-1,:] + center)/np.linalg.norm(vh[-1,:] + center)
-
-#     # Calculate the collective variables of the points in the grid and list them in ascending order
-#     points = grid.points[:,:,:,:-1]
-
-#     unit_vector = (diffusion_path[1] - diffusion_path[0])/np.linalg.norm(diffusion_path[1] - diffusion_path[0])
-#     shifted_points = points - diffusion_path[0]
-#     cvs_mat = shifted_points@unit_vector
-#     # print(cvs_mat)
-#     # cvs = np.linspace(np.min(cvs_mat), np.max(cvs_mat), nbins+1) #sift out values which virtually identical and sort the cv in ascending order
-#     cvs_min = selection_sort(np.arange(0, np.min(cvs_mat), - step_dist))
-#     # print(cvs_min)
-#     cvs_pos = np.arange(0, np.max(cvs_mat), step_dist)
-#     cvs = np.concatenate((cvs_min[:-1], cvs_pos))
-#     # print(cvs/angstrom)
-#     cvss = (cvs[1:] + cvs[:-1])/2
-
-#     if cvs_limits is not None:
-#         assert len(cvs_limits) == 2, 'cvs_limits must be a tuple of two numbers constraining the cvs values for which the free energy is calculated'
-#         small_limit = np.min(np.array(cvs_limits))
-#         large_limit = np.max(np.array(cvs_limits))
-#         left_index = bisect_left(cvss, small_limit)
-#         right_index = bisect_left(cvss, large_limit)
-#         cvss = cvss[left_index: right_index]
-#     # print(cvss/angstrom)
-
-#     axis_positions = unit_vector*cvss.reshape(len(cvss),1) + center
-#     potentials = np.empty(len(cvss))
-#     for e, pos in enumerate(axis_positions):
-#         ff.system.pos[-natom:] = neutral_pos[-natom:] + pos
-#         ff.update_pos(ff.system.pos)
-#         if natom > 1:
-#             integrand = effective_potential_precalc(ff, natom, beta, degree=degree)
-#             try:
-#                 potentials[e]  = -np.log(integrand)/beta
-#             except FloatingPointError:
-#                 potentials[e] = np.nan
-
-#         else:
-#             potentials[e] = ff.compute()
-
-#     return cvss, potentials
-
 def potential_from_mfa(points, potential):
     """
     Extracts unique, sorted distances and corresponding potential values 
@@ -163,7 +110,6 @@ def potential_from_mfa(points, potential):
 
     return distances, poten_in_ord
 
-
 def find_local_maxima(density, points):
     '''The function finds the local maxima in a 3D density array at given points.
     
@@ -198,7 +144,7 @@ def find_local_maxima(density, points):
 
 def find_neighbours(index, data, direct=True):
     """
-    A routine hich finds the neighbours of a given index and a given 3d dataset.
+    A routine which finds the neighbours of a given index and a given 3d dataset.
     It returns first the neighbouring datapoints and second the indices of the neighbouring points.
 
     """

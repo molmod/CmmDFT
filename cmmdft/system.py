@@ -25,17 +25,30 @@ __all__ = ['System',
 
 
 class System(object):
+    """Container for a host and its guest(s) used in a classical DFT simulation.
+
+    A `System` bundles a `Host` (e.g. `NanoporousHost` or `EmptyHost`) and a
+    `Guest` (single-species or `GuestMixture`). It is primarily a small
+    convenience wrapper used by the rest of the code to pass environment
+    configuration around.
+
+    Attributes
+    ----------
+    host
+        Host instance describing the porous/empty simulation cell and host data.
+    guest
+        Guest or GuestMixture instance describing the adsorbate(s).
+    """
     def __init__(self, host, guest):
-        '''This is a constructor function that initializes the "host" and "guest" attributes of an object.
-        
+        """Initialize the system with a host and a guest.
+
         Parameters
         ----------
-        host
-            An instance of the Host class, defined later in this file
-        guest
-            An instance of the Guest class, as defined alter
-        
-        '''
+        host : Host
+            Host instance for the system.
+        guest : Guest
+            Guest or GuestMixture instance for the adsorbate(s).
+        """
         self.host = host
         self.guest = guest
     
@@ -54,31 +67,62 @@ class System(object):
         self.second_host = second_host
     
     def copy(self):
+        """Return a deep copy of this `System`.
+
+        The result is safe to modify without affecting the original.
+        """
         return copy_module.deepcopy(self)
 
 class Host(object):
+    """Base class for host systems.
+
+    Subclasses provide specific host representations (atomic structure,
+    empty volume, etc.). A `Host` carries a `name` and a `Cell` describing the
+    simulation box.
+    """
     def __init__(self, name, cell):
+        """Create a Host.
+
+        Parameters
+        ----------
+        name : str
+            Identifier for the host.
+        cell : Cell
+            Simulation cell describing box vectors and volume.
+        """
         self.name = name
         self.cell = cell
 
     def copy(self):
+        """Return a deep copy of this `Host` instance."""
         return copy_module.deepcopy(self)
 
     
 class NanoporousHost(Host):
+    """Host backed by an atomic structure with associated force-field data.
+
+    Reads an atomic structure with ASE (or a .chk alternative) and loads
+    force-field parameters via the `get_system_data` helper.
+    """
     def __init__(self, name, struct, par, ffname='',
                  unit_distance='au', unit_sigma='au', unit_energy='au', unit_charge='au', unit_mass='au'):
-        '''This function initializes a nanoporous host system
-        
+        """Initialize a `NanoporousHost` from structure and parameter files.
+
         Parameters
         ----------
-        name
-            The name of the system being initialized.
-        struct
-            The path to a structure file containing the host structure information. (uses ASE, also adapted for .chk)
-        par
-            The "par" parameter is .txt a file containing the force-field parameters
-        '''
+        name : str
+            Host identifier.
+        struct : str or Path
+            Path to structure file (read by ASE or handled as .chk).
+        par : str or Path
+            Path to force-field parameter file.
+        ffname : str, optional
+            Optional force-field name tag.
+        unit_* : str, optional
+            Units for distance, sigma, energy, charge and mass passed to
+            `get_system_data`.
+        """
+        
         with log.section('SYSTEM', 1, timer='Initializing'):
             dist_unit = parse_unit(unit_distance)
             log.dump('Reading host structure from %s with parameters from %s' %(struct,par))
@@ -102,7 +146,25 @@ class NanoporousHost(Host):
 
     
 class EmptyHost(Host):
+    """Simple host representing an empty simulation volume.
+
+    Either a `cell` or a scalar `volume` must be provided. If `volume` is
+    given, a cubic `Cell` with the corresponding volume is created.
+    """
     def __init__(self, name, cell=None, volume=None):
+        """
+        Initializes an empty (vacuum) host class
+
+        Parameters
+        ----------
+        name : str
+            Host identifier.
+        cell : Cell instance, optional
+            Cell object, see grid.py. If not provided a cubic cell is generated
+            with volume input
+        volume : float, optional
+            Volume of the initialized cell, ignored if cell is provided
+        """
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Configuring empty space host')
             if cell is None:
@@ -116,7 +178,24 @@ class EmptyHost(Host):
 
 
 class Guest(object):
+    """
+    Base class representing an adsorbate (guest) species.
+
+    Concrete guest types provide methods to compute effective hard-sphere
+    radii and other per-species properties used by the DFT code.
+    """
     def __init__(self, name, mass, ffname=''):
+        """Create a `Guest`.
+
+        Parameters
+        ----------
+        name : str
+            Guest name.
+        mass : float
+            Total mass (amu) of the guest species or molecule.
+        ffname : str, optional
+            Optional force-field name tag.
+        """
         self.name = name
         self.mass = mass
         self.preset_Rhs = None
@@ -129,20 +208,43 @@ class Guest(object):
         self.ffname = ffname
 
     def copy(self):
+        """Return a deep copy of this `Guest` instance."""
         return copy_module.deepcopy(self)
     
     def wavelength(self, temperature):
+        """Return the thermal de Broglie wavelength at `temperature`.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+        """
         kT = boltzmann*temperature
         return planck/np.sqrt(2*np.pi*self.mass*kT)
 
     def set_fixed_rhs(self, Rhs, Rhs_zero):
+        """Store externally computed hard-sphere radii to use later.
+
+        This allows bypassing on-the-fly computation when radii are known.
+        """
         self.preset_Rhs = Rhs
         self.preset_Rhs_zero = Rhs_zero
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
+        """Abstract internal method to compute hard-sphere radius.
+
+        Subclasses should implement this and return a tuple (Rhs, Rhs_zero).
+        """
         raise NotImplementedError
     
     def compute_hardsphere_radius(self, temperature, **kwargs):
+        """Compute or load the hard-sphere radius (`Rhs`) and reference sigma.
+
+        If preset values were provided via `set_fixed_rhs` those are used.
+        Otherwise the subclass implementation `_calculate_hardsphere_radius`
+        is invoked and optional results are cached/loaded via a JSON `fn`
+        passed in `kwargs`.
+        """
         with log.section('GUEST', 2, timer="Initializing"):
             if self.preset_Rhs_zero is not None:
                 log.dump('Using preset Rhs and Rhs_zero')
@@ -193,6 +295,11 @@ class SphericalLJGuest(Guest):
 class NonSphericalGuest(Guest):
     def __init__(self, name, struct, par, ffname='',
                  unit_distance='au', unit_sigma='au', unit_energy='au', unit_charge='au', unit_mass='au'):
+        """Create a non-spherical guest from an atomic structure and FF.
+
+        Non-spherical guests read atomic coordinates and mass from a
+        structure file and load force-field data with `get_system_data`.
+        """
         with log.section('SYSTEM', 1, timer='Initializing'):
             log.dump('Reading guest from %s with parameters from %s' %(struct, par))
             try:
@@ -213,16 +320,27 @@ class NonSphericalGuest(Guest):
 
 
 class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
+    """
+    Dual model guest combining spherical LJ and an explicit structure.
+    The spherical guest is used for calculating the excess free energy,
+    while the NonSphericalGuest is used for the (effective) external potential
+    """
     def __init__(self, name, mass, sigma, epsilon, struct, par, ffname='', m=1, hs_def='bh'):
         NonSphericalGuest.__init__(self, name, struct, par, ffname)
         SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def)
         self.natom = self.guest_data[-2]
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
+        """Use the spherical LJ hard-sphere definition for the dual model."""
         return SphericalLJGuest._calculate_hardsphere_radius(self, temperature, **kwargs)
 
 
 class GuestMixture(Guest, object):
+    """Representation of a mixture of guest species.
+
+    Holds per-component masses, sizes and mixing rules for epsilon/sigma
+    and provides methods to compute component hard-sphere radii.
+    """
     def __init__(self, guests, fractions, k_inter=None):
         self.names = [guest.name for guest in guests]
         self.guests = guests
@@ -244,10 +362,15 @@ class GuestMixture(Guest, object):
         if k_inter is None:
             self.k_inter = np.zeros((self.nspecies, self.nspecies))
         else:
-            self.k_inter = k_inter
-            assert self.k_inter.shape == (self.nspecies, self.nspecies)
-            assert np.allclose(self.k_inter, self.k_inter.T), 'k_inter should be symmetric'
-            assert np.all(np.diag(self.k_inter) == 0), 'diagonal elements of k_inter should be zero'
+            if isinstance(k_inter, np.ndarray):
+                assert k_inter.shape == (self.nspecies, self.nspecies), 'k_inter should be of shape (nspecies, nspecies)'
+                assert np.allclose(k_inter, k_inter.T), 'k_inter should be symmetric'
+                assert np.all(np.diag(k_inter) == 0), 'diagonal elements of k_inter should be zero'
+                self.k_inter = k_inter
+            else:
+                assert self.nspecies == 2, 'k_inter should be given as matrix for mixtures with more than 2 components'
+                self.k_inter = np.array([[0.0, k_inter],[k_inter, 0.0]])
+                
         self.epsilon = np.array([g.epsilon for g in guests])
         self.sigma = np.array([g.sigma for g in guests])
         
@@ -255,15 +378,30 @@ class GuestMixture(Guest, object):
         self.sigma_mix = np.array([( (gi.sigma + gj.sigma)/2 ) for gi in guests for gj in guests]).reshape((self.nspecies, self.nspecies))
 
     def copy(self):
+        """Return a deep copy of this `GuestMixture`."""
         return copy_module.deepcopy(self)
     
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
+        """Compute per-component hard-sphere radii by delegating to guests.
+
+        Returns
+        -------
+        Rhs : ndarray
+            Array of hard-sphere radii for each species.
+        Rhs_zero : ndarray
+            Reference sigma or zero-temperature radius values.
+        """
         Rhs_sigma = [g._calculate_hardsphere_radius(temperature, **kwargs) for g in self.guests]
         Rhs = np.array([r[0] for r in Rhs_sigma])
         Rhs_zero = np.array([r[1] for r in Rhs_sigma])
         return Rhs, Rhs_zero
     
     def compute_hardsphere_radius(self, temperature, **kwargs):
+        """Compute or load hard-sphere radii for each component in the mixture.
+
+        Mirrors the behavior of `Guest.compute_hardsphere_radius` but prints
+        per-component log messages.
+        """
         with log.section('GUEST', 2, timer="Initializing"):
             if self.preset_Rhs_zero is not None:
                 log.dump('Using preset Rhs and Rhs_zero')
@@ -291,8 +429,5 @@ class GuestMixture(Guest, object):
                     json.dump(dict_sig, path.open(mode='w'))
                 for i in range(self.nspecies):
                     log.dump(' %s  Rhs = %6.2f A  -  Vhs = %6.2f A**3' % (self.names[i], self.Rhs[i]/angstrom, 4.0/3.0*np.pi*self.Rhs[i]**3/angstrom**3))
-
-    def wavelength(self, temperature):
-        kT = boltzmann*temperature
-        return planck/np.sqrt(2*np.pi*self.mass*kT)    
+  
 

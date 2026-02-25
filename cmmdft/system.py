@@ -244,10 +244,15 @@ class GuestMixture(Guest, object):
         if k_inter is None:
             self.k_inter = np.zeros((self.nspecies, self.nspecies))
         else:
-            self.k_inter = k_inter
-            assert self.k_inter.shape == (self.nspecies, self.nspecies)
-            assert np.allclose(self.k_inter, self.k_inter.T), 'k_inter should be symmetric'
-            assert np.all(np.diag(self.k_inter) == 0), 'diagonal elements of k_inter should be zero'
+            if isinstance(k_inter, np.ndarray):
+                assert k_inter.shape == (self.nspecies, self.nspecies), 'k_inter should be of shape (nspecies, nspecies)'
+                assert np.allclose(k_inter, k_inter.T), 'k_inter should be symmetric'
+                assert np.all(np.diag(k_inter) == 0), 'diagonal elements of k_inter should be zero'
+                self.k_inter = k_inter
+            else:
+                assert self.nspecies == 2, 'k_inter should be given as matrix for mixtures with more than 2 components'
+                self.k_inter = np.array([[0.0, k_inter],[k_inter, 0.0]])
+                
         self.epsilon = np.array([g.epsilon for g in guests])
         self.sigma = np.array([g.sigma for g in guests])
         

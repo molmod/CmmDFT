@@ -169,9 +169,18 @@ class EquationOfState(object):
             s_temp = getattr(self, 'temperature', None)
             if s_temp != temperature:
                 self.set_temperature(temperature)
-        kT = boltzmann*self.temperature
-        mu_id = kT*np.log(self.wvl**3*rho) 
-        mu_ex = self.compute_excess_chempot(rho=rho, pressure=pressure, temperature=temperature)
+
+        if rho is not None:    
+            kT = boltzmann*self.temperature
+            return kT*np.log(self.wvl**3*rho) + self.derivative_excess_free_energy_volume(rho)
+        
+        elif pressure is not None:
+            rho = self.solve_densities_from_pressures(pressure)
+            rho = np.nanmin(rho, axis=1)
+            return self.compute_chempot(rho=rho, temperature=self.temperature)
+        else:
+            raise ValueError('Either rho or pressure must be provided')
+        
 
     def compute_excess_chempot(self, rho=None, pressure=None, temperature=None):
         """
@@ -536,10 +545,10 @@ class EquationOfState(object):
                     solutions.append(sol)
             # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
             # densities[i,:len(solutions)] = np.array(sorted(solutions))
-            densities[i,0] = np.nanmin(solutions)
-            # if len(solutions) > 0:
-            #     stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
-            #     densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
+            # densities[i,0] = np.nanmin(solutions)
+            if len(solutions) > 0:
+                stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
+                densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
                 
         return densities
     

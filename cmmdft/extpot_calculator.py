@@ -11,6 +11,7 @@ from itertools import product
 from functools import partial
 from collections import defaultdict
 from pathlib import Path
+import math
 
 import xml.etree.ElementTree as ET
 from ase.io import read
@@ -220,9 +221,7 @@ def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
         return V, dV, ddV, dddV
     else:
         return V
-
-
-# numba-friendly scalar Lennard-Jones (with shift) for a single distance
+    
 @njit
 def _lj_batched(R, sigma, epsilon, cutoff):
     R_shape = R.shape
@@ -247,7 +246,7 @@ def _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
                   cell_matrix, cell_inv, cutoff):
     N = points.shape[0]
     M = host_pos.shape[0]
-    Vext = np.zeros(N)
+    Vext = np.zeros(N, dtype=np.float64)
 
     for j in range(N):  # parallel over grid points
         v = 0.0
@@ -324,7 +323,6 @@ def _coulomb_batched(R, q_host, q_guest, alpha, rvecs, epsilon_r=1.0, ke=1.0):
     V[mask] = q_prod * erfc_val / r
     
     return V.reshape(R_shape)
-
 
 @njit(cache=True)
 def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, rvecs, epsilon_r=1.0, ke=1):
@@ -406,7 +404,6 @@ def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, rvecs, epsilon_r
         dVdxyz[mask] = dddv_dr3 * rx * ry * rz / (r * r * r)
     
     return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
-
 
 @njit(cache=True)
 def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alpha, kmax, rvecs, inv_rvecs, epsilon_r=1.0, ke=1.0, derivatives=False):
@@ -539,6 +536,21 @@ def compute_ewald_parameters(rvecs, eta=5.0):
     return alpha, kmax
 
 def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
+    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
+
+    sigmas_mixed   = np.array([0.5*(host_ff_dict[aid][0] + sigmaff) for aid in ffatype_ids])
+    epsilons_mixed = np.array([np.sqrt(host_ff_dict[aid][1] * epsilonff) for aid in ffatype_ids])
+    rc6     = (sigmas_mixed / cutoff) ** 6
+    v_shifts = 4 * epsilons_mixed * (rc6**2 - rc6)
+
+    cell_matrix = rvecs.astype(np.float64)
+    cell_inv    = np.linalg.inv(cell_matrix)
+
+    return _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
+                         cell_matrix, cell_inv, cutoff)
+
+
+def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones interactions.
 
@@ -1215,7 +1227,7 @@ def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest
             np.save(part_epot_fn, epot)
             epot_fn_dict[atom_name] = part_epot_fn
 
-        int_dict = get_interpolator_dict(epot_fn_dict, tmp_points[0], np.array([0.15, 0.15, 0.15])*angstrom, int_method=int_method)
+        int_dict = get_interpolator_dict(epot_fn_dict, tmp_points[0], epot_grid.spacings, int_method=int_method)
 
         potential = generate_effective_potential(points, beta, guest_data, int_dict, degree=3, max_size=max_size)
         potential_mask = potential <  max_pot

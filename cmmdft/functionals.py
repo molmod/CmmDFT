@@ -22,6 +22,12 @@ __all__ = [
  
 
 class Functional(object):
+    """
+    Base class for excess Helmholtz free energy functionals.
+    
+    This is an abstract base class that defines the interface for all functional
+    implementations used in classical density functional theory calculations.
+    """
     def __init__(self):
         pass
 
@@ -75,22 +81,57 @@ def decode_version(version_string):
     return version_array
 
 class HardSphereFunctional(Functional):
-    """The framework for hard sphere functionals."""
+    """
+    The framework for hard sphere functionals using fundamental measure theory (FMT).
+    
+    Implements the FMT functional for hard sphere systems with support for various
+    approximations including mean-field approximations (MFMT), anti-symmetrized versions,
+    and tensor weight functions.
+    
+    Attributes
+    ----------
+    name : str
+        Name identifier for the functional
+    R : ndarray
+        Radius of hard sphere particles for each component
+    m : ndarray
+        Number of segments per particle (chain length)
+    temperature : float
+        System temperature in Kelvin
+    beta : float
+        Inverse temperature (1/(k_B*T))
+    grid : Grid
+        Spatial grid object for real/reciprocal space calculations
+    version : ndarray
+        Version flags for anisotropy, tensor, and approximation variants
+    """
     
     name = 'HardSphere'
     
-    def __init__(self, grid, Rhs, m=None, version='MFMT', workdir='.'):
+    def __init__(self, grid, Rhs, m=None, version='atWBII', workdir='.'):
         """
-        **Arguments:**
+        Initialize the hard sphere functional.
 
-        Rhs
-            The radius of the hard sphere particles
-
-        m
-            The number of segments per particle (for chain molecules)
-
-        grid
-            An instance of Grid (see system.py)
+        Parameters
+        ----------
+        grid : Grid
+            An instance of Grid (see system.py) defining the spatial discretization
+        Rhs : float or array-like
+            The radius of the hard sphere particles (can be array for multiple components)
+        m : float or array-like, optional
+            The number of segments per particle (for chain molecules). If None, defaults to 1.0
+        version : str, optional
+            Functional version specifying approximations. Options include:
+            'FMT', 'MFMT', 'WBII'
+            'a' and 't' can be added to signify using the antisymmetrized and tensor variants respectively 
+            Default is 'atWBII'
+        workdir : str, optional
+            Working directory for output files. Default is '.'
+            
+        Raises
+        ------
+        ValueError
+            If length of m does not match length of Rhs or if version string is invalid
         """
         self.temperature = None
         self.beta = None
@@ -109,13 +150,21 @@ class HardSphereFunctional(Functional):
         self.version = version_array
         self.workdir=workdir
 
-    # def copy(self):
-    #     return copy_module.deepcopy(self)
-
     def set_temperature(self, temperature, Rhs, **kwargs):
+        """
+        Set the temperature and hard sphere diameter for the functional.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin
+        Rhs : float or array-like
+            The radius of the hard sphere particles (can be array for multiple components)
+        **kwargs : dict
+            Additional keyword arguments
+        """
         self.temperature = temperature
         self.beta = 1/(boltzmann*temperature)        
-        print('MFMT', Rhs)
         if not isinstance(Rhs, (list, np.ndarray)):
             Rhs = [Rhs]
         self.R = np.array(Rhs, dtype=np.float64)
@@ -125,15 +174,20 @@ class HardSphereFunctional(Functional):
 
     def _init_weight_functions(self):
         """
-        The FMT functional is constructed based on so called weight functions.
-        For instance w3(r) counts the number of particles within a sphere of
-        radius R around r. Because these weight functions consist of Heaviside
-        and Delta distributions, it is not a good idea to work with them on a
-        real space grid. Because only convolutions of these weight functions
-        are required, they are calculated in reciprocal space, where
-        the convolutions become simple products. The Fourier transformed weight
-        functions are given in appendix B of
-        https://dx.doi.org/10.1063%2F1.3357981
+        Initialize Fourier-transformed weight functions for FMT calculations.
+        
+        The FMT functional is constructed based on weight functions that count
+        particles within spheres of radius R around each point. Since these weight
+        functions consist of Heaviside and Delta distributions, they are calculated
+        in reciprocal space where convolutions become simple products. The Fourier
+        transformed weight functions are based on appendix B of
+        https://dx.doi.org/10.1063%2F1.3357981 and include tensor components
+        from https://doi.org/10.1063/5.0010974 when anisotropy is enabled.
+        
+        Stores computed weight functions in:
+        - self.scalar_weight_functions : tuple of scalar weight functions (kw0, kw1, kw2, kw3)
+        - self.vector_weight_functions : tuple of vector weight functions (kwv1, kwv2)
+        - self.tensor_weight_functions : tuple of tensor components (optional, if version[1]==1)
         """
         k = self.grid.kpoints[:,:,:,3]
         omega = np.einsum('i,jkl->ijkl', self.R, k)
@@ -146,7 +200,6 @@ class HardSphereFunctional(Functional):
         j2_basis = (sph_bessel_3(omega) * self.grid.sigma_lanczos**2).astype(np.float64)
 
         kw3 = 4*np.pi/3.0*np.einsum('i,ijkl->ijkl', self.R**3, j2_basis, dtype=np.float64)
-
 
         kwv2 = -1.j*np.einsum('ijkl,jklm->ijklm', kw3, self.grid.kpoints[:,:,:,:3], dtype=np.complex128)
         kwv2[~mask] = 0.0
@@ -191,14 +244,23 @@ class HardSphereFunctional(Functional):
 
     def _get_density_functions(self, krho):
         """
-        Compute the density functions, which are convolutions of the weight
-        functions and the density. These are computed by making use of the
-        convolution theorem
+        Compute the weighted density functions from the particle density.
+        
+        These are convolutions of the weight functions and the density, evaluated
+        using the convolution theorem in reciprocal space.
 
-        **Arguments:**
-
-        krho
+        Parameters
+        ----------
+        krho : ndarray
             The density in reciprocal space
+
+        Returns
+        -------
+        tuple
+            (n0, n1, n2, n3, nv1, nv2, xi)
+            - n0, n1, n2, n3 : scalar density functions
+            - nv1, nv2 : vector density functions
+            - xi : anisotropy parameter (None if version[0]!=1)
         """
         with log.section('(M)FMT', 3, timer='density functions'):          
             # # The scalar density functions
@@ -218,8 +280,6 @@ class HardSphereFunctional(Functional):
             # # The vector density functions
             nv1 = np.tensordot(self.grid.ifftn(krho[..., None] * self.vector_weight_functions[0]), self.m, axes=(0,0))
             nv2 = np.tensordot(self.grid.ifftn(krho[..., None] * self.vector_weight_functions[1]), self.m, axes=(0,0))
-            # nv1 = np.clip(nv1, 0, None)
-            # nv2 = np.clip(nv2, 0, None)
             
             xi = None
             if self.version[0] == 1:
@@ -229,19 +289,25 @@ class HardSphereFunctional(Functional):
             return n0,n1,n2,n3,nv1,nv2,xi
 
     def _get_tensor_density_functions(self, krho):
+        """
+        Compute the tensor density functions for tensor correction (if enabled).
+        
+        Parameters
+        ----------
+        krho : ndarray
+            The density in reciprocal space
+
+        Returns
+        -------
+        list
+            Tensor components [nxx, nxy, nxz, nyy, nyz, nzz]
+        """
         nxx = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[0]), self.m, axes=(0,0))
         nxy = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[1]), self.m, axes=(0,0))
         nxz = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[2]), self.m, axes=(0,0))
         nyy = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[3]), self.m, axes=(0,0))
         nyz = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[4]), self.m, axes=(0,0))
         nzz = np.tensordot(self.grid.ifftn(krho*self.tensor_weight_functions[5]), self.m, axes=(0,0))
-
-        # nxx = np.clip(nxx, 0, None)
-        # nxy = np.clip(nxy, 0, None)
-        # nxz = np.clip(nxz, 0, None)
-        # nyy = np.clip(nyy, 0, None)
-        # nyz = np.clip(nyz, 0, None)
-        # nzz = np.clip(nzz, 0, None)
 
         return [nxx, nxy, nxz, nyy, nyz, nzz]
     
@@ -259,12 +325,24 @@ class HardSphereFunctional(Functional):
 
     def derive(self, rho, krho):
         """
-        Functional derivative with respect to the density
+        Compute the functional derivative with respect to the density.
+        
+        The functional derivative is obtained by applying the chain rule to the
+        integral of the free energy density. It is computed by convoluting the
+        derivatives of the free energy density with respect to weighted densities
+        with the corresponding weight functions.
 
-        **Arguments:**
+        Parameters
+        ----------
+        rho : ndarray
+            Density in real space
+        krho : ndarray
+            Density in reciprocal space
 
-        krho:
-            The density in reciprocal space
+        Returns
+        -------
+        ndarray
+            Functional derivative in real space (shape: [ncomponents, nx, ny, nz])
         """
         with log.section('(M)FMT', 3, timer='(M)FMT derive'):
             # Compute the density functions
@@ -298,6 +376,24 @@ class HardSphereFunctional(Functional):
             return dF_total/self.beta
     
     def value(self, rho, krho, local=False):
+        """
+        Compute the functional value (excess Helmholtz free energy).
+
+        Parameters
+        ----------
+        rho : ndarray
+            Density in real space
+        krho : ndarray
+            Density in reciprocal space
+        local : bool, optional
+            If True, return local free energy density. If False, return integrated value.
+            Default is False
+
+        Returns
+        -------
+        float or ndarray
+            Total free energy (scalar) if local=False, or local free energy density if local=True
+        """
         with log.section('(M)FMT', 3, timer='(M)FMT value'):
             self.set_density(krho)  
             phi = get_phi(*self.weighted_densities, self.nt, version=self.version)
@@ -494,23 +590,44 @@ b_constants = np.array([
 
 class PCSAFTFunctional(Functional):
     """
-    The PC-SAFT functional for the hard-sphere reference system
+    The PC-SAFT functional for the hard-sphere reference system with attractive interactions.
+    
+    Implements the perturbed chain statistical associating fluid theory (PC-SAFT)
+    model, which combines a hard-sphere reference system with first and second-order
+    perturbation theory for attractive interactions.
+    
+    Attributes
+    ----------
+    name : str
+        Name identifier for the functional
+    grid : Grid
+        Spatial grid object for real/reciprocal space calculations
+    guest : Guest
+        Guest molecule object with properties like m, sigma, epsilon
+    m : ndarray
+        Number of segments per particle for each component
+    dhs : ndarray
+        Hard sphere diameter for each component
     """
     
     name = 'PCSAFT'
     
     def __init__(self, grid, guest, sigma_smooth=None, debug=False, hs_approx='exp'):
         """
-        **Arguments:**
-        
-        Rhs
-            The radius of the hard sphere particles
-        
-        grid
+        Initialize the PC-SAFT functional.
+
+        Parameters
+        ----------
+        grid : Grid
             An instance of Grid, see system.py
-        
-        m
-            The number of segments per particle (for chain molecules)
+        guest : Guest
+            Guest molecule object containing properties m, sigma, epsilon
+        sigma_smooth : float, optional
+            Smoothing parameter for density cutoff (not currently used)
+        debug : bool, optional
+            Enable debug output. Default is False
+        hs_approx : str, optional
+            Hard sphere diameter approximation: 'exp' (exponential, default) or 'bh' (Barker-Henderson)
         """
         self.temperature = None
         self.beta = None
@@ -540,18 +657,21 @@ class PCSAFTFunctional(Functional):
                     for j in range(self.n_components):
                         self.epsilon_mix[i,j] = (self.guest.epsilon[i]*self.guest.epsilon[j])**0.5*(1 - self.guest.k_inter[i,j])
                         self.sigma_mix[i,j] = (self.guest.sigma[i] + self.guest.sigma[j])/2.0
-
-        # if sigma_smooth is None:
-        #     sigma_smooth = 0
-        # self.sigma_smooth_factor = sigma_smooth
         self.psi = 1.3862
         self.debug = debug
         self.hs_approx = hs_approx
 
-    # def copy(self):
-    #     return copy_module.deepcopy(self)
-
     def set_temperature(self, temperature, **kwargs):
+        """
+        Set the temperature and compute hard sphere parameters.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin
+        **kwargs : dict
+            Additional keyword arguments
+        """
         self.temperature = temperature
         self.beta = 1/(boltzmann*temperature)
         self.dhs = np.zeros(len(self.m))    
@@ -561,16 +681,17 @@ class PCSAFTFunctional(Functional):
             elif self.hs_approx == 'bh':
                 Tt = boltzmann*temperature/self.epsilon_mix[i,i]
                 self.dhs[i] = self.sigma_mix[i,i]*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)
-        # self.dhs[:] = np.array(self.guest._calculate_hardsphere_radius(temperature)[0])*2
-        # self.sigma_smooth = self.sigma_smooth_factor*np.min(self.dhs)
+
         self._init_weight_functions()
 
     def _init_weight_functions(self):
+        """
+        Initialize Fourier-transformed weight functions for convolution calculations.
+        """
         
         k = self.grid.kpoints[:,:,:,3]
         omega = np.einsum('i,jkl->ijkl', self.dhs, k)
 
-        # self.kwlambda = np.einsum('i,ijkl->ijkl', self.dhs, sinc(omega))
         self.kwlambda = sinc(omega)
         self.kwlambda *= self.grid.sigma_lanczos[None,...]**2
 
@@ -581,6 +702,20 @@ class PCSAFTFunctional(Functional):
         self.kwdisp *= self.grid.sigma_lanczos[None,...]**2
 
     def _get_weighted_densities(self, krho):
+        """
+        Compute the weighted densities from the particle density.
+
+        Parameters
+        ----------
+        krho : ndarray
+            Density in reciprocal space
+
+        Returns
+        -------
+        tuple
+            (lambda_chain, zeta2, zeta3, wrho_disp, eta_disp)
+            Weighted densities for chain and dispersion calculations
+        """
         wrho_chain = self.grid.ifftn(krho*self.kwchain)
 
         lambda_chain = self.grid.ifftn(krho*self.kwlambda)
@@ -604,7 +739,21 @@ class PCSAFTFunctional(Functional):
 
         return lambda_chain, zeta2, zeta3, wrho_disp, eta_disp
 
-    def _get_mavg_a_b_prefact(self, wrho_disp):        
+    def _get_mavg_a_b_prefact(self, wrho_disp):
+        """
+        Compute average molecular weight and expansion coefficients for dispersion.
+
+        Parameters
+        ----------
+        wrho_disp : ndarray
+            Weighted density for dispersion calculation
+
+        Returns
+        -------
+        tuple
+            (m_avg, a_prefact, b_prefact)
+            Average chain length and polynomial expansion coefficients
+        """  
         eps = 1e-12
 
         rho_sum = np.sum(wrho_disp, axis=0)
@@ -628,25 +777,11 @@ class PCSAFTFunctional(Functional):
 
         return phi_chain/self.beta
     
-    def value_chain_local(self, rho, lambda_chain, zeta2, zeta3):
-        # phi_chain = 0
-        phi_id = np.zeros((len(self.m),) + tuple(self.grid.npoints), dtype=np.float64)
-        phi_chain = np.zeros((len(self.m),) + tuple(self.grid.npoints), dtype=np.float64)
-        z3_1 = 1/(1-zeta3)
-        for i in range(len(self.m)):
-            yii = self.dhs[i]*zeta2*z3_1*z3_1*(self.dhs[i]*zeta2*z3_1 * 0.5 + 1.5) + z3_1
-            rho_reg = np.clip(rho[i], 1e-30, None)
-            yii_lambdai = np.clip(yii*lambda_chain[i], 1e-14, None)
-            phi_chain[i] += (1 - self.m[i])*rho[i]*(np.log(yii_lambdai)-1)
-            phi_id[i] += -(1-self.m[i])*rho[i]*(np.log(rho_reg)-1)
-        return phi_chain/self.beta, phi_id/self.beta
-    
     def value_disp(self, wrho_disp, eta_disp):
         eps = 1e-14
 
         m_avg, a_prefact, b_prefact = self._get_mavg_a_b_prefact(wrho_disp)
     
-
         I1 = np.zeros(self.grid.npoints, dtype=np.float64)
         I2 = np.zeros(self.grid.npoints, dtype=np.float64)
         for i in range(7):
@@ -730,7 +865,6 @@ class PCSAFTFunctional(Functional):
         del eta_3
         gc.collect()
 
-
         I1 = np.zeros(self.grid.npoints, dtype=np.float64)
         I2 = np.zeros(self.grid.npoints, dtype=np.float64)
         dI1deta = np.zeros(self.grid.npoints, dtype=np.float64)
@@ -790,12 +924,19 @@ class PCSAFTFunctional(Functional):
 
     def derive(self, rho, krho):
         """
-        Functional derivative with respect to the density
+        Compute the total functional derivative with respect to the density.
 
-        **Arguments:**
+        Parameters
+        ----------
+        rho : ndarray
+            Density in real space
+        krho : ndarray
+            Density in reciprocal space
 
-        krho:
-            The density in reciprocal space
+        Returns
+        -------
+        ndarray
+            Total functional derivative (chain + dispersion contributions)
         """
         with log.section('PC-SAFT', 3, timer='PC-SAFT derive'):
             lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(krho)
@@ -804,6 +945,21 @@ class PCSAFTFunctional(Functional):
             return dphi_chain + dphi_disp
     
     def value(self, rho, krho):
+        """
+        Compute the total functional value (excess Helmholtz free energy).
+
+        Parameters
+        ----------
+        rho : ndarray
+            Density in real space
+        krho : ndarray
+            Density in reciprocal space
+
+        Returns
+        -------
+        float
+            Total excess Helmholtz free energy (chain + dispersion contributions)
+        """
         with log.section('PC-SAFT', 3, timer='PC-SAFT value'):
             lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(krho)
             val_chain = self.value_chain(rho, lambda_chain, zeta2, zeta3)
@@ -812,112 +968,111 @@ class PCSAFTFunctional(Functional):
 
 class MFAFunctional(Functional):
     """
-    The mean-field approximation for the attractive component of the excess
-    Helmholtz energy functional
+    The mean-field approximation for the attractive component of the excess Helmholtz energy.
+    
+    Implements a mean-field functional based on a pairwise additive potential energy
+    surface. The functional value is computed as a convolution of the density with
+    the intermolecular potential.
+    
+    Attributes
+    ----------
+    name : str
+        Name identifier for the functional
+    grid : Grid
+        Spatial grid object
+    potential : ndarray
+        Intermolecular potential energy evaluated on the grid
+    kpotential : ndarray
+        Fourier transform of the potential
     """
     
     name = 'MFA'
     
-    def __init__(self, grid, tailcorrections=False, repetitions=[2,2,2]):
+    def __init__(self, grid, tailcorrections=False):
         """
-        **Arguments:**
-        
-        grid
+        Initialize the mean-field approximation functional.
+
+        Parameters
+        ----------
+        grid : Grid
             An instance of Grid, see system.py
-        
+        tailcorrections : bool, optional
+            Enable tail corrections using a supercell. Default is False
         """
         self.tailcorrections = tailcorrections
-        self.repetitions = repetitions #only used if tailcorrections are on
+        self.repetitions = [2,2,2] #only used if tailcorrections are on
         if tailcorrections:
             self.small_grid = grid
-            self.grid = grid.supercell(repetitions)
+            self.grid = grid.supercell(self.repetitions)
         else:
             self.grid = grid
         self.potential = None
         self.kpotential = None
 
-    # def copy(self):
-    #     return copy_module.deepcopy(self)
-
     def load_potential(self, fn):
+        """
+        Load the intermolecular potential from a file.
+
+        Parameters
+        ----------
+        fn : str
+            Path to the NumPy file containing the potential
+        """
         self.potential = np.load(fn)
         assert self.grid.points.shape[:3]==self.potential.shape
         self.kpotential = self.grid.fftn(self.potential)
 
     def compute_vdw_a(self):
         """
-            Compute the van der waals A parameter in case the fluid would behave 
-            as a van der Waals fluid. For a LJ potential, this value can be 
-            computed a=2*pi*int(r**2*w(r), r=Rzero...inf) with Rzero=sigma the 
-            distance value for which the LJ potential becomes zero.
+        Compute the van der Waals A parameter for the fluid.
+        
+        For a Lennard-Jones potential, this is computed as:
+        a = 2*pi*∫(r²*w(r)) dr from sigma to infinity
+        
+        Returns
+        -------
+        float
+            Van der Waals A parameter
         """
         self.a = 0.5*self.grid.integrate(self.potential)
         return self.a
     
     def dump_potential(self, fn):
         """
-        This function saves the MFA potential data of an object to a file using NumPy's save function.
-        
-        :param fn: The parameter `fn` is a string representing the file name or path where the potential
-        data will be saved using the NumPy `save` function
+        Save the intermolecular potential to a NumPy file.
+
+        Parameters
+        ----------
+        fn : str
+            Path where the potential will be saved
         """
         assert self.potential is not None
         dn = os.path.dirname(fn)
         if not os.path.exists(dn):
             os.makedirs(dn)
         np.save(fn, self.potential)
-
-    def generate_potential(self, ff, rmin, natom=1, limit_potential=0, cutoff=None, **kwargs):
-        """
-            Calculate U(r) on the real-space grid
-
-            **Arguments:**
-
-            ff
-                ForceField instance, describing the interaction between two guest
-                molecules
-
-            rmin
-                U(r) is assumed to be zero for distances smaller than rmin
-
-            **Optional arguments:**
-
-            natom
-                The number of atoms in the guest molecules
-        """
-        with(log.section('MFA', 2, timer='MFA init')):
-            ff.system.pos[:] = limit_potential
-            self.potential = np.zeros(self.grid.points.shape[:3], dtype=np.float64)
-            shift = 0.0
-
-            rs = self.grid.points[:,:,:,3]
-            if cutoff is not None:
-                rs[rs>cutoff] = cutoff
-            
-            for r in np.unique(rs.round(decimals=4)):
-                if r<rmin: continue
-                mask = np.isclose(self.grid.points[:,:,:,3],np.full(self.grid.points[:,:,:,3].shape, r), rtol=1e-4)
-                ff.system.pos[natom:,2] = r
-                ff.update_pos(ff.system.pos)  
-                e = ff.compute()
-                self.potential[mask] = e
-                if cutoff is not None and r==cutoff:
-                    shift = e
-            
-            self.potential[mask] -= shift
-
-            self.kpotential = self.grid.fftn(self.potential)#*self.grid.dr
     
     def generate_potential_lj(self, sigma, epsilon, rmin=None, limit_potential=0, cutoff=None, **kwargs):
         """
-            Calculate U(r) on the real-space grid using the lennard jones potential with given epsilon and sigma parameters
+        Calculate the intermolecular potential using the Lennard-Jones model.
+        
+        Computes U(r) = 4*epsilon*[(sigma/r)^12 - (sigma/r)^6] on the grid.
 
-            **Arguments:**
-
-            rmin
-                U(r) is assumed to be zero for distances smaller than rmin. If not given, it is assumed to be equal to the zero 
-                of the LJ potential, i.e. rmin=sigma
-        """        
+        Parameters
+        ----------
+        sigma : float
+            Lennard-Jones sigma parameter (length scale)
+        epsilon : float
+            Lennard-Jones epsilon parameter (energy scale)
+        rmin : float, optional
+            Potential is zero for r < rmin. If None, defaults to sigma
+        limit_potential : float, optional
+            Potential cap value. Default is 0
+        cutoff : float, optional
+            Distance cutoff. If provided, potential is shifted to zero at cutoff
+        **kwargs : dict
+            Additional keyword arguments
+        """
         if rmin is None: rmin = sigma
         self.potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
         mask = self.grid.points[:,:,:,3]>rmin
@@ -936,8 +1091,21 @@ class MFAFunctional(Functional):
 
     def derive(self, rho, krho):
         """
-        Functional derivative, which is the convolution of the density and
-        the potential. It is evaluated using the convolution theorem
+        Compute the functional derivative
+        
+        The derivative is computed as the convolution of density with potential.
+
+        Parameters
+        ----------
+        rho : ndarray
+            Density in real space
+        krho : ndarray
+            Density in reciprocal space
+
+        Returns
+        -------
+        ndarray
+            Functional derivative equal to the potential
         """
         with log.section('MFA', 3, timer='MFA derive'):
             if self.tailcorrections:
@@ -947,6 +1115,24 @@ class MFAFunctional(Functional):
                 return self.grid.ifftn(krho*self.kpotential)*self.grid.cell.volume
 
     def value(self, rho, krho, local=False):
+        """
+        Compute the functional value, free energy contribution
+
+        Parameters
+        ----------
+        rho : ndarray
+            Density in real space
+        krho : ndarray
+            Density in reciprocal space
+        local : bool, optional
+            If True, return local free energy density. If False, return integrated value.
+            Default is False
+
+        Returns
+        -------
+        float or ndarray
+            Total free energy if local=False, or local free energy density if local=True
+        """
         with log.section('MFA', 3, timer='MFA value'):
             if self.tailcorrections:
                 grid = self.small_grid
@@ -961,32 +1147,54 @@ class MFAFunctional(Functional):
 
 class MFAFunctionalMixture(MFAFunctional):
     """
-    The mean-field approximation for the attractive component of the excess
-    Helmholtz energy functional for mixtures
+    The mean-field approximation for mixtures.
+    
+    Extends MFAFunctional to handle mixtures with component-specific potentials.
+    Stores potential as a matrix U[i,j] for interactions between components i and j.
+    
+    Attributes
+    ----------
+    ncomp : int
+        Number of components in the mixture
+    potential : ndarray
+        Shape: (ncomp, ncomp, nx, ny, nz) - pairwise interaction potentials
     """
     
     name = 'MIXMFA'
         
-    def __init__(self, grid, ncomp, tailcorrections=False, repetitions=[2,2,2]):
+    def __init__(self, grid, ncomp, tailcorrections=False):
         """
-        **Arguments:**
-        
-        grid
+        Initialize the mean-field functional for mixtures.
+
+        Parameters
+        ----------
+        grid : Grid
             An instance of Grid, see system.py
-        
+        ncomp : int
+            Number of components in the mixture
+        tailcorrections : bool, optional
+            Enable tail corrections using a supercell. Default is False
         """
         self.tailcorrections = tailcorrections
-        self.repetitions = repetitions #only used if tailcorrections are on
+        self.repetitions = [2,2,2] #only used if tailcorrections are on
         self.ncomp = ncomp
         if tailcorrections:
             self.small_grid = grid
-            self.grid = grid.supercell(repetitions)
+            self.grid = grid.supercell(self.repetitions)
         else:
             self.grid = grid
         self.potential = None
         self.kpotential = None
 
     def load_potential(self, fn):
+        """
+        Load the mixture potential matrix from a file.
+
+        Parameters
+        ----------
+        fn : str
+            Path to the NumPy file containing potentials with shape (ncomp, ncomp, nx, ny, nz)
+        """
         self.potential = np.load(fn)
         mfa_shape = (self.ncomp, self.ncomp) + self.grid.points.shape[:3]
         assert self.potential.shape == mfa_shape
@@ -994,10 +1202,12 @@ class MFAFunctionalMixture(MFAFunctional):
 
     def compute_vdw_a(self):
         """
-            Compute the van der waals A parameter in case the fluid would behave 
-            as a van der Waals fluid. For a LJ potential, this value can be 
-            computed a=2*pi*int(r**2*w(r), r=Rzero...inf) with Rzero=sigma the 
-            distance value for which the LJ potential becomes zero.
+        Compute the van der Waals A parameters for the mixture.
+        
+        Returns
+        -------
+        ndarray
+            Matrix of van der Waals A parameters with shape (ncomp, ncomp)
         """
         self.a = np.zeros((self.potential.shape[0], self.potential.shape[1]), dtype=np.float64)
         for i in range(self.potential.shape[0]):
@@ -1007,14 +1217,21 @@ class MFAFunctionalMixture(MFAFunctional):
     
     def generate_potential_lj(self, sigmas, epsilons, rmin=None, limit_potential=0, **kwargs):
         """
-            Calculate U(r) on the real-space grid using the lennard jones potential with given epsilon and sigma parameters
+        Calculate the Lennard-Jones potential matrix on the real-space grid.
 
-            **Arguments:**
-
-            rmin
-                U(r) is assumed to be zero for distances smaller than rmin. If not given, it is assumed to be equal to the zero 
-                of the LJ potential, i.e. rmin=sigma
-        """        
+        Parameters
+        ----------
+        sigmas : ndarray
+            Matrix of sigma parameters with shape (ncomp, ncomp)
+        epsilons : ndarray
+            Matrix of epsilon parameters with shape (ncomp, ncomp)
+        rmin : float, optional
+            Potential is zero for r < rmin. If None, defaults to sigma
+        limit_potential : float, optional
+            Potential cap value. Default is 0
+        **kwargs : dict
+            Additional keyword arguments
+        """
         def lj_potential(sigma, epsilon):
             rmin = sigma
             potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
@@ -1033,7 +1250,6 @@ class MFAFunctionalMixture(MFAFunctional):
                 self.potential[i,j] = lj_potential(sigmas[i,j], epsilons[i,j])
 
         self.kpotential = self.grid.fftn(self.potential)*self.grid.sigma_lanczos[None,:,:,:]
-
 
     def derive(self, rho, krho):
         """
@@ -1056,10 +1272,57 @@ class MFAFunctionalMixture(MFAFunctional):
 
 
 class ExternalPotential(Functional):
+    """
+    External potential functional for guest-host interactions.
+    
+    Computes the contribution to the free energy from guest-host interactions
+    using pre-computed potential energy grids. Supports single and multiple
+    guest species with optional temperature-dependent effective potentials
+    for non-spherical guests.
+    
+    Attributes
+    ----------
+    name : str
+        Name identifier for the functional
+    grid : Grid
+        Spatial grid object
+    system : System
+        System object containing guest and host information
+    guest : Guest
+        Guest molecule object
+    host : Host
+        Host structure object
+    potential : ndarray
+        Guest-host interaction potential on the grid
+    """
 
     name = 'ExtPot'
 
     def __init__(self, grid, system, epot_dr, positive=False, limit_potential=1e+4*kjmol, degree=11, cutoff=12*angstrom, interpolate=False):
+        """
+        Initialize the external potential functional.
+
+        Parameters
+        ----------
+        grid : Grid
+            Spatial grid object
+        system : System
+            System object containing host and guest information
+        epot_dr : Path or str
+            Directory for storing/loading (effective) potentials
+        positive : bool, optional
+            If True, set negative potentials to zero. Default is False
+        limit_potential : float, optional
+            Upper limit for potential values. Default is 1e4 kJ/mol
+        degree : int, optional
+            Rotational degree for effective potentials, determines size of 
+            orientational grid. Default is 11
+        cutoff : float, optional
+            Distance cutoff for potential calculation. Default is 12 Ångström
+        interpolate : bool, optional
+            Use interpolation for effective potential calculation, can allow for
+            faster computation. Default is False
+        """
         self.grid = grid
         self.potential = None
         self.kpotential = None
@@ -1078,6 +1341,14 @@ class ExternalPotential(Functional):
         self.vdw_spacings = np.array([0.15,0.15,0.15])*angstrom
 
     def load_potential(self, fn):
+        """
+        Load the guest-host potential from file(s).
+
+        Parameters
+        ----------
+        fn : str or list
+            Path to single potential file or list of files (one per species)
+        """
         if isinstance(fn, list):
             potentials = [np.load(f) for f in fn]
             for p in potentials:
@@ -1096,6 +1367,16 @@ class ExternalPotential(Functional):
         self.kpotential = self.grid.fftn(self.potential)
 
     def set_temperature(self, temperature, **kwargs):
+        """
+        Set temperature and compute temperature-dependent effective potentials if needed.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin
+        **kwargs : dict
+            Additional keyword arguments
+        """
         if isinstance(self.guest, GuestMixture):
             new_potential = np.zeros((self.nspecies,) + tuple(self.grid.npoints), dtype='float64')
             epot_fn = self.epot_dr / f'eff_epot_{temperature:#3.2f}K.npy'
@@ -1140,13 +1421,17 @@ class ExternalPotential(Functional):
         return potential
 
     def generate_potential(self, temperature=None):
-        '''This function generates a potential energy grid for a given force field and set of points, and
-        optionally sets negative values to zero.
+        """
+        Generate the guest-host potential grid.
         
+        Computes the effective interaction potential for each guest species
+        on the discretized grid, with optional temperature dependence.
+
         Parameters
         ----------
-        
-        '''
+        temperature : float, optional
+            Temperature in Kelvin. If None, uses self.temperature
+        """
 
         self.potential = np.zeros((self.guest.nspecies,) + tuple(self.grid.npoints), dtype='float64')
         self.kpotential = np.zeros_like(self.potential, dtype=np.complex128)
@@ -1174,17 +1459,38 @@ class ExternalPotential(Functional):
             
 
 class LDAFunctional(Functional):
-    "The local density approximation (LDA)"
+    """
+    Local density approximation (LDA) functional.
+    
+    Implements LDA by using the excess free energy of a bulk equation of state
+    at the local density, without any density gradient contributions.
+    
+    Attributes
+    ----------
+    name : str
+        Name identifier for the functional
+    grid : Grid
+        Spatial grid object
+    eos : EOS
+        Equation of state object providing excess free energy data
+    """
 
     name = 'LDA'
     
     def __init__(self, grid, eos):
+        """
+        Initialize the LDA functional.
+
+        Parameters
+        ----------
+        grid : Grid
+            Spatial grid object
+        eos : EOS
+            Equation of state object with methods for free energy and derivatives
+        """
         self.temperature = None
         self.grid = grid
         self.eos = eos
-
-    # def copy(self):
-    #     return copy_module.deepcopy(self)
 
     def set_temperature(self, temperature, **kwargs):
         self.temperature = temperature
@@ -1204,19 +1510,38 @@ class LDAFunctional(Functional):
 
 class WDAVFunctional(LDAFunctional):
     """
-    The weighted density approximation (WDA) using the excess free energy per
-    volume of a given EOS.
+    Weighted density approximation (WDA) functional using excess free energy per volume.
+    
+    An improvement over LDA that uses a weighted density smoothed over a characteristic
+    length scale defined by the hard sphere radius, rather than the local density directly.
+    
+    Attributes
+    ----------
+    name : str
+        Name identifier for the functional
+    R : ndarray
+        Hard sphere radius defining the weighing scale
+    D : ndarray
+        Diameter (2*R) used in weight function calculations
     """
-
     name = 'WDA-V'
     
     def __init__(self, grid, Rhs, eos):
+        """
+        Initialize the WDA functional.
+
+        Parameters
+        ----------
+        grid : Grid
+            Spatial grid object
+        Rhs : float or array-like
+            Hard sphere radius
+        eos : EOS
+            Equation of state object providing excess free energy
+        """
         LDAFunctional.__init__(self, grid, eos)
         self.temperature = None
         self.R = Rhs
-
-    # def copy(self):
-    #     return copy_module.deepcopy(self)
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         LDAFunctional.set_temperature(self, temperature, **kwargs)        
@@ -1229,13 +1554,11 @@ class WDAVFunctional(LDAFunctional):
 
     def _init_weight_function(self):
         """
-        The WDA functional is constructed based on weighted density that is 
-        constructed using w(r), which counts the number of particles within a 
-        sphere of radius R around r. Because this weight function consists of a
-        Heaviside distribution, it is not a good idea to work with them on a
-        real space grid. Because only convolutions of these weight functions
-        are required, they are calculated in reciprocal space, where
-        the convolutions become simple products.
+        Initialize the weight function in reciprocal space.
+        
+        Computes the Fourier transform of w(r), which counts particles within
+        a sphere of radius R. This is calculated in reciprocal space for
+        efficient convolution computations.
         """
         with log.section('WDA', 3, timer='WDA initialize'):
             k = self.grid.kpoints[:,:,:,3]
@@ -1247,7 +1570,7 @@ class WDAVFunctional(LDAFunctional):
             self.kw *= self.grid.sigma_lanczos[None,...]
 
     def _get_weighted_density(self, krho):
-        return self.grid.ifftn(krho*self.kw)#*self.grid.dk
+        return self.grid.ifftn(krho*self.kw)
     
     def set_density(self, krho):
         #check if current density is the same as previous one

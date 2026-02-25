@@ -1354,6 +1354,7 @@ class Calculator(object):
                 fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.npz'
                 np.savez(fn, mu=chempots, loading=avg_loadings, omega=avg_omegas)
 
+
     def contribution_approximation(self, temperature, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, pert_size=1e-5, symmetric=False, fn=None):
         """
         Calculate and save projected contributions based on density perturbation.

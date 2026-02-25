@@ -21,38 +21,58 @@ __all__ = ['Program']
 
 
 class Program(object):
-    def __init__(self, prefix='', hostname='', guestname='', ff_suffix='', funct_suffix='', grid_suffix='', suffix='', overwrite=False, logfile=None, second_log=False, silent=False):
-        '''This is the initialization function for a class that sets various attributes and creates a work
-            directory if it doesn't exist.
-            
-            Parameters
-            ----------
-            prefix
-                A string that will be added to the beginning of the output file names.
-            hostname
-                The hostname parameter is a string that represents the name of the host framework
-            guestname
-                The name of the guest molecule in a host-guest system.
-            ff_suffix
-                The forcefield parameter is a string that specifies the type of force field to be used in the
-            simulation. First the host ff then the guest ff.
-            functionals
-                This parameter is used to specify the type of excess functional to be used in the
-            calculation. 
-            grid_suffix
-                The grid_suffix parameter is a string that is appended to the end of the workdir. It is used
-            to differentiate between different grid instances, see system.py
-            suffix
-                A string that will be appended to the end of the output file names. It can be used to differentiate
-            between different runs or to provide additional information about the calculation.
-                A boolean parameter that determines whether existing files in the work directory should be
-            overwritten or not. If set to True, existing files will be overwritten. If set to False, existing
-            files will not be overwritten.
-            fn_energy_tracking
-                The parameter fn_energy_tracking is a file name used to track the energy during the calculation. It
-            is an optional parameter and its default value is None. If a file name is provided, the energy
-            values will be written to that file during the calculation.
-        '''
+    """
+    Main program class for classical DFT simulations of host-guest systems.
+    
+    Orchestrates the setup and execution of grand canonical DFT calculations
+    including system definition, grid discretization, free energy functional
+    construction, and density solving via various algorithms.
+    
+    Attributes
+    ----------
+    workdir : Path
+        Working directory for output files
+    system : System
+        Host-guest system definition
+    grid : Grid
+        Spatial discretization
+    fener : FreeEnergy
+        Free energy functional manager
+    eos : EquationOfState
+        Equation of state for bulk properties
+    solver : Solver or list
+        Density solver (single or cascade)
+    rho0 : ndarray
+        Initial density guess
+    """
+    def __init__(self, prefix='', hostname='', guestname='', ff_suffix='', funct_suffix='', grid_suffix='', suffix='', overwrite=False, silent=False):
+        """
+        Initialize a DFT Program.
+        
+        Sets up the work directory structure and logging configuration for a
+        classical DFT simulation.
+        
+        Parameters
+        ----------
+        prefix : str, optional
+            Root directory prefix. Default is ''
+        hostname : str, optional
+            Name of the host framework. Default is ''
+        guestname : str, optional
+            Name of the guest molecule(s). Default is ''
+        ff_suffix : str, optional
+            Force field specification suffix. Default is ''
+        funct_suffix : str, optional
+            Functional type suffix. Default is ''
+        grid_suffix : str, optional
+            Grid specification suffix. Default is ''
+        suffix : str, optional
+            Additional suffix for file naming. Default is ''
+        overwrite : bool, optional
+            If True, overwrite existing output files. Default is False
+        silent : bool, optional
+            If True, suppress console output. Default is False
+        """
         #Initializing    
         self._closed = False   
         self.name_dict = {'prefix':prefix, 'hostname':hostname, 'guestname':guestname, 'ff_suffix':ff_suffix, 'funct_suffix':funct_suffix, 'grid_suffix':grid_suffix, 'suffix':suffix}
@@ -65,9 +85,6 @@ class Program(object):
         if silent:
             log.set_level('silent')
 
-        if logfile is not None:
-            log.write_to_file('', logfile, second_log=second_log)
-
         #Initializing
         with log.section('PROGRAM', 1, timer='Initializing'):
             log.dump('Initializing work directory %s' %workdir)
@@ -77,28 +94,82 @@ class Program(object):
             self.pars_fn = None
     
     def copy(self):
+        """
+        Create a deep copy of the program.
+        
+        Returns
+        -------
+        Program
+            Independent copy with all attributes duplicated
+        """
         return copy_module.deepcopy(self)
     
     def set_system(self, host, guest):
+        """
+        Set the host and guest system definition.
+        
+        Parameters
+        ----------
+        host : HostFramework
+            Host material (porous framework)
+        guest : Guest or GuestMixture
+            Guest molecule(s) to simulate
+        """
         self.system = System(host, guest)
     
     def set_grid(self, npoints=None, spacing=0.25*angstrom):
-        '''This function sets up a grid for a given program with a specified number of points or spacing. npoints or spacing must be provided
-            
-            Parameters
-            ----------
-            npoints
-                The number of grid points to be generated in the grid. It should be a tuple of length 3, indicating all the
-                number of points in 3 dimesions If not specified, the default value is used.
-            spacing
-                The spacing parameter is the distance between two adjacent grid points in the Grid object. It is
-            specified in units of length, with the default value being 0.25 Angstroms.
-        '''
+        """
+        Set up the spatial discretization grid.
+        
+        Creates a Grid object with specified dimensions or spacing. Either npoints
+        or spacing must be provided to determine the grid resolution.
+        
+        Parameters
+        ----------
+        npoints : int or list, optional
+            Grid dimensions [nx, ny, nz]. If int, equal spacing in all directions.
+            If None, determined from spacing parameter. Default is None
+        spacing : float, optional
+            Grid spacing in Angstrom. Used if npoints is None. Default is 0.25 Angstrom
+        
+        Raises
+        ------
+        AssertionError
+            If system has not been set via set_system()
+        """
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
         self.grid = Grid(self.system.host.cell, npoints=npoints, spacing=spacing)
 
     def set_eos(self, eosname='PCSAFT', eos=None):
+        """
+        Set the equation of state for bulk properties.
+        
+        Either provide a pre-constructed EOS object or specify an equation of state
+        type to be constructed from the guest molecule properties.
+        
+        Parameters
+        ----------
+        eosname : {'MBWR', 'CS', 'MFA', 'PCSAFT'}, optional
+            Type of equation of state. Default is 'PCSAFT'
+            - MBWR: Modified Benedict-Webb-Rubin
+            - CS: Carnahan-Starling  
+            - MFA: Mean-field approximation
+            - PCSAFT: Perturbed-chain SAFT
+        eos : EquationOfState, optional
+            Pre-constructed EOS object. If provided, eosname is ignored. Default is None
+        
+        Raises
+        ------
+        AssertionError
+            If guest has not been set or eosname is invalid
+        ValueError
+            If unable to construct EOS from parameters
+        
+        Notes
+        -----
+        For GuestMixture, appropriate mixture versions of EOS are selected automatically.
+        """
         with log.section('PROGRAM', 1, timer='Initializing'):
             if eos is not None:
                 assert isinstance(eos, EquationOfState)
@@ -133,22 +204,30 @@ class Program(object):
                 log.dump(f'eos set to {eosname}')
 
 
-    def init_free_energy(self, temperature):
-        '''This function initializes the FreeEnergy object of a program at a given temperature.
-            
-            Parameters
-            ----------
-            temperature
-                The temperature at which the free energy calculation will be performed.
-            rewrite_RHS, optional
-                A boolean parameter that determines whether to overwrite the pre-existing hard sphere radius (RHS)
-            values for the free energy calculation. If set to True, the RHS values will be overwritten. If set to
-            False, the existing RHS values will be used for the calculation.
-            RHS_style, optional
-                RHS_style is a string parameter that specifies the averaging style of the hard sphere radius (RHS) used in the
-            calculation of the free energy. It can take one of three values: 'sb', 'bo', or 'ave'. 'su' stands for semi-uniform averaging
-            'bo' for Boltzmann weighted averaging and ave for uniform
-        '''
+    def init_free_energy(self, temperature, **kwargs):
+        """
+        Initialize the free energy functional at a given temperature.
+        
+        Sets up the FreeEnergy object with all necessary components (grid, system)
+        and initializes temperature-dependent parameters.
+        
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin
+        **kwargs : dict
+            Additional keyword arguments passed to guest.compute_hardsphere_radius()
+        
+        Raises
+        ------
+        AssertionError
+            If system, grid, or temperature not properly initialized
+        
+        See Also
+        --------
+        FreeEnergy : Free energy functional manager
+        set_temperature : Update temperature after initialization
+        """
         assert self.system is not None, "Host and guest must first be set using 'set_system'"
         assert isinstance(self.system, System), "self.system is not an instance of System, aborting!"
         assert self.grid is not None, "Grid must first be set using 'set_grid'"
@@ -157,30 +236,45 @@ class Program(object):
         if hasattr(self, 'eos'): self.eos.set_temperature(temperature)
 
     def set_temperature(self, temperature):
-        '''This function sets the temperature for a FreeEnergy object.
-            
-            Parameters
-            ----------
-            temperature
-                The temperature parameter is a numerical value representing the temperature in a system. It is used
-            as an input to the set_temperature method to set the temperature of the FreeEnergy object stored in
-            the self.fener attribute.
-        '''
+        """
+        Update the temperature of an initialized free energy functional and equation of state object
+        
+        Parameters
+        ----------
+        temperature : float
+            New temperature in Kelvin
+        
+        Raises
+        ------
+        AssertionError
+            If free energy has not been initialized via init_free_energy()
+        
+        See Also
+        --------
+        init_free_energy : Initialize free energy at a temperature
+        """
         assert self.fener is not None, "Free energy must first be initialized using 'init_free_energy'"
         assert isinstance(self.fener, FreeEnergy), "self.fener is not an instance of FreeEnergy, aborting!"
         self.fener.set_temperature(temperature)
+        if hasattr(self, 'eos'): self.eos.set_temperature(temperature)
     
     def calc_distance(self, rewrite=False):
-        '''The function calculates a distance matrix, this contains the distance of each point to the closest atom 
-            of the host material and stores it as a numpy file, which is used to calculate the regions of the framework.
-            
-            Parameters
-            ----------
-            rewrite, optional
-                A boolean parameter that determines whether to overwrite an existing distance matrix file or not.
-            If set to True, the existing file will be deleted and a new one will be created. If set to False,
-            the existing file will be loaded and used.
-        '''
+        """
+        Calculate distances from grid points to nearest framework atoms.
+        
+        Computes the minimum distance from each grid point to any host atom
+        and stores the result. Used for identifying framework regions.
+        
+        Parameters
+        ----------
+        rewrite : bool, optional
+            If True, recompute distances even if file exists. Default is False
+        
+        Notes
+        -----
+        Results are stored in self.dis and cached to file for reuse.
+        Uses minimum image convention for periodic boundary conditions.
+        """
         dist_file = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['grid_suffix'] / 'distances.npy'
         if not dist_file.parent.is_dir():
             dist_file.parent.mkdir()
@@ -202,25 +296,38 @@ class Program(object):
     
     def calc_regions(self, energy_cutoff=0.55, range_cutoff=3.4*angstrom, mof_cutoff=5):
         """
-            Calculates 3 different regions of the MOFs based on a distance and an energy criterium. 
-            The three regions are: MOF, enrgetically favored interaction sites, empty space in MOF.
-
-            Parameters
-            ----------
-            energy_cutoff : Scalar, optional
-                Energy criterium, ratio of the threshold energy to the energy minimum of the external potential. 
-                The threshold energy determines which points are energetically favored. The default is 0.55.
-            range_cutoff : Scalar, optional
-                Distance cut-off, points further from host atoms than this distance and which conform with the energy criterion are part of the empty space. 
-                The default is 3.4*angstrom.
-            mof_cutoff : Scalar, optional
-                Energy criterium, points with a potential energy larger than boltzmann*temperature*mof_cutoff are part of the MOF. The default is 2.5.
-
-            Returns: 3 masks in the shape of the grid indicating the different regions
-            -------
-            mask_site, the energetically favored interaction sites
-            mask_mof, the atoms of the framework, where guest molecules can't adsorb
-            mask_empty, the empty space in the MOF, not energetically favored
+        Identify distinct regions in the nanoporous material.
+        
+        Classifies grid points into three regions based on distance and energy criteria:
+        interaction sites (energetically favorable), framework atoms (blocked), and
+        empty space (unfavorable).
+        
+        Parameters
+        ----------
+        energy_cutoff : float, optional
+            Energy criterion: fraction of minimum potential defining favorable sites.
+            Default is 0.55
+        range_cutoff : float, optional
+            Distance cutoff in Angstrom for empty space classification.
+            Default is 3.4 Angstrom
+        mof_cutoff : float, optional
+            Energy criterion for framework identification in units of k_B*T.
+            Default is 5
+        
+        Returns
+        -------
+        mask_site : ndarray
+            Boolean mask for adsorption sites (energetically favorable)
+        mask_mof : ndarray
+            Boolean mask for framework atoms (blocked regions)
+        mask_empty : ndarray
+            Boolean mask for empty space (unfavorable)
+        
+        Notes
+        -----
+        Requires external potential to be present in free energy.
+        Also sets self.mask_site, self.mask_mof, self.mask_empty attributes.
+        Calls calc_distance() internally if distance matrix not already computed.
         """
         self.calc_distance()
         range_mask = self.dis<range_cutoff
@@ -242,16 +349,31 @@ class Program(object):
 
     def _set_initial_density(self, Ninit=None, chempot=None, rewrite=False, silent=False):
         """
-            Sets the initial density for the solving of the cDFT calculation
-
-            Parameters
-            ----------
-            Ninit : Initial density:
-            If Ninit is a string or a Path object: loads density profile from this file, string or Path must be an existing density file
-            If Ninit a float: set the density to this float
-            
-            chempot : Chemical potential sed to calculate the ideal gas density.  The default is None.
-            rewrite : Boolean. Setting to true will lead the program to ignore previous calculations. The default is False.
+        Prepare the initial density field for optimization.
+        
+        Sets up the initial guess for density either from provided values, loaded
+        files, or computed from ideal gas at given chemical potential.
+        
+        Parameters
+        ----------
+        Ninit : float, str, Path, or ndarray, optional
+            Initial density specification:
+            - float: uniform density (modified by external potential if available)
+            - str/Path: load density from file
+            - ndarray: use as initial density field
+            Default is None (use ideal gas)
+        chempot : float or ndarray, optional
+            Chemical potential(s) for ideal gas calculation. Required if Ninit is None.
+            Default is None
+        rewrite : bool, optional
+            If True, recompute initial density even if file exists. Default is False
+        silent : bool, optional
+            If True, suppress logging output. Default is False
+        
+        Notes
+        -----
+        Stores result in self.rho0.
+        External potential effect is automatically included via Boltzmann factor.
         """
         if silent: label_log_level = 3
         else: label_log_level = 1
@@ -305,6 +427,37 @@ class Program(object):
                     self.rho0 = np.exp(self.fener.beta*(chempot))/self.fener.wavelength**3*epot_factor
 
     def _initial_thermodynamic_conditions(self, chempot=None, pressure=None, bulk_density=None):
+        """
+        Compute initial thermodynamic conditions from bulk EOS.
+        
+        Converts between chemical potential, pressure, and bulk density representations
+        using the equation of state.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray, optional
+            Chemical potential. Default is None
+        pressure : float or ndarray, optional
+            Pressure. Default is None
+        bulk_density : float, optional
+            Bulk density. Default is None
+        
+        Returns
+        -------
+        chempot : float or ndarray
+            Chemical potential (standardized)
+        rho_bulk : float or ndarray
+            Bulk density (mass density)
+        
+        Raises
+        ------
+        AssertionError
+            If EOS not initialized or no thermodynamic condition provided
+        
+        Notes
+        -----
+        For mixtures, converts single fugacity to component-wise values.
+        """
         assert hasattr(self, 'eos'), 'eos attribute must be initialized'
         assert (chempot is not None) or (pressure is not None) or (bulk_density is not None), 'Either, chemical potential, pressure, or bulk density must be provided'
         if bulk_density is not None:
@@ -328,12 +481,22 @@ class Program(object):
 
     def _set_split_density(self, masks, densities):
         """
-            Set the initial density to a split density according to a given split of the system
-
-            Parameters
-            ----------
-            masks : List of masks in the shape of the grid, indicating the different regions of densities
-            densities : List of the densities respective to list of the masks.
+        Initialize density with region-specific values.
+        
+        Sets different density values in different spatial regions using provided masks.
+        Useful for constructing initial guesses with spatial inhomogeneity.
+        
+        Parameters
+        ----------
+        masks : list of ndarray
+            Boolean masks indicating spatial regions, each shape matching grid.npoints
+        densities : list of float or ndarray
+            Density values to assign to each corresponding mask region
+        
+        Notes
+        -----
+        Stores result in self.rho0.
+        Masks should be mutually exclusive or overlaps will be overwritten sequentially.
         """
         with log.section('PROGRAM', 1, timer='Initializing'):
             assert len(masks) == len(densities)
@@ -344,9 +507,31 @@ class Program(object):
             self.split = True
     
     def set_solver(self, solver=None):
-        '''This function sets the solver for a program.'''
+        """
+        Set the density optimization solver.
+        
+        Parameters
+        ----------
+        solver : Solver, list of Solver, or None, optional
+            Solver instance or list of solvers for cascade solving.
+            If None, defaults to Anderson solver. Default is None
+        
+        Raises
+        ------
+        AssertionError
+            If solver is not an instance of Solver class
+        
+        Notes
+        -----
+        For list of solvers, attempts each in sequence until convergence.
+        
+        See Also
+        --------
+        Anderson : Standard nonlinear solver
+        Picard : Simple iteration solver
+        """
         with log.section('PROGRAM', 1, timer='Initializing'):
-            if solver==None:
+            if solver is None:
                 solver = Anderson(self)
             else:
                 if isinstance(solver, list):
@@ -359,7 +544,25 @@ class Program(object):
             self.solver = solver
 
     def _cascade_solver(self, solvers, chempot, silent=False):
-        '''This function attempts to solve the system using a cascade of solvers.'''
+        """
+        Attempt solving with multiple solvers in sequence.
+        
+        Tries each solver in order, proceeding to the next on failure or non-convergence.
+        Useful for difficult problems where different solvers have different success rates.
+        
+        Parameters
+        ----------
+        solvers : list of Solver
+            Solvers to attempt in order
+        chempot : float or ndarray
+            Chemical potential for calculation
+        silent : bool, optional
+            Suppress logging output. Default is False
+        
+        Notes
+        -----
+        Logs status for each solver attempt but continues if all fail.
+        """
         with log.section('PROGRAM', 1, timer=None):
             for solver in solvers:
                 try:
@@ -375,7 +578,31 @@ class Program(object):
                 log.warning('All solvers failed, at %s.' %(chempot_str))
 
     def _solve_wrapped(self, solver, chempot, silent=False):
-        '''This function solves for the density profile at given a chemical potential and temperature'''
+        """
+        Execute density optimization and save results.
+        
+        Parameters
+        ----------
+        solver : Solver
+            Optimization solver instance
+        chempot : float or ndarray
+            Chemical potential for calculation
+        silent : bool, optional
+            Suppress logging output. Default is False
+        
+        Returns
+        -------
+        N : float
+            Total number of adsorbed molecules
+        rho : ndarray
+            Optimized density field
+        converged : bool
+            Whether optimization converged
+        
+        Notes
+        -----
+        Saves density to self.rho_fn and optionally solver history.
+        """
         if silent: log_level = 3
         else: log_level = 2
         with log.section('PROGRAM', log_level, timer=None):
@@ -393,6 +620,56 @@ class Program(object):
             return N, rho, converged
 
     def solve(self, chempot=None, pressure=None, rho_b=None, Ninit=None, rewrite=False, energy_tracking=True, silent=False, continue_solving=False):
+        """
+        Solve for density profile at given thermodynamic conditions.
+        
+        Main method for computing adsorption/density profiles. Handles thermodynamic
+        setup, initial density preparation, and optimization via specified solver(s).
+        
+        Parameters
+        ----------
+        chempot : float or ndarray, optional
+            Chemical potential. Default is None (use EOS if available)
+        pressure : float, optional
+            Pressure (alternative to chempot). Default is None
+        rho_b : float, optional
+            Bulk density (alternative to chempot). Default is None
+        Ninit : float, str, Path, or ndarray, optional
+            Initial density specification. Default is None (use ideal gas)
+        rewrite : bool, optional
+            Recompute even if solution exists. Default is False
+        energy_tracking : bool, optional
+            Track convergence to file. Default is True
+        silent : bool, optional
+            Suppress output. Default is False
+        continue_solving : bool, optional
+            Continue from previous solution if it exists. Default is False
+        
+        Returns
+        -------
+        N : float
+            Total adsorbed molecules per unit cell
+        rho : ndarray
+            Density field shape (ncomp, nx, ny, nz)
+        converged : bool
+            Whether optimization converged
+        
+        Raises
+        ------
+        ValueError
+            If neither EOS nor chempot provided
+        
+        Notes
+        -----
+        Automatically determines thermodynamic conditions from EOS if available.
+        Logs fugacity and temperature information.
+        Skips computation if solution already exists (unless rewrite=True).
+        
+        See Also
+        --------
+        adsorption_isotherm : Compute multiple conditions
+        _initial_thermodynamic_conditions : Convert between representations
+        """
         
         if silent: log_level = 3
         else: log_level = 2
@@ -439,6 +716,31 @@ class Program(object):
                 self._solve_wrapped(self.solver, chempot, silent=silent)
 
     def adsorption_isotherm(self, temperature, pressures, **kwargs):
+        """
+        Compute adsorption isotherm: loading vs. pressure at fixed temperature.
+        
+        Solves for density profiles over a range of pressures and computes the
+        corresponding loadings.
+        
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin
+        pressures : array_like
+            Array of pressures for isotherm calculation
+        **kwargs : dict
+            Additional arguments passed to solve() method
+        
+        Notes
+        -----
+        Results stored in self.rho_fn files for each pressure.
+        Uses EOS to convert pressures to chemical potentials and bulk densities.
+        
+        See Also
+        --------
+        solve : Single point calculation
+        calculate_reference_chemical_potential : Find inflection point
+        """
         self.set_temperature(temperature)
         chempots = self.eos.compute_chempot(pressure=pressures, temperature=temperature)
         rho_b = self.eos.solve_densities_from_pressures(pressures)
@@ -447,25 +749,36 @@ class Program(object):
 
 
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):
-        '''This function calculates the reference chemical potential by solving an adsorption isotherm and
-            finding the chemical potential with the steepest incline.
-            
-            Parameters
-            ----------
-            chempots
-                A numpy array containing the chemical potentials for which the adsorption isotherm needs to be
-            calculated.
-            silent, optional
-                The `silent` parameter is a boolean flag that determines whether or not to print out progress
-            messages during the calculation. If `silent=True`, then no progress messages will be printed.
-            rewrite, optional
-                The `rewrite` parameter is a boolean flag that determines whether to overwrite existing files or
-            not.
-            
-            Returns
-            -------
-                The calculated reference chemical potential.
-        '''
+        """
+        Find reference chemical potential (steepest isotherm slope).
+        
+        Computes adsorption isotherm and identifies the point with maximum
+        loading vs. chemical potential slope. Useful for phase transitions.
+        
+        Parameters
+        ----------
+        chempots : ndarray
+            Array of chemical potentials for isotherm calculation
+        silent : bool, optional
+            Suppress output. Default is True
+        rewrite : bool, optional
+            Recompute even if files exist. Default is False
+        
+        Returns
+        -------
+        mu_ref : float
+            Reference chemical potential with steepest isotherm slope
+        
+        Notes
+        -----
+        Requires HybExtPot (hybrid external potential) in free energy.
+        Used for identifying critical adsorption points in hybrid modeling.
+        
+        See Also
+        --------
+        calculate_hybrid_potential : Iteratively improve potentials at mu_ref
+        adsorption_isotherm : Compute full isotherm
+        """
         # calculate the reference chemical potential
         with log.section('PROGRAM', 1, timer='Initializing mu_ref'):
             assert 'HybExtPot' in self.fener.part_names
@@ -483,34 +796,47 @@ class Program(object):
             return self.mu_ref
 
     def calculate_hybrid_potential(self, mu_ref, threshold, rewrite=False, chempots=None, silent=True, mse_version=False, site_version=False):
-        '''This function calculates a hybrid potential from two models, a forcefield and an ab initio input
-            
-            Parameters
-            ----------
-            mu_ref
-                The reference chemical potential used for convergence of the hybrid potential calculation. 
-            See function calculate_reference_chemical_potential()
-            threshold
-                The convergence threshold for the adsorption isotherm or mean squared error (MSE) when calculating
-            the hybrid potential.
-            rewrite, optional
-                A boolean parameter that determines whether to overwrite existing files or not. If set to True,
-            existing files will be overwritten. Default is False.
-            chempots
-                A list of chemical potentials at which to calculate the loadings for the hybrid potential.
-            silent, optional
-                A boolean parameter that determines whether or not to print log messages during the calculation of
-            the hybrid potential. If set to True, no log messages will be printed. If set to False, log messages
-            will be printed.
-            mse_version, optional
-                A boolean parameter that determines whether the convergence of the hybrid potential is checked
-            using the mean squared error of the new densities.
-            site_version, optional
-                A boolean parameter that determines whether the secondary external potential is initialized at
-            points designated as adsorption sites or at local maxima of the loading density. If site_version is
-            True, the secondary external potential is initialized at points designated as adsorption sites. If
-            site_version is False, the secondary external potential is
-        '''
+        """
+        Iteratively refine hybrid potential combining two models.
+        
+        Starts with a forcefield-based external potential and progressively
+        adds grid points described by a secondary model (e.g., ab initio) until
+        convergence. Useful for combining computational methods.
+        
+        Parameters
+        ----------
+        mu_ref : float
+            Reference chemical potential for convergence checking (typically
+            from calculate_reference_chemical_potential()). The isotherm loading
+            at this point is tracked during iteration.
+        threshold : float
+            Convergence threshold. Meaning depends on convergence criterion:
+            - If mse_version: threshold on mean squared error of density fields
+            - Otherwise: threshold on integral error of isotherm
+        rewrite : bool, optional
+            Recompute even if files exist. Default is False
+        chempots : ndarray, optional
+            Array of chemical potentials for isotherm tracking. Default is None
+        silent : bool, optional
+            Suppress output. Default is True
+        mse_version : bool, optional
+            Use mean squared error for convergence (otherwise use isotherm area).
+            Default is False
+        site_version : bool, optional
+            Initialize secondary potential at adsorption sites (True) or at local
+            density maxima (False). Default is False
+        
+        Notes
+        -----
+        Requires HybExtPot in free energy and working directory setup.
+        Updates Hybrid_External_Potential iteratively by adding neighboring points.
+        Saves intermediate results and convergence metrics to workdir.
+        
+        See Also
+        --------
+        calculate_reference_chemical_potential : Find mu_ref
+        calc_regions : Identify adsorption sites for site_version
+        """
         with log.section('PROGRAM', 1, timer='Initializing hybrid potential'):
             temp = self.fener.temperature
             natom = self.system.guest.mol.natom

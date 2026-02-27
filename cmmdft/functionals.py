@@ -115,7 +115,6 @@ class HardSphereFunctional(Functional):
     def set_temperature(self, temperature, Rhs, **kwargs):
         self.temperature = temperature
         self.beta = 1/(boltzmann*temperature)        
-        print('MFMT', Rhs)
         if not isinstance(Rhs, (list, np.ndarray)):
             Rhs = [Rhs]
         self.R = np.array(Rhs, dtype=np.float64)
@@ -1129,16 +1128,14 @@ class ExternalPotential(Functional):
             guest_ff_dict = real_guest.guest_ff_dict
 
             if self.interpolate:
-                print('interpolating')
                 potential = interpolate_effective_potential(1/temperature/boltzmann, points, host_data, host_ff_dict, guest_data, guest_ff_dict, self.epot_dr, 
                                         tmp_spacing=0.15*angstrom, cutoff=self.cutoff,
                                         degree=self.degree, int_method='trilinear', remove_tmp=True)
             else:
-                print('precalculating')
                 potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host_data, host_ff_dict, guest_data, guest_ff_dict, degree=self.degree)
         else:
-            print('UA model')
-            potential = real_guest.m * get_external_potential(points, host_data, host_ff_dict, real_guest.sigma, real_guest.epsilon, cutoff=self.cutoff)
+            points = points.reshape(-1,3)
+            potential = real_guest.m * get_external_potential(points, host_data, host_ff_dict, real_guest.sigma, real_guest.epsilon, cutoff=self.cutoff).reshape(self.grid.npoints)
         return potential
 
     def generate_potential(self, temperature=None):

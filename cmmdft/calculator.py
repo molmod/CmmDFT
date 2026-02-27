@@ -10,11 +10,11 @@ import json, zipfile, itertools
 
 from .units_constants import avogadro, planck, boltzmann, kjmol, bar, kelvin, joule, mol, angstrom, amu, convert_units
 
-from .system import NanoporousHost
+from .system import NanoporousHost, System, GuestMixture, Guest
 from .program import Program
 from .free_energy import FreeEnergy
 from .functionals import WDAVFunctional, ExternalPotential
-from .eos import EquationOfState
+from .eos import *
 from .log import log
 from .tools import selection_sort, bisect_left, make_supercell, get_file_suffix, Document, get_chempot_key
 from .extpot_calculator import get_external_potential, get_system_data
@@ -60,6 +60,8 @@ class Calculator(object):
             Optional label for identification.
         """
         self.name_dict = program.name_dict
+        if hasattr(program, 'eos'):
+            self.eos = program.eos
         self.workdir = program.workdir
         self.grid = program.grid
         self.fener = program.fener
@@ -68,7 +70,54 @@ class Calculator(object):
         self.ncomp = program.system.guest.nspecies
         self.label = label
 
-    def density_statistics(self, temp, chempot):
+    def set_eos(self, eosname='PCSAFT', eos=None):
+        with log.section('PROGRAM', 1, timer='Initializing'):
+            if eos is not None:
+                assert isinstance(eos, EquationOfState)
+                self.eos = eos
+            else:
+                assert self.guest is not None, "Host and guest must be set using set_system"
+                assert isinstance(self.system.guest, Guest), "Guest attribute must be Guest class"
+                assert eosname in ['MBWR', 'CS', 'MFA', 'PCSAFT']
+                guest = self.guest
+                if eosname == 'MBWR':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = ModifiedBenedictWebbRubinMixEOS.from_guest(guest)
+                    else:
+                        self.eos = ModifiedBenedictWebbRubinEOS.from_guest(guest)
+                elif eosname == 'CS':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = CarnahanStarlingMixEOS.from_guest(guest)
+                    else:
+                        self.eos = CarnahanStarlingEOS.from_guest(guest)
+                elif eosname == 'MFA':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = MFAMixEOS.from_guest(guest)
+                    else:
+                        self.eos = MFAEOS.from_guest(guest)
+                elif eosname == 'PCSAFT':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = PCSAFTMixEOS.from_guest(guest)
+                    else:
+                        self.eos = PCSAFTEOS.from_guest(guest)
+                else:
+                    raise ValueError('Unable to set eos')
+                log.dump(f'eos set to {eosname}')
+    
+    def get_chempot_from_pressures(self, temp, chempot=None, pressure=None):
+        if chempot is None and pressure is not None:
+            if hasattr(self, 'eos'):
+                mus = self.eos.compute_chempot(temperature=temp, pressure=pressure)
+            else:
+                raise ValueError('If eos object is not initialized, chemical potential must be provided')
+        elif chempot is not None:
+            mus = chempot
+        else:
+            mus = self.get_chemical_potential(temp)
+        
+        return mus
+    
+    def density_statistics(self, temp, chempot=None, pressure=None):
         """
         Compute and return average, minimum, maximum, and standard deviation of the density over the grid.
 
@@ -89,6 +138,7 @@ class Calculator(object):
         AssertionError
             If the density file is not found.
         """
+        chempot = self.get_chempot_from_pressures(temp, chempot, pressure)
         file_suff = get_file_suffix(chempot, temp)
         fn = self.workdir / f'rho_{file_suff}.npy'
         assert fn.is_file(), f'No file found at {fn}'
@@ -96,7 +146,8 @@ class Calculator(object):
         rho = np.load(fn, dtype=np.float32)
         return rho.mean(), rho.min(), rho.max(), rho.std()
 
-    def loading(self, temp, chempot, mask=None):
+
+    def loading(self, temp, chempot=None, pressure=None, mask=None):
         """
         Integrate the density of the particles over the volume to determine the number of guest particles present.
         Provide temperature and chemical potential to find the right density file.
@@ -115,6 +166,7 @@ class Calculator(object):
         float or ndarray
             Loading (number of particles). For multicomponent, an array.
         """
+        chempot = self.get_chempot_from_pressures(temp, chempot, pressure)
         file_suff = get_file_suffix(chempot, temp)
         fn = self.workdir / f'rho_{file_suff}.npy'
         assert fn.is_file(), f'No file found at {fn}'
@@ -133,7 +185,7 @@ class Calculator(object):
             rho_mask[~mask] = 0
             return self.grid.integrate_n(rho_mask).real
     
-    def loading_MWBR_unreliable(self, temp, chempot, mbwr):
+    def loading_MWBR_unreliable(self, temp, mbwr, chempot=None, pressure=None):
         """
         Compute the loading corresponding to that part of the grid for which the weighted density in WDA is higher than 1.2/sigma**3. This last value is an upper value
         for the density at which the MBWR (used in the correlation WDA funcitonal) is a reliable EOS for a LJ liquid. In other words, when the loading (number of guests)
@@ -159,6 +211,7 @@ class Calculator(object):
         AssertionError
             If the density file is not found.
         """
+        chempot = self.get_chempot_from_pressures(temp, chempot, pressure)
         file_suff = get_file_suffix(chempot, temp)
         fn = self.workdir / f'rho_{file_suff}.npy'
         assert fn.is_file(), f'No file found at {fn}'
@@ -175,7 +228,7 @@ class Calculator(object):
 
         return self.grid.integrate_n(rho_MBWR).real     
 
-    def return_loading(self, temp, chempots, excess=False, eos=None, He_frac=None):
+    def return_loading(self, temp, chempots=None, pressures=None, excess=False, eos=None, He_frac=None):
         """
         Returns an array of loadings for a list of chemical potentials.
 
@@ -202,6 +255,7 @@ class Calculator(object):
         AssertionError
             If eos is required but not provided for excess loading.
         """
+        chempots = self.get_chempot_from_pressures(temp, chempots, pressures)
         loading_list = np.zeros((len(chempots), self.ncomp))
         for i,mu in enumerate(chempots):
             try:
@@ -247,7 +301,15 @@ class Calculator(object):
 
         dens_list = [f.name for f in self.workdir.iterdir() if f.name.startswith('rho') and f.name.endswith(f'{temperature:#7.5f}K.npy')]
         chempots = np.array([np.array(rx.findall(f), dtype=float) for f in dens_list])*kjmol
-        return np.sort(chempots, axis=0)
+        if hasattr(self, 'eos'):
+            # sort the chempots to rising pressure
+            pressures = self.eos.compute_pressure(temperature=temperature, chempot=chempots)
+            idx = np.argsort(pressures)
+
+            chempots_sorted = chempots[idx]
+        else:
+            chempots_sorted = np.sort(chempots, axis=0)
+        return chempots_sorted
 
     def get_helium_fraction(self, temperature, cutoff=12*angstrom):
         """
@@ -313,7 +375,7 @@ class Calculator(object):
         epot_int = self.grid.integrate(np.exp(-potential/temperature/boltzmann))
         return 1/avogadro/boltzmann/temperature/self.host.cell.volume*epot_int
     
-    def get_selectivity(self, temperature, chempot):
+    def get_selectivity(self, temperature, chempots=None, pressures=None):
         """
         Return the selectivity between multiple components at given temperature and chemical potentials.
 
@@ -337,8 +399,10 @@ class Calculator(object):
             If mole fractions are zero.
         """
         assert self.ncomp > 1, 'Selectivity can only be calculated for multicomponent systems'
-        chempots = np.atleast_2d(chempot)
-        loadings = self.return_loading(temperature, chempot)
+        
+        chempots = self.get_chempot_from_pressures(temperature, chempots, pressures)
+        chempots = np.atleast_2d(chempots)
+        loadings = self.return_loading(temperature, chempots)
         mole_fractions = np.array(self.guest.fractions)
         selectivities = np.zeros((len(chempots), self.ncomp, self.ncomp))
 
@@ -353,7 +417,7 @@ class Calculator(object):
         return selectivities
 
 
-    def save_loadings(self, temperature, chempots=None, pressure=False, excess=False, He_frac=None, eos=None, fn=None):
+    def save_loadings(self, temperature, chempots=None, pressures=None, pressure=False, excess=False, He_frac=None, eos=None, fn=None):
         """
         Save the loadings of all the calculated densities at the specified temperature in a CSV file vs chemical potential or pressure.
 
@@ -375,20 +439,21 @@ class Calculator(object):
             Output filename; auto-generated if None.
         """
          
-        if chempots is None:
-            chempots = self.get_chemical_potential(temperature)
+        chempots = self.get_chempot_from_pressures(temperature, chempots, pressures)
 
         loadings = self.return_loading(temperature, chempots, excess=excess, eos=eos, He_frac=He_frac)
         
         # prepare data if saving vs pressure
         if pressure:
             header = 'pressures [au]'
-            if self.ncomp > 1:
+            if pressures is None:
                 data0 = np.atleast_2d(eos.compute_pressure(temperature=temperature, chempot=chempots)).T
+            else:
+                data0 = np.atleast_2d(pressures).T
+            if self.ncomp > 1:
                 for i in range(self.ncomp):
                     header += f',loading_comp{i+1} [molecules/uc]'
             else:
-                data0 = np.atleast_2d(eos.compute_pressure(temperature=temperature, chempot=chempots)).T
                 header += ',loading [molecules/uc]'
         # prepare data if saving vs chemical potential
         else:
@@ -623,7 +688,7 @@ class Calculator(object):
         d.write_file(str(fn))
 
 
-    def free_energy_contrib(self, temperature, chempot, partname, over_loading=False, local=False, fn=None, rho=None):
+    def free_energy_contrib(self, temperature, chempot=None, pressure=None, partname='', over_loading=False, local=False, fn=None, rho=None):
         """
         Calculate the free energy contribution of a given functional at a specified temperature and chemical potential.
 
@@ -656,6 +721,7 @@ class Calculator(object):
         ValueError
             If rho is not an ndarray.
         """      
+        chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
         if rho is None:
             if fn is None:
                 file_suff = get_file_suffix(chempot, temperature)
@@ -687,7 +753,7 @@ class Calculator(object):
                     if over_loading: return part.value(rho, krho)/N
                     else: return part.value(rho, krho)
 
-    def free_energy(self, temperature, chempot, local=False):
+    def free_energy(self, temperature, chempot=None, pressure=None, local=False):
         """
         Calculate the total free energy of the system at a given temperature and chemical potential.
 
@@ -705,12 +771,13 @@ class Calculator(object):
         float or ndarray
             Total free energy (scalar if local=False, grid array if local=True).
         """
-        value = self.free_energy_contrib(temperature, chempot, 'fid')
+        chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
+        value = self.free_energy_contrib(temperature, chempot, partname='fid')
         for part in self.fener.parts:
-            value += self.free_energy_contrib(temperature, chempot, part.name, local=local)
+            value += self.free_energy_contrib(temperature, chempot, partname=part.name, local=local)
         return value
     
-    def excess_free_energy(self, temperature, chempot, local=False, fn=None):
+    def excess_free_energy(self, temperature, chempot=None, pressure=None, local=False, fn=None):
         """
         Calculate the excess free energy of the system at a given temperature and chemical potential.
 
@@ -730,15 +797,16 @@ class Calculator(object):
         float or ndarray
             Excess free energy (scalar if local=False, grid array if local=True).
         """
+        chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
         value = 0
         for part in self.fener.parts:
             if part.name in self.fener.excess_table:
-                value += self.free_energy_contrib(temperature, chempot, part.name, local=local, fn=fn)
+                value += self.free_energy_contrib(temperature, chempot, partname=part.name, local=local, fn=fn)
             else:
                 continue
         return value
 
-    def grand_potential(self, temperature, chempot, local=False):
+    def grand_potential(self, temperature, chempot=None, pressure=None, local=False):
         """
         Calculate the grand potential of the system at a given temperature and chemical potential.
 
@@ -756,6 +824,7 @@ class Calculator(object):
         float or ndarray
             Grand potential (scalar if local=False, grid array if local=True).
         """
+        chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
         value = self.free_energy(temperature, chempot, local=local)
         if local:
             fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temperature:#7.5f}K.npy'
@@ -859,7 +928,7 @@ class Calculator(object):
 
         return cvs, cvs_mat, dist_mask    
 
-    def project_density(self, temperature, chempot, cvs, cvs_mat, dist_mask, rewrite=False, supercell=True, normalize=False, save=True):
+    def project_density(self, cvs, cvs_mat, dist_mask, temperature, chempot=None, pressure=None, rewrite=False, supercell=True, normalize=False, save=True):
         """
         Calculate and return the projected density at a given temperature and chemical potential.
 
@@ -895,6 +964,7 @@ class Calculator(object):
             If density file is not found.
         """
         with log.section('CALCULATOR', 2, timer='projecting density'):
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)        
             if self.ncomp == 1:
                 chempot_str = f'{chempot/kjmol:#7.5f}'
             
@@ -954,7 +1024,7 @@ class Calculator(object):
                     log.dump(f'Calculated the projected density at {temperature}K and {chempot_str} save at {fn}')
                 return q_list, n_list
         
-    def project_contributions(self, temperature, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, fn=None, rewrite=False):
+    def project_contributions(self, contrib_names, cvs, cvs_mat, dist_mask, temperature, chempot=None, pressure=None, supercell=True, fn=None, rewrite=False):
         """
         Calculate and return the projected density of a specific contribution to the free energy.
 
@@ -985,6 +1055,7 @@ class Calculator(object):
             If external potential is not present.
         """
         with log.section('CALCULATOR', 2, timer='projecting contributions'):
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)     
             if not isinstance(contrib_names, list):
                 contrib_names = [contrib_names]
             contrib_names = [name.lower() for name in contrib_names]
@@ -1046,9 +1117,8 @@ class Calculator(object):
                 fn = self.workdir / f'projected_contributions_{file_suff}.csv'
             np.savetxt(fn, result_data.T, delimiter=',', header = header)
             log.dump(f'Calculated the projected contributions at {temperature}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')
-
             
-    def save_loading_and_grand_potential(self, temperature, chempot, fn=None):
+    def save_loading_and_grand_potential(self, temperature, chempot=None, pressure=None, fn=None):
         """
         Calculate and save the projected density and grand potential at a given temperature and chemical potential.
 
@@ -1067,6 +1137,7 @@ class Calculator(object):
             (q_list, n_list): Collective variable positions and densities.
         """
         with log.section('CALCULATOR', 2, timer=None):
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)     
             n = self.loading(temperature, chempot)
             omega = self.grand_potential(temperature, chempot)
             chempot_key = get_chempot_key(chempot)
@@ -1121,7 +1192,7 @@ class Calculator(object):
                 omegas = np.array([omega.real])
             np.savez(fn, mu=chempots, loading=loadings, omega=omegas)
     
-    def free_energy_path(self, temperature, chempot, chempots=None, fn=None, max_n_chems=0, dens_omega_fn=None):
+    def free_energy_path(self, temperature, chempot=None, pressure=None, list_chems=None, fn=None, max_n_chems=0, dens_omega_fn=None, sum=False):
         """
         Calculate the free energy profile along a predefined collective variable (CV), which is the projection of the position of a molecule on a diffusion path.
 
@@ -1153,20 +1224,27 @@ class Calculator(object):
             If chemical potentials are invalid or files missing.
         """
         with log.section('CALCULATOR', 2, timer='Diffusion path calculation'):
-            beta = 1/temperature/boltzmann            
-
-            # A list is created of chemical potentials lower than the input, over this list the later integration of n is carried out     
-            if chempots is None:
-                list_chems = self.get_chemical_potential(temperature)
-                ind = list_chems.index(float("%4.5f"%(chempot/kjmol))) + 1
-                chems = np.array(list_chems[:ind])*kjmol
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)     
+            if sum:
+                assert self.ncomp > 1, "Sum of densities only supported for multi-component"
+                ncomp_tmp = 1
             else:
-                int_chems = np.sort(np.array(chempots), axis=0)
-                i = bisect_left(int_chems, chempot)
-                chems = int_chems[:i+1]
+                ncomp_tmp = self.ncomp
+            beta = 1/temperature/boltzmann            
+            if list_chems is None:
+                # A list is created of chemical potentials lower than the input, over this list the later integration of n is carried out     
+                list_chems = self.get_chemical_potential(temperature)
+            if list_chems.ndim == 1:
+                matches = np.where(np.isclose(list_chems, chempot, atol=1e-8))[0]
+            else:
+                matches = np.where(np.all(np.isclose(list_chems, chempot, atol=1e-8), axis=1))[0]
+            if matches.size == 0:
+                raise ValueError("Target chemical potential not found.")
+            ind = matches[0] + 1
+            chems = list_chems[:ind]
+
             assert chems.shape[0] > 0, f'No chemical potentials lower than {chempot/kjmol}kJ/mol found, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
             assert np.isclose(chems[-1], chempot).all(), f'The last chemical potential in the list must be equal to the input chemical potential, {chempot/kjmol}kJ/mol, but the last chemical potential in the list is {chems[-1]/kjmol}kJ/mol, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
-            assert (chems <= chempot).all(), f'All chemical potentials in the list must be lower than the input chemical potential, {chempot/kjmol}kJ/mol, but the last chemical potential in the list is {chems[-1]/kjmol}kJ/mol, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
             
             #if the provided list is too long, it is shortened to the maximum number of chemical potentials
             if len(chems)>max_n_chems and max_n_chems != 0:
@@ -1186,11 +1264,14 @@ class Calculator(object):
                 proj_data = np.loadtxt(proj_fn, delimiter=',', skiprows=1).T
                 q_list = proj_data[0]
                 n_proj = proj_data[1:]
+                if sum:
+                    n_proj = np.atleast_2d(np.sum(n_proj, axis=0))
+                    print(n_proj.shape)
                 n_proj_prev_mu_list.append(n_proj)
             n_proj_prev_mu_list = np.array(n_proj_prev_mu_list)
             q_len = q_list.shape[0]
-            omega_list =  np.empty((q_len, self.ncomp), dtype=np.float64)
-            free_list =  np.empty((q_len, self.ncomp), dtype=np.float64)
+            omega_list =  np.empty((q_len, ncomp_tmp), dtype=np.float64)
+            free_list =  np.empty((q_len, ncomp_tmp), dtype=np.float64)
 
             #collect the previous projected densities and grand potentials
             dens_omega_fn = self.workdir / f'loading_grand_potential_{temperature:#7.5f}K.npz'
@@ -1200,7 +1281,7 @@ class Calculator(object):
             mu_list = dens_omega_list['mu']
             prev_loadings = dens_omega_list['loading']
             prev_omegas = dens_omega_list['omega']
-            selected_loading_list = np.zeros((len(it_chems), self.ncomp))
+            selected_loading_list = np.zeros((len(it_chems), prev_loadings.shape[1]))
             selected_omega_list = np.zeros(len(it_chems))
             # check if the chemical potentials are present in the previous densities and grand potentials file, then collect those densities and grand potentials
             for i, it_mu in enumerate(it_chems):
@@ -1214,25 +1295,33 @@ class Calculator(object):
             for e in range(q_len):
                 n_list_per_mu = n_proj_prev_mu_list[:,:, e]
                 omega_list[e] = -(logsumexp(grand_potential_list[:,None], b=n_list_per_mu, axis=0) + np.log(beta))/beta
-                free_list[e] = omega_list[e] + selected_loading_list[-1]*chempot
-            data_size = self.ncomp * 3 + 1
+                if sum:
+                    free_list[e] = omega_list[e] + np.sum(selected_loading_list[-1]*chempot)
+                else:
+                    free_list[e] = omega_list[e] + selected_loading_list[-1]*chempot
+            data_size = ncomp_tmp * 3 + 1
             data = np.empty((data_size,q_len))
             data[0] = q_list
-            data[1:self.ncomp+1] = n_proj_prev_mu_list[-1]
-            data[self.ncomp+1:self.ncomp*2 + 1] = omega_list.T
-            data[self.ncomp*2 + 1:] = free_list.T
+            data[1:ncomp_tmp+1] = n_proj_prev_mu_list[-1]
+            data[ncomp_tmp+1:ncomp_tmp*2 + 1] = omega_list.T
+            data[ncomp_tmp*2 + 1:] = free_list.T
+
             file_sufix = get_file_suffix(chempot, temperature)
             if fn is None:
-                fn = self.workdir / f'free_energy_profile_{file_sufix}.csv'
+                if sum:
+                    f_name = f'sum_free_energy_profile_{file_sufix}.csv'
+                else:
+                    f_name = f'free_energy_profile_{file_sufix}.csv'
+                fn = self.workdir / f_name
             else: 
                 fn = self.workdir / fn
 
             header = 'cv'
-            if self.ncomp == 1:
+            if ncomp_tmp == 1:
                 header = 'cv, density, grand canonical potential, free energy'
             else:
                 for name in ['density', 'grand canonical potential', 'free energy']:
-                    for c in range(self.ncomp):
+                    for c in range(ncomp_tmp):
                         header += f', {name} {self.guest.names[c]}'
             log.dump(f'Calculated the free energy profile and saved at {fn}')
             np.savetxt(fn, data.T, delimiter=',', header = header)        
@@ -1250,7 +1339,7 @@ class Calculator(object):
         subdirs = [d for d in base_dir.iterdir() if d.is_dir()]
         self.dir_list = [d for d in subdirs if str(d.name).isnumeric()]
 
-    def average_rho(self, chempots, temperature, *args, **kwargs):
+    def average_rho(self, temperature, chempots=None, pressures=None, *args, **kwargs):
         """
         Average density files across subdirectories for given chemical potentials and temperatures.
 
@@ -1269,6 +1358,7 @@ class Calculator(object):
             If density files are missing in subdirectories.
         """
         with log.section('CALCULATOR', 2, timer=None):
+            chempots = self.get_chempot_from_pressures(temperature, chempots, pressures)
             if not hasattr(self, 'dir_list'):
                 self.find_subdirectories()
             
@@ -1289,7 +1379,7 @@ class Calculator(object):
                     fn = self.workdir / f'rho_{file_suffix}.npy'
                     np.save(fn, avg_rho) 
         
-    def average_projected_density(self, chempots, temperature):
+    def average_projected_density(self, temperature, chempots=None, pressures=None):
         """
         Average projected density files across subdirectories for given chemical potentials and temperatures.
 
@@ -1306,6 +1396,7 @@ class Calculator(object):
             If projected density or loading files are missing.
         """
         with log.section('CALCULATOR', 2, timer=None):
+            chempots = self.get_chempot_from_pressures(temperature, chempots, pressures)
             if not hasattr(self, 'dir_list'):
                 self.find_subdirectories()
             
@@ -1354,7 +1445,7 @@ class Calculator(object):
                 fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.npz'
                 np.savez(fn, mu=chempots, loading=avg_loadings, omega=avg_omegas)
 
-    def contribution_approximation(self, temperature, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, pert_size=1e-5, symmetric=False, fn=None):
+    def contribution_approximation(self, contrib_names, cvs, cvs_mat, dist_mask, temperature, chempot=None, pressure=None, supercell=True, pert_size=1e-5, symmetric=False, fn=None):
         """
         Calculate and save projected contributions based on density perturbation.
 
@@ -1383,6 +1474,7 @@ class Calculator(object):
         """
         
         with log.section('CALCULATOR', 2, timer='contributions approximation'):
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
             if not isinstance(contrib_names, list):
                 contrib_names = [contrib_names]
             header = 'cv, density'            
@@ -1413,7 +1505,7 @@ class Calculator(object):
                 elif contrib_name.lower() in ['free_energy', 'grand_potential']:
                     old_contribs[ee] = self.grand_potential(temperature, chempot)
                 else:
-                    old_contribs[ee] = self.free_energy_contrib(temperature, chempot, contrib_name)
+                    old_contribs[ee] = self.free_energy_contrib(temperature, chempot, partname=contrib_name)
 
             for e in range(len(cvs)-1):
                 q_min = cvs[e]
@@ -1469,8 +1561,8 @@ class Calculator(object):
                             old = self.grand_potential(temperature, chempot, rho=neg_rho)/2
                             new = self.grand_potential(temperature, chempot, rho=new_rho)/2
                         else:
-                            old = self.free_energy_contrib(temperature, chempot, contrib_name, rho=neg_rho)/2
-                            new = self.free_energy_contrib(temperature, chempot, contrib_name, rho=new_rho)/2
+                            old = self.free_energy_contrib(temperature, chempot, partname=contrib_name, rho=neg_rho)/2
+                            new = self.free_energy_contrib(temperature, chempot, partname=contrib_name, rho=new_rho)/2
                     else:
                         old = old_contribs[ee]
                         if contrib_name.lower() in ['free_energy', 'grand_potential']:
@@ -1525,7 +1617,7 @@ class Calculator(object):
                 elif contrib_name.lower() in ['free_energy', 'grand_potential']:
                     old_contribs[i] = self.grand_potential(temperature, chempot)
                 else:
-                    old_contribs[i] = self.free_energy_contrib(temperature, chempot, contrib_name)
+                    old_contribs[i] = self.free_energy_contrib(temperature, chempot, partname=contrib_name)
             
             local_contribs = np.zeros((len(contrib_names), npoints[0], npoints[1], npoints[2]))
 
@@ -1544,7 +1636,7 @@ class Calculator(object):
                                     rho[e,ee,eee] -= pert_size
                                     continue
                                 else:
-                                    new = self.free_energy_contrib(temperature, chempot, contrib_name, rho=rho)
+                                    new = self.free_energy_contrib(temperature, chempot, partname=contrib_name, rho=rho)
                                 
                                 local_contribs[i, e, ee, eee] = (new - old_contribs[i])/pert_size
                                 rho[e,ee,eee] -= pert_size
@@ -1625,7 +1717,7 @@ class Calculator(object):
                 Ds = np.nan
                 return Ds
             
-    def external_potential_from_rho(self, chempot, temperature, rho_fn=None, fn=None, limit_potential=1e+4*kjmol):
+    def external_potential_from_rho(self, temperature, chempot=None, pressure=None,  rho_fn=None, fn=None, limit_potential=1e+4*kjmol):
         """
         Calculate the external potential from a given density profile.
 
@@ -1648,6 +1740,7 @@ class Calculator(object):
             If density file is not found.
         """
         with log.section('CALCULATOR', 2, timer='Virt extpot'):
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
             if rho_fn is None:
                 file_suffix = get_file_suffix(chempot, temperature)
                 rho_fn = self.workdir / f'rho_{file_suffix}.npy'

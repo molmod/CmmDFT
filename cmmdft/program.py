@@ -169,6 +169,8 @@ class Program(object):
         assert self.fener is not None, "Free energy must first be initialized using 'init_free_energy'"
         assert isinstance(self.fener, FreeEnergy), "self.fener is not an instance of FreeEnergy, aborting!"
         self.fener.set_temperature(temperature)
+        if hasattr(self, 'eos'):
+            self.eos.set_temperature(temperature)
     
     def calc_distance(self, rewrite=False):
         '''The function calculates a distance matrix, this contains the distance of each point to the closest atom 

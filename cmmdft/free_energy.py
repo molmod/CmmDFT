@@ -207,7 +207,7 @@ class FreeEnergy(object):
                 epot.load_potential(fn)  
                 # create a symlink in the workdir to the directory where external potentials are found
                 sym_fn = self.workdir / 'ExtPots'
-                if not sym_fn.is_symlink():
+                if not sym_fn.is_symlink() and (epot_dr.absolute() != self.workdir.absolute()):
                     sym_fn.symlink_to(epot_dr.absolute())    
 
             else:

@@ -99,49 +99,9 @@ class EquationOfState(object):
         self.rho_ref = self.solve_densities_from_pressures([P_ref])[0][0]
         self.mu_ref = self.compute_chempot(self.rho_ref)        
 
-    def compute_chempot(self, rho=None, pressure=None, temperature=None):
-        """
-        Compute the chemical potential, input can be density or pressure
-
-        Parameters
-        ----------
-        rho : float or array-like, optional
-            Density in atomic units.
-        pressure : float or array-like, optional
-            Pressure in au.
-        temperature : float, optional
-            Temperature in Kelvin.
-
-        Returns
-        -------
-        float or ndarray
-            Chemical potential in atomic units (Hartree).
-
-        Raises
-        ------
-        ValueError
-            If neither rho nor pressure is provided.
-        """
-        
-        if temperature is not None:
-            s_temp = getattr(self, 'temperature', None)
-            if s_temp != temperature:
-                self.set_temperature(temperature)
-
-        if rho is not None:    
-            kT = boltzmann*self.temperature
-            return kT*np.log(self.wvl**3*rho) + self.derivative_excess_free_energy_volume(rho)
-        
-        elif pressure is not None:
-            rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmax(rho, axis=1)
-            return self.compute_chempot(rho=rho, temperature=self.temperature)
-        else:
-            raise ValueError('Either rho or pressure must be provided')
-        
     def ideal_free_energy(self, rho):
         kT = boltzmann * self.temperature
-        return kT * ( np.log(self.wvl**3 * rho) -1)
+        return kT * ( np.log(self.wvl**3 * rho) - 1)
         
     def gibbs_free_energy_per_particle(self, rho):
         """Compute g = f + P/rho"""
@@ -181,6 +141,47 @@ class EquationOfState(object):
         f_ex = self.excess_free_energy_particle(rho)
         return f_ideal + f_ex    
 
+    def compute_chempot(self, rho=None, pressure=None, temperature=None):
+        """
+        Compute the chemical potential, input can be density or pressure
+
+        Parameters
+        ----------
+        rho : float or array-like, optional
+            Density in atomic units.
+        pressure : float or array-like, optional
+            Pressure in au.
+        temperature : float, optional
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        float or ndarray
+            Chemical potential in atomic units (Hartree).
+
+        Raises
+        ------
+        ValueError
+            If neither rho nor pressure is provided.
+        """
+        
+        if temperature is not None:
+            s_temp = getattr(self, 'temperature', None)
+            if s_temp != temperature:
+                self.set_temperature(temperature)
+
+        if rho is not None:    
+            kT = boltzmann*self.temperature
+            return kT*np.log(self.wvl**3*rho) + self.derivative_excess_free_energy_volume(rho)
+        
+        elif pressure is not None:
+            rho = self.solve_densities_from_pressures(pressure)
+            rho = np.nanmin(rho, axis=1)
+            return self.compute_chempot(rho=rho, temperature=self.temperature)
+        else:
+            raise ValueError('Either rho or pressure must be provided')
+        
+
     def compute_excess_chempot(self, rho=None, pressure=None, temperature=None):
         """
         Compute the excess chemical potential (non-ideal contribution), input can be densities or pressures
@@ -215,7 +216,7 @@ class EquationOfState(object):
             return self.derivative_excess_free_energy_volume(rho)
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmax(rho, axis=1)
+            rho = np.nanmin(rho, axis=1)
             return self.compute_excess_chempot(rho=rho, temperature=self.temperature)
         else:
             raise ValueError('Either rho or pressure must be provided')
@@ -258,7 +259,45 @@ class EquationOfState(object):
             return self.compute_pressure(rho=rho, temperature=self.temperature)
         else:
             raise ValueError('Either rho or chemical potential must be provided')
+        
+    def compute_excess_pressure(self, rho=None, chempot=None, temperature=None):
+        """
+        Compute the pressure.
 
+        Parameters
+        ----------
+        rho : float or array-like, optional
+            Density in au.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+
+        temperature : float, optional
+            Temperature in Kelvin.
+        Returns
+        -------
+        float or ndarray
+            Pressure in au.
+
+        Raises
+        ------
+        ValueError
+            If neither rho nor chempot is provided.
+        """
+        
+        if temperature is not None:
+            s_temp = getattr(self, 'temperature', None)
+            if s_temp != temperature:
+                self.set_temperature(temperature)
+        if rho is not None:    
+            kT = boltzmann*self.temperature
+            return rho**2*self.derivative_excess_free_energy_particle(rho)
+        elif chempot is not None:
+            rho = self.solve_densities_from_chempots(chempot)
+            rho = np.nanmin(rho, axis=1)
+            return self.compute_excess_pressure(rho=rho, temperature=self.temperature)
+        else:
+            raise ValueError('Either rho or chemical potential must be provided')
+        
     def compute_fugacity(self, temperature=None, rho=None, chempot=None, pressure=None, P_ref=1*bar):
         """
         Compute the fugacity, calculated at a given temperature. Inputs can be densities, pressures or chemical potentials.
@@ -305,7 +344,7 @@ class EquationOfState(object):
             return self.P_ref * np.exp((chempot-self.mu_ref)/(kT))
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmax(rho, axis=1)
+            rho = np.nanmin(rho, axis=1)
             mu = self.compute_chempot(rho)
             
             if not hasattr(self, 'P_ref'):
@@ -452,7 +491,7 @@ class EquationOfState(object):
                 
         return densities
 
-    def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=5000):
+    def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000):
         r"""
         Solve EOS for density as function of pressure at fixed temperature.
 
@@ -504,7 +543,10 @@ class EquationOfState(object):
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
+            # densities[i,0] = np.nanmin(solutions)            
             # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+            # densities[i,:len(solutions)] = np.array(sorted(solutions))
+            # densities[i,0] = np.nanmin(solutions)
             if len(solutions) > 0:
                 stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
                 densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
@@ -684,7 +726,25 @@ class EOS_MIX(EquationOfState):
             assert rho.shape[0]==self.ncomp, 'For a mixture, rho should be an array with shape (ncomp, ...)'
             rho_sum = np.sum(rho, axis=0)
             x = rho/rho_sum
-        return rho, rho_sum, x       
+        return rho, rho_sum, x     
+      
+    def set_reference_state(self, P_ref=1*bar):
+        """
+        Set reference state for fugacity calculations.
+
+        Parameters
+        ----------
+        P_ref : float, optional
+            Reference pressure, default 1 bar.
+
+        Returns
+        -------
+        None
+        """
+        self.P_ref = P_ref*self.homogeneous_fraction
+        self.T_ref = self.temperature
+        self.rho_ref = self.solve_densities_from_pressures([P_ref])[0][0]
+        self.mu_ref = self.compute_chempot(self.rho_ref)    
 
     def ideal_free_energy(self, rho):
         kT = boltzmann * self.temperature
@@ -742,7 +802,7 @@ class EOS_MIX(EquationOfState):
             return ideal.T + excess_mu
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmax(rho, axis=1)
+            rho = np.nanmin(rho, axis=1)
             return self.compute_chempot(rho=rho, temperature=self.temperature)
         else:
             raise ValueError('Either rho or pressure must be provided')
@@ -825,7 +885,7 @@ class EOS_MIX(EquationOfState):
             return kT*rho_sum + rho_sum**2*self.derivative_excess_free_energy_particle(rho_sum)
         elif chempot is not None:
             rho = self.solve_densities_from_chempots(chempot)
-            rho = np.nanmax(rho, axis=1)
+            rho = np.nanmin(rho, axis=1)
             return self.compute_pressure(rho=rho, temperature=self.temperature)
     
     def compute_partial_pressure(self, rho):
@@ -2588,7 +2648,7 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
         Binary interaction correction matrix, shape (ncomp, ncomp).
     m_mix : float
         Mixture segment number.
-    sigma_mix : ndarray
+    sigmaix : ndarray
         Binary sigma mixing matrix, shape (ncomp, ncomp).
     epsilon_mix : ndarray
         Binary epsilon mixing matrix, shape (ncomp, ncomp).
@@ -2615,7 +2675,7 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
             Segment numbers, shape (ncomp,).
         x : array-like
             Mole fractions, shape (ncomp,).
-        kij : ndarray, optional
+        kij : ndarray or float, optional
             Binary interaction corrections, shape (ncomp, ncomp); defaults to zeros.
         CS_HS : bool, optional
             If True, use Carnahan-Starling for hard-sphere, default False.
@@ -2633,10 +2693,16 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
         self.ncomp = len(x) # number of components
         EOS_MIX.__init__(self, self.ncomp, homogeneous=True, homogeneous_fraction=self.x)
         if kij is None:
-            self.kij = np.zeros((self.ncomp,self.ncomp))
+            self.kij = np.zeros((self.ncomp, self.ncomp))
         else:
-            self.kij = np.array(kij)
-        assert self.kij.shape == (self.ncomp,self.ncomp), 'kij should be a square matrix with size equal to number of components'
+            if isinstance(kij, np.ndarray):
+                assert kij.shape == (self.ncomp, self.ncomp)
+                assert np.allclose(kij, kij.T), 'kij should be symmetric'
+                assert np.all(np.diag(kij) == 0), 'diagonal elements of kij should be zero'
+                self.kij = kij
+            else:
+                assert self.ncomp == 2, 'kij should be given as matrix for mixtures with more than 2 components'
+                self.kij = np.array([[0.0, kij],[kij, 0.0]])
         assert self.sigma.shape == (self.ncomp,), 'sigma should be a list/array with length equal to number of components'
         assert self.epsilon.shape == (self.ncomp,), 'epsilon should be a list/array with length equal to number of components'
         assert self.m.shape == (self.ncomp,), 'm should be a list/array with length equal to number of components'
@@ -2690,7 +2756,7 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
     
     def _get_mixture_parameters(self, temperature):
         """
-        Compute mixture parameters (m_mix, sigma_mix, epsilon_mix) and reduced dispersion.
+        Compute mixture parameters (m_mix, sigmaix, epsilon_mix) and reduced dispersion.
 
         Parameters
         ----------
@@ -2709,7 +2775,7 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
         kij = self.kij
         #compute mixture parameters
         self.m_mix = np.sum(x*m)
-        self.sigma_mix = np.zeros((self.ncomp,self.ncomp))
+        self.sigmaix = np.zeros((self.ncomp,self.ncomp))
         self.epsilon_mix = np.zeros((self.ncomp,self.ncomp))
         self.m2_eps_sig3 = 0
         self.m2_eps2_sig3 = 0
@@ -2717,7 +2783,7 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
             for j in range(self.ncomp):
                 sig_ij = 0.5*(sigma[i]+sigma[j])
                 eps_ij = np.sqrt(epsilon[i]*epsilon[j])*(1-kij[i,j])
-                self.sigma_mix[i,j] = sig_ij
+                self.sigmaix[i,j] = sig_ij
                 self.epsilon_mix[i,j] = eps_ij
                 self.m2_eps_sig3 += x[i]*m[i]*x[j]*m[j]*(eps_ij/boltzmann/temperature)*sig_ij**3
                 self.m2_eps2_sig3 += x[i]*m[i]*x[j]*m[j]*(eps_ij/boltzmann/temperature)**2*sig_ij**3
@@ -2779,7 +2845,7 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
         dm2_eps2_sig3_dx = np.zeros(self.ncomp)
         for k in range(self.ncomp):
             for j in range(self.ncomp):
-                sig_kj = self.sigma_mix[k,j]
+                sig_kj = self.sigmaix[k,j]
                 eps_kj = self.epsilon_mix[k,j]
                 dm2_eps_sig3_dx[k] += 2*self.x[j]*self.m[k]*self.m[j]*(eps_kj/boltzmann/self.temperature)*sig_kj**3
                 dm2_eps2_sig3_dx[k] += 2*self.x[j]*self.m[k]*self.m[j]*(eps_kj/boltzmann/self.temperature)**2*sig_kj**3
@@ -2906,4 +2972,390 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
         dfchain = self._derivative_chain_contribution(rho, zeta2, zeta3)
         dfdisp = self._derivative_dispersion_contribution(rho, eta)
         return kT*(dfhs + dfchain + dfdisp)
+
+SQRT2 = np.sqrt(2)
+
+class PengRobinsonEOS(EquationOfState):
+    """
+    Peng-Robinson equation of state.
+
+    Attributes
+    ----------
+    a : float
+        Attractive parameter (in consistent units).
+    b : float
+        Repulsive parameter (covolume).
+    name : str
+        Identifier 'PR'.
+    """
+
+    name = 'PR'
+
+    def __init__(self, mass, Tc, Pc, omega):
+        """
+        Construct PR EOS from critical properties at a given temperature.
+
+        Parameters
+        ----------
+        Tc : float
+            Critical temperature [K].
+        Pc : float
+            Critical pressure
+        omega : float
+            Acentric factor [-].
+        T : float
+            Temperature at which to evaluate a(T) [K].
+
+        Returns
+        -------
+        PengRobinsonEOS
+        """
+        EquationOfState.__init__(self, mass)
+        self.Tc = Tc
+        self.Pc = Pc
+        self.omega = omega
+        self.kappa = 0.37464 + (1.54226 - 0.26992 * omega) * omega
+        self.ac = 0.45724 * (boltzmann * Tc)**2 / Pc
+
+        self.b = 0.07780 * boltzmann * Tc / Pc
+
+    def set_temperature(self, temperature):
+        alpha = (1.0 + self.kappa * (1.0 - np.sqrt(temperature / self.Tc)))**2
+        self.a = self.ac * alpha
+        super().set_temperature(temperature)
+
+    def get_rough_density_grid(self, npoints):
+        """
+        Generate a logarithmic density grid for practically accessible range.
+
+        Parameters
+        ----------
+        npoints : int
+            Number of grid points.
+
+        Returns
+        -------
+        ndarray
+            Density grid avoiding singularities in np.log arguments.
+        """
+        log_start = -15
+        # Upper bound from (1 - b_m * rho) > 0  =>  rho < 1/b_m
+        # and (1 + 2*b_m*rho - b_m^2*rho^2) > 0  =>  rho < (1 + sqrt(2))/b_m
+        # the first condition is always more restrictive
+        rho_max = 1.0 / self.b
+        log_end = np.log10(rho_max) - 0.01
+        return np.logspace(log_start, log_end, npoints)
+
+    def excess_free_energy_particle(self, rho):
+        kT = boltzmann * self.temperature
+        b, a = self.b, self.a
+        return (-kT * np.log(1.0 - b * rho)
+                - a / (2 * SQRT2 * b)
+                * np.log((1.0 + (1.0 + SQRT2) * b * rho)
+                         / (1.0 + (1.0 - SQRT2) * b * rho)))
+
+    def derivative_excess_free_energy_particle(self, rho):
+        kT = boltzmann * self.temperature
+        b, a = self.b, self.a
+        return (kT * b / (1.0 - b * rho)
+                - a / (1.0 + 2.0 * b * rho - b**2 * rho**2))
+
+    def derivative2_excess_free_energy_particle(self, rho):
+        kT = boltzmann * self.temperature
+        b, a = self.b, self.a
+        return (kT * b**2 / (1.0 - b * rho)**2
+                + 2.0 * a * (b - b**2 * rho) / (1.0 + 2.0 * b * rho - b**2 * rho**2)**2)
+
+    def derivative3_excess_free_energy_particle(self, rho):
+        kT = boltzmann * self.temperature
+        b, a = self.b, self.a
+        denom = (1.0 + 2.0 * b * rho - b**2 * rho**2)
+        return (2.0 * kT * b**3 / (1.0 - b * rho)**3
+                + 2.0 * a * b**2 * (3.0 * b**2 * rho**2 - 6.0 * b * rho - 1.0)
+                  / denom**3)
+
+
+class PengRobinsonMixEOS(PengRobinsonEOS, EOS_MIX):
+    """
+    Peng-Robinson equation of state for mixtures.
+
+    Uses van der Waals one-fluid mixing rules.
+
+    Attributes
+    ----------
+    a_ij : np.ndarray
+        Matrix of cross-interaction parameters, shape (n, n).
+    b_i : np.ndarray
+        Array of covolume parameters for each component.
+    name : str
+        Identifier 'PR-mix'.
+    """
+
+    name = 'PR-mix'
+
+    def __init__(self, mass, Tc, Pc, omega, x, kij=None):
+        """
+        Initialize Peng-Robinson mixture EOS.
+        Construct PR mixture EOS from critical properties.
+
+        Parameters
+        ----------
+        Tc : np.ndarray
+            Critical temperatures, shape (n,) [K].
+        Pc : np.ndarray
+            Critical pressures, shape (n,) [Pa].
+        omega : np.ndarray
+            Acentric factors, shape (n,) [-].
+        T : float
+            Temperature [K].
+        k_ij : np.ndarray, optional
+            Binary interaction parameters, shape (n, n). Defaults to zeros.
+
+        Returns
+        -------
+        PengRobinsonMixtureEOS
+        """
+        self.mass = np.asarray(mass)
+        self.Tc = np.asarray(Tc)
+        self.Pc = np.asarray(Pc)
+        self.omega = np.asarray(omega)
+        self.ncomp = len(Tc)
+
+        self.kappa = 0.37464 + (1.54226 - 0.26992 * self.omega) * self.omega
+        self.ac = 0.45724 * (boltzmann * self.Tc)**2 / self.Pc
+        self.b_i = 0.07780 * boltzmann * self.Tc / self.Pc
+
+        if kij is None:
+            self.kij = np.zeros((self.ncomp, self.ncomp))
+        else:
+            if isinstance(kij, np.ndarray):
+                assert kij.shape == (self.ncomp, self.ncomp)
+                assert np.allclose(kij, kij.T), 'kij should be symmetric'
+                assert np.all(np.diag(kij) == 0), 'diagonal elements of kij should be zero'
+                self.kij = kij
+            else:
+                assert self.ncomp == 2, 'kij should be given as matrix for mixtures with more than 2 components'
+                self.kij = np.array([[0.0, kij],[kij, 0.0]])
+        self.x = x
+        EOS_MIX.__init__(self, self.ncomp, homogeneous=True, homogeneous_fraction=self.x)
     
+    def set_temperature(self, temperature):
+        self.temperature = temperature
+        self.wvl = planck/np.sqrt(2*np.pi*(self.mass)*boltzmann*temperature)
+
+        alpha = (1.0 + self.kappa * (1.0 - np.sqrt(temperature / self.Tc)))**2
+        a_i = self.ac * alpha
+        self.ai = a_i
+        self.a_ij = np.sqrt(np.outer(a_i, a_i)) * (1.0 - self.kij)
+        self.a = self.x @ self.a_ij @ self.x
+        self.b = np.dot(self.x, self.b_i)
+
+    def _drhoi_excess_free_energy_particle(self, rho):
+        rho = np.atleast_1d(rho)
+        kT = boltzmann * self.temperature
+        br = self.b * rho
+
+        # Correct composition derivatives
+        a_i_mix = self.a_ij @ self.x            # shape (ncomp,)
+        da_drhoi = 2.0 * (a_i_mix - self.a)[:, None] / rho
+        db_drhoi = (self.b_i - self.b)[:, None] / rho
+
+        f1 = 1.0 + (1.0 + SQRT2) * br
+        f2 = 1.0 + (1.0 - SQRT2) * br
+        denom = (1 + 2*br - br**2)
+        log_term = np.log(f1 / f2)
+
+        df_drho = kT * self.b / (1.0 - br) - self.a / denom
+        df_da = -log_term / (2.0 * SQRT2 * self.b)
+        df_db = (kT * rho / (1.0 - br)
+                + self.a * log_term / (2.0 * SQRT2 * self.b**2)
+                - self.a * rho / (self.b * denom))
+        return (df_drho[None, :]
+                + df_da[None, :] * da_drhoi
+                + df_db[None, :] * db_drhoi)
+    
+class SoaveRedlichKwongEOS(EquationOfState):
+    """
+    Soave-Redlich-Kwong equation of state.
+
+    P = kT / (v - b) - a(T) / (v * (v + b))
+
+    Attributes
+    ----------
+    a : float
+        Temperature-dependent attractive parameter.
+    b : float
+        Repulsive parameter (covolume).
+    name : str
+        Identifier 'SRK'.
+    """
+
+    name = 'SRK'
+
+    def __init__(self, mass, Tc, Pc, omega):
+        """
+        Construct SRK EOS from critical properties.
+
+        Parameters
+        ----------
+        mass : float
+            Molecular mass [kg].
+        Tc : float
+            Critical temperature [K].
+        Pc : float
+            Critical pressure [Pa].
+        omega : float
+            Acentric factor [-].
+        """
+        EquationOfState.__init__(self, mass)
+        self.Tc = Tc
+        self.Pc = Pc
+        self.omega = omega
+        self.kappa = 0.480 + (1.574 - 0.176 * omega) * omega
+        self.ac = 0.42748 * (boltzmann * Tc)**2 / Pc
+        self.b = 0.08664 * boltzmann * Tc / Pc
+
+    def set_temperature(self, temperature):
+        alpha = (1.0 + self.kappa * (1.0 - np.sqrt(temperature / self.Tc)))**2
+        self.a = self.ac * alpha
+        super().set_temperature(temperature)
+
+    def get_rough_density_grid(self, npoints):
+        """
+        Generate a logarithmic density grid for practically accessible range.
+
+        Parameters
+        ----------
+        npoints : int
+            Number of grid points.
+
+        Returns
+        -------
+        ndarray
+            Density grid avoiding singularities in np.log arguments.
+        """
+        log_start = -15
+        # Upper bound from (1 - b*rho) > 0  =>  rho < 1/b
+        rho_max = 1.0 / self.b
+        log_end = np.log10(rho_max) - 0.01
+        return np.logspace(log_start, log_end, npoints)
+
+    def excess_free_energy_particle(self, rho):
+        kT = boltzmann * self.temperature
+        b, a = self.b, self.a
+        return (-kT * np.log(1.0 - b * rho)
+                - (a / b) * np.log(1.0 + b * rho))
+
+    def derivative_excess_free_energy_particle(self, rho):
+        kT = boltzmann * self.temperature
+        b, a = self.b, self.a
+        return (kT * b / (1.0 - b * rho)
+                - a / (1.0 + b * rho))
+
+    def derivative2_excess_free_energy_particle(self, rho):
+        kT = boltzmann * self.temperature
+        b, a = self.b, self.a
+        return (kT * b**2 / (1.0 - b * rho)**2
+                + a * b**2 / (1.0 + b * rho)**2)
+
+    def derivative3_excess_free_energy_particle(self, rho):
+        kT = boltzmann * self.temperature
+        b, a = self.b, self.a
+        return (2.0 * kT * b**3 / (1.0 - b * rho)**3
+                - 2.0 * a * b**3 / (1.0 + b * rho)**3)
+
+
+class SoaveRedlichKwongMixEOS(SoaveRedlichKwongEOS, EOS_MIX):
+    """
+    Soave-Redlich-Kwong equation of state for mixtures.
+
+    Uses van der Waals one-fluid mixing rules.
+
+    Attributes
+    ----------
+    a_ij : np.ndarray
+        Matrix of cross-interaction parameters, shape (n, n).
+    b_i : np.ndarray
+        Array of covolume parameters for each component.
+    name : str
+        Identifier 'SRK-mix'.
+    """
+
+    name = 'SRK-mix'
+
+    def __init__(self, mass, Tc, Pc, omega, x, kij=None):
+        """
+        Initialize SRK mixture EOS.
+
+        Parameters
+        ----------
+        mass : float or np.ndarray
+            Molecular mass [kg].
+        Tc : np.ndarray
+            Critical temperatures, shape (n,) [K].
+        Pc : np.ndarray
+            Critical pressures, shape (n,) [Pa].
+        omega : np.ndarray
+            Acentric factors, shape (n,) [-].
+        x : np.ndarray
+            Mole fractions, shape (n,) [-].
+        kij : np.ndarray or float, optional
+            Binary interaction parameters, shape (n, n). Defaults to zeros.
+            For a binary mixture a scalar value is accepted.
+        """
+        self.mass = mass
+        self.Tc = np.asarray(Tc)
+        self.Pc = np.asarray(Pc)
+        self.omega = np.asarray(omega)
+        self.ncomp = len(self.Tc)
+
+        self.kappa = 0.480 + (1.574 - 0.176 * self.omega) * self.omega
+        self.ac = 0.42748 * (boltzmann * self.Tc)**2 / self.Pc
+        self.b_i = 0.08664 * boltzmann * self.Tc / self.Pc
+
+        if kij is None:
+            self.kij = np.zeros((self.ncomp, self.ncomp))
+        else:
+            if isinstance(kij, np.ndarray):
+                assert kij.shape == (self.ncomp, self.ncomp)
+                assert np.allclose(kij, kij.T), 'kij should be symmetric'
+                assert np.all(np.diag(kij) == 0), 'diagonal elements of kij should be zero'
+                self.kij = kij
+            else:
+                assert self.ncomp == 2, 'kij should be given as matrix for mixtures with more than 2 components'
+                self.kij = np.array([[0.0, kij], [kij, 0.0]])
+
+        self.x = x
+        EOS_MIX.__init__(self, self.ncomp, homogeneous=True, homogeneous_fraction=self.x)
+
+    def set_temperature(self, temperature):
+        self.temperature = temperature
+        self.wvl = planck / np.sqrt(2 * np.pi * self.mass * boltzmann * temperature)
+
+        alpha = (1.0 + self.kappa * (1.0 - np.sqrt(temperature / self.Tc)))**2
+        a_i = self.ac * alpha
+        self.ai = a_i
+        self.a_ij = np.sqrt(np.outer(a_i, a_i)) * (1.0 - self.kij)
+        self.a = self.x @ self.a_ij @ self.x
+        self.b = np.dot(self.x, self.b_i)
+
+    def _drhoi_excess_free_energy_particle(self, rho):
+        rho = np.atleast_1d(rho)
+        kT = boltzmann * self.temperature
+        br = self.b * rho
+
+        # Composition derivatives of mixture a and b
+        da_drhoi = 2.0 * (self.a_ij @ self.x - self.a)[:, None] / rho   # shape (ncomp, nrho)
+        db_drhoi = (self.b_i - self.b)[:, None] / rho                    # shape (ncomp, nrho)
+
+        log_term = np.log(1.0 + br)
+
+        df_drho = kT * self.b / (1.0 - br) - self.a / (1.0 + br)
+        df_da = -log_term / self.b
+        df_db = (kT * rho / (1.0 - br)
+                 + (self.a / self.b**2) * log_term
+                 - self.a * rho / (self.b * (1.0 + br)))
+
+        return (df_drho[None, :]
+                + df_da[None, :] * da_drhoi
+                + df_db[None, :] * db_drhoi)

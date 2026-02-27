@@ -11,6 +11,7 @@ from itertools import product
 from functools import partial
 from collections import defaultdict
 from pathlib import Path
+import math
 
 import xml.etree.ElementTree as ET
 from ase.io import read
@@ -221,7 +222,7 @@ def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
     else:
         return V
     
-@njit(cache=True, parallel=True)
+@njit
 def _lj_batched(R, sigma, epsilon, cutoff):
     R_shape = R.shape
     R = R.ravel()
@@ -245,7 +246,7 @@ def _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
                   cell_matrix, cell_inv, cutoff):
     N = points.shape[0]
     M = host_pos.shape[0]
-    Vext = np.zeros(N)
+    Vext = np.zeros(N, dtype=np.float64)
 
     for j in range(N):  # parallel over grid points
         v = 0.0
@@ -322,7 +323,6 @@ def _coulomb_batched(R, q_host, q_guest, alpha, rvecs, epsilon_r=1.0, ke=1.0):
     V[mask] = q_prod * erfc_val / r
     
     return V.reshape(R_shape)
-
 
 @njit(cache=True)
 def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, rvecs, epsilon_r=1.0, ke=1):
@@ -404,7 +404,6 @@ def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, rvecs, epsilon_r
         dVdxyz[mask] = dddv_dr3 * rx * ry * rz / (r * r * r)
     
     return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
-
 
 @njit(cache=True)
 def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alpha, kmax, rvecs, inv_rvecs, epsilon_r=1.0, ke=1.0, derivatives=False):
@@ -537,6 +536,21 @@ def compute_ewald_parameters(rvecs, eta=5.0):
     return alpha, kmax
 
 def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
+    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
+
+    sigmas_mixed   = np.array([0.5*(host_ff_dict[aid][0] + sigmaff) for aid in ffatype_ids])
+    epsilons_mixed = np.array([np.sqrt(host_ff_dict[aid][1] * epsilonff) for aid in ffatype_ids])
+    rc6     = (sigmas_mixed / cutoff) ** 6
+    v_shifts = 4 * epsilons_mixed * (rc6**2 - rc6)
+
+    cell_matrix = rvecs.astype(np.float64)
+    cell_inv    = np.linalg.inv(cell_matrix)
+
+    return _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
+                         cell_matrix, cell_inv, cutoff)
+
+
+def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
     """
     Calculate the external potential using Lennard-Jones interactions.
 
@@ -560,7 +574,8 @@ def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, 
     Vext : ndarray
         External potential at each grid point, shape (N,).
     """    
-    
+    orig_shape = points.shape
+    points = points.reshape(-1,3)
     (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
 
     sigmas_mixed   = np.array([0.5*(host_ff_dict[aid][0] + sigmaff) for aid in ffatype_ids])
@@ -572,9 +587,10 @@ def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, 
     cell_inv    = np.linalg.inv(cell_matrix)
 
     return _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
-                         cell_matrix, cell_inv, cutoff)
+                         cell_matrix, cell_inv, cutoff).reshape(orig_shape)
 
-def __get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, guest_charge=0.0, cutoff=12*angstrom, use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
+
+def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, guest_charge=0.0, cutoff=12*angstrom, use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
     """
     Calculate the external potential using Lennard-Jones and optionally Coulomb interactions.
 
@@ -707,7 +723,7 @@ def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff,
         sigma, epsilon = host_ff_dict[atom_id]
         sigma_mixed = 0.5*(sigma + sigmaff)
         epsilon_mixed = np.sqrt(epsilon * epsilonff)
-        
+
         host_position = host_pos[i]
         # apply minimum image convention        
         dr = points - host_position
@@ -1187,8 +1203,8 @@ def precalculate_effective_potential(points, beta, host_data, host_ff_dict, gues
 
 
 def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest_data, guest_ff_dict, tmp_epot_dr, 
-                                    tmp_spacing=0.15*angstrom, cutoff=12*angstrom, max_size=1e+6, max_pot=200*kjmol, 
-                                    degree=11, int_method='tricubic', remove_tmp=True):
+                                    tmp_spacing=0.15*angstrom, cutoff=12*angstrom, max_size=5e+6, max_pot=200*kjmol, 
+                                    degree=11, int_method='trilinear', remove_tmp=True):
         
         cell = Cell(host_data[-1])
         epot_grid = Grid(cell, spacing=tmp_spacing)
@@ -1355,9 +1371,9 @@ def _get_system_data_chk(chk_fn, pars_file):
     kwargs = load_chk(chk_fn)
     pos = kwargs['pos']
     masses_ids = kwargs['masses']
-    ffatypes = list(kwargs['ffatypes'])
+    ffatypes = [str(ff) for ff in kwargs['ffatypes']]
     ffatype_ids = kwargs['ffatype_ids']
-    masses =np.array([masses_ids[ff_id] for ff_id in ffatype_ids])
+    masses = np.array([masses_ids[ff_id] for ff_id in ffatype_ids])
 
     natom = len(pos)
     

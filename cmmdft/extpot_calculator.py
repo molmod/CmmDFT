@@ -1078,43 +1078,34 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
     rel_pos = neutral_pos - COMs[:, None, :]  # (m, natom, 3)
               # (11, 3, 3)
 
-    # --- Allocate per-rotation potential accumulator
-    pot_rot = np.zeros((m, nrot))  # (m, nrot)
+    log_sum = None  # will hold running log-sum-exp
 
-    # --- Loop over rotations (memory-cheap)
     for r in range(nrot):
-        R = rotations[r]  # (3, 3)
+        R = rotations[r]
 
-        # Rotate all atoms for this rotation
-        # rel_pos: (m, natom, 3)
-        # rotated: (m, natom, 3)
         rotated = rel_pos @ R.T + COMs[:, None, :]
 
-        # Accumulate potential for this rotation
         pot_r = np.zeros(m)
+
         for atom_type_id in set(ffatype_ids):
             indices = [i for i, t in enumerate(ffatype_ids) if t == atom_type_id]
             if not indices:
                 continue
 
             generator = epot_generator_dict[ffatypes[atom_type_id]]
-            # Extract all atoms of this type at once
-            # coords: (m, n_atoms_of_type, 3)
-            coords = rotated[:, indices, :]
+            coords = rotated[:, indices, :].reshape(-1, 3)
 
-            # Flatten only atoms (not rotations)
-            coords = coords.reshape(-1, 3)  # (m * n_atoms_of_type, 3)
-
-            vals = generator(coords)  # (m * n_atoms_of_type,)
-
-            # Sum contributions from atoms of this type
+            vals = generator(coords)
             pot_r += vals.reshape(m, -1).sum(axis=1)
 
-        pot_rot[:, r] = pot_r
+        # ---- Streaming log-sum-exp update ----
+        term = np.log(weights[r]) - beta * pot_r  # shape (m,)
 
-    # --- Boltzmann-weighted rotational average
-    log_sum = logsumexp(-beta * pot_rot, b=weights, axis=1)
-
+        if log_sum is None:
+            log_sum = term
+        else:
+            # stable pairwise logaddexp
+            log_sum = np.logaddexp(log_sum, term)
     result = -log_sum / beta  # (m,)
 
     result = np.where(np.isinf(result), limit_potential, result)
@@ -1378,7 +1369,7 @@ def _get_system_data_chk(chk_fn, pars_file):
     kwargs = load_chk(chk_fn)
     pos = kwargs['pos']
     masses_ids = kwargs['masses']
-    ffatypes = list(kwargs['ffatypes'])
+    ffatypes = [str(ff) for ff in kwargs['ffatypes']]
     ffatype_ids = kwargs['ffatype_ids']
     masses = np.array([masses_ids[ff_id] for ff_id in ffatype_ids])
 

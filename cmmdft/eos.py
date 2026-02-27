@@ -3115,7 +3115,7 @@ class PengRobinsonMixEOS(PengRobinsonEOS, EOS_MIX):
         -------
         PengRobinsonMixtureEOS
         """
-        self.mass = mass
+        self.mass = np.asarray(mass)
         self.Tc = np.asarray(Tc)
         self.Pc = np.asarray(Pc)
         self.omega = np.asarray(omega)

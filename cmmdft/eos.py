@@ -491,7 +491,7 @@ class EquationOfState(object):
                 
         return densities
 
-    def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000):
+    def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000, filter=True):
         r"""
         Solve EOS for density as function of pressure at fixed temperature.
 
@@ -544,11 +544,14 @@ class EquationOfState(object):
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
             # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
-            # densities[i,:len(solutions)] = np.array(sorted(solutions))
+            if filter:
+                if len(solutions) > 0:
+                    stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
+                    densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
+            else:
+                index = min(3,len(solutions))
+                densities[i,:index] = np.array(sorted(solutions))
             # densities[i,0] = np.nanmin(solutions)
-            if len(solutions) > 0:
-                stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
-                densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
                 
         return densities
     
@@ -3114,7 +3117,7 @@ class PengRobinsonMixEOS(PengRobinsonEOS, EOS_MIX):
         -------
         PengRobinsonMixtureEOS
         """
-        self.mass = mass
+        self.mass = np.asarray(mass)
         self.Tc = np.asarray(Tc)
         self.Pc = np.asarray(Pc)
         self.omega = np.asarray(omega)

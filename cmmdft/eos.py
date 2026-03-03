@@ -216,7 +216,7 @@ class EquationOfState(object):
             return self.derivative_excess_free_energy_volume(rho)
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmax(rho, axis=1)
+            rho = np.nanmin(rho, axis=1)
             return self.compute_excess_chempot(rho=rho, temperature=self.temperature)
         else:
             raise ValueError('Either rho or pressure must be provided')
@@ -344,7 +344,7 @@ class EquationOfState(object):
             return self.P_ref * np.exp((chempot-self.mu_ref)/(kT))
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmax(rho, axis=1)
+            rho = np.nanmin(rho, axis=1)
             mu = self.compute_chempot(rho)
             
             if not hasattr(self, 'P_ref'):
@@ -543,6 +543,7 @@ class EquationOfState(object):
                 for interval in density_intervals[i]:
                     sol = brentq(fun, interval[0], interval[1])
                     solutions.append(sol)
+            # densities[i,0] = np.nanmin(solutions)            
             # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
             if filter:
                 if len(solutions) > 0:
@@ -804,7 +805,7 @@ class EOS_MIX(EquationOfState):
             return ideal.T + excess_mu
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
-            rho = np.nanmax(rho, axis=1)
+            rho = np.nanmin(rho, axis=1)
             return self.compute_chempot(rho=rho, temperature=self.temperature)
         else:
             raise ValueError('Either rho or pressure must be provided')
@@ -887,7 +888,7 @@ class EOS_MIX(EquationOfState):
             return kT*rho_sum + rho_sum**2*self.derivative_excess_free_energy_particle(rho_sum)
         elif chempot is not None:
             rho = self.solve_densities_from_chempots(chempot)
-            rho = np.nanmax(rho, axis=1)
+            rho = np.nanmin(rho, axis=1)
             return self.compute_pressure(rho=rho, temperature=self.temperature)
     
     def compute_partial_pressure(self, rho):

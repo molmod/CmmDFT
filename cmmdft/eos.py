@@ -491,7 +491,7 @@ class EquationOfState(object):
                 
         return densities
 
-    def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000):
+    def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000, filter=True):
         r"""
         Solve EOS for density as function of pressure at fixed temperature.
 
@@ -545,11 +545,14 @@ class EquationOfState(object):
                     solutions.append(sol)
             # densities[i,0] = np.nanmin(solutions)            
             # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
-            # densities[i,:len(solutions)] = np.array(sorted(solutions))
+            if filter:
+                if len(solutions) > 0:
+                    stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
+                    densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
+            else:
+                index = min(3,len(solutions))
+                densities[i,:index] = np.array(sorted(solutions))
             # densities[i,0] = np.nanmin(solutions)
-            if len(solutions) > 0:
-                stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
-                densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
                 
         return densities
     
@@ -1687,7 +1690,7 @@ class CarnahanStarlingEOS(EquationOfState):
 
     name = 'CS'
     
-    def __init__(self, mass, sigma, epsilon, m=1, hs_approx='exp'):
+    def __init__(self, mass, sigma, epsilon, m=1, hs_approx='bh'):
         """
         Initialize Carnahan-Starling EOS.
 
@@ -1732,7 +1735,7 @@ class CarnahanStarlingEOS(EquationOfState):
         sigma = guest.sigma
         epsilon = guest.epsilon
         m = getattr(guest, 'm', 1)
-        hs_approx = getattr(guest, 'hs_def', 'exp')
+        hs_approx = getattr(guest, 'hs_def', 'bh')
         return cls(mass, sigma, epsilon, m=m, hs_approx=hs_approx, **kwargs)
 
     def set_temperature(self, temperature):

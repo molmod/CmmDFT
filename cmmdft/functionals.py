@@ -268,10 +268,10 @@ class HardSphereFunctional(Functional):
             n2 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[2]), self.m, axes=(0,0))
             n3 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[3]), self.m, axes=(0,0))
 
-            n0 = np.clip(n0, 0, None)
-            n1 = np.clip(n1, 0, None)
-            n2 = np.clip(n2, 0, None)
-            n3 = np.clip(n3, 0, None)
+            # n0 = np.clip(n0, 0, None)
+            # n1 = np.clip(n1, 0, None)
+            # n2 = np.clip(n2, 0, None)
+            # n3 = np.clip(n3, 0, None)
 
             # #When n3 approaches 1, things can go wrong because the functional
             # # contains terms with log(1-n3) and 1/(1-n3)
@@ -932,6 +932,7 @@ class PCSAFTFunctional(Functional):
             Total functional derivative (chain + dispersion contributions)
         """
         with log.section('PC-SAFT', 3, timer='PC-SAFT derive'):
+
             lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(krho)
             dphi_chain = self.derive_chain(rho, lambda_chain, zeta2, zeta3)
             dphi_disp = self.derive_disp(wrho_disp, eta_disp)
@@ -1069,7 +1070,7 @@ class MFAFunctional(Functional):
         """
         if rmin is None: rmin = sigma
         self.potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
-        
+         
         centered = self.grid.points[:,:,:,:3] - self.grid.cell.rvecs.sum(axis=0)/2
         r = np.sqrt(centered[:,:,:,0]**2 + centered[:,:,:,1]**2 + centered[:,:,:,2]**2)
 
@@ -1087,6 +1088,7 @@ class MFAFunctional(Functional):
             pot[~rc_mask] = 0.0  
         self.potential = pot
         self.kpotential = self.grid.fftn(self.potential)*self.grid.sigma_lanczos
+
 
     def derive(self, rho, krho):
         """
@@ -1561,7 +1563,7 @@ class WDAVFunctional(LDAFunctional):
         """
         with log.section('WDA', 3, timer='WDA initialize'):
             k = self.grid.kpoints[:,:,:,3]
-            omega = np.einsum('i,jkl->ijkl', self.D, k, optimize='optimal')
+            omega = np.einsum('i,jkl->ijkl', self.D, k)
             mask = ~np.isclose(omega,0)
             self.kw = np.zeros_like(omega, dtype=np.complex128)
             self.kw[mask] = 3*(np.sin(omega[mask])-omega[mask]*np.cos(omega[mask]))/omega[mask]**3

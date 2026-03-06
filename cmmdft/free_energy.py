@@ -595,8 +595,8 @@ class FreeEnergy(object):
             epsilon = self.system.guest.epsilon
 
             if isinstance(self.system.guest, GuestMixture):
-                MBWR = ModifiedBenedictWebbRubinMixEOS(mass, sigma, epsilon, homogeneous=False)
-                CS = CarnahanStarlingMixEOS(mass, sigma, epsilon, homogeneous=False)
+                MBWR = ModifiedBenedictWebbRubinMixEOS.from_guest(self.system.guest, homogeneous=False)
+                CS = CarnahanStarlingMixEOS.from_guest(self.system.guest, homogeneous=False)
                 if 'MFAMIX' in self.part_names:
                     mfa_part = self.part_dict['MFAMIX']
                     a = mfa_part.compute_vdw_a()
@@ -607,15 +607,16 @@ class FreeEnergy(object):
                 SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
 
             else:
-                MBWR = ModifiedBenedictWebbRubinEOS(mass, sigma, epsilon)
-                CS = CarnahanStarlingEOS(mass, sigma, epsilon)
+                MBWR = ModifiedBenedictWebbRubinEOS.from_guest(self.system.guest)
+                CS = CarnahanStarlingEOS.from_guest(self.system.guest)
+                
                 if 'MFA' in self.part_names:
                     mfa_part = self.part_dict['MFA']
                     a = mfa_part.compute_vdw_a()
                 if a is not None:
                     MFA = MFAEOS(mass, a=a)
                 else:
-                    MFA = MFAEOS(mass, sigma, epsilon)
+                    MFA = MFAEOS.from_guest(self.system.guest)
                 SUM = SumOfEOS(mass, [MBWR, CS, MFA], factors=[1,-1,-1])
 
             corr = WDAVFunctional(self.grid, self.system.guest.Rhs, SUM)

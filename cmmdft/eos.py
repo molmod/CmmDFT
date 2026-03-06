@@ -1690,7 +1690,7 @@ class CarnahanStarlingEOS(EquationOfState):
 
     name = 'CS'
     
-    def __init__(self, mass, sigma, epsilon, m=1, hs_approx='exp'):
+    def __init__(self, mass, sigma, epsilon, m=1, hs_approx='bh'):
         """
         Initialize Carnahan-Starling EOS.
 
@@ -1735,7 +1735,8 @@ class CarnahanStarlingEOS(EquationOfState):
         sigma = guest.sigma
         epsilon = guest.epsilon
         m = getattr(guest, 'm', 1)
-        return cls(mass, sigma, epsilon, m=m, **kwargs)
+        hs_approx = getattr(guest, 'hs_def', 'bh')
+        return cls(mass, sigma, epsilon, m=m, hs_approx=hs_approx, **kwargs)
 
     def set_temperature(self, temperature):
         """

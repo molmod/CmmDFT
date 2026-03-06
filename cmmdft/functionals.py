@@ -193,11 +193,11 @@ class HardSphereFunctional(Functional):
         omega = np.einsum('i,jkl->ijkl', self.R, k)
         mask = ~np.isclose(omega,0)
         
-        kw0 = (sinc(omega) * self.grid.sigma_lanczos[None,...]**2).astype(np.float64)
+        kw0 = (sinc(omega) * self.grid.sigma_lanczos[None,...]).astype(np.float64)
         kw1 = np.einsum('i,ijkl->ijkl', self.R, kw0, dtype=np.float64)
         kw2 = 4.0*np.pi*np.einsum('i,ijkl->ijkl', self.R**2, kw0, dtype=np.float64)
 
-        j2_basis = (sph_bessel_3(omega) * self.grid.sigma_lanczos**2).astype(np.float64)
+        j2_basis = (sph_bessel_3(omega) * self.grid.sigma_lanczos).astype(np.float64)
 
         kw3 = 4*np.pi/3.0*np.einsum('i,ijkl->ijkl', self.R**3, j2_basis, dtype=np.float64)
 
@@ -269,10 +269,10 @@ class HardSphereFunctional(Functional):
             n2 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[2]), self.m, axes=(0,0))
             n3 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[3]), self.m, axes=(0,0))
 
-            n0 = np.clip(n0, 0, None)
-            n1 = np.clip(n1, 0, None)
-            n2 = np.clip(n2, 0, None)
-            n3 = np.clip(n3, 0, None)
+            # n0 = np.clip(n0, 0, None)
+            # n1 = np.clip(n1, 0, None)
+            # n2 = np.clip(n2, 0, None)
+            # n3 = np.clip(n3, 0, None)
 
             # #When n3 approaches 1, things can go wrong because the functional
             # # contains terms with log(1-n3) and 1/(1-n3)
@@ -939,6 +939,7 @@ class PCSAFTFunctional(Functional):
             Total functional derivative (chain + dispersion contributions)
         """
         with log.section('PC-SAFT', 3, timer='PC-SAFT derive'):
+
             lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(krho)
             dphi_chain = self.derive_chain(rho, lambda_chain, zeta2, zeta3)
             dphi_disp = self.derive_disp(wrho_disp, eta_disp)
@@ -1035,6 +1036,7 @@ class MFAFunctional(Functional):
             Van der Waals A parameter
         """
         self.a = 0.5*self.grid.integrate(self.potential)
+        print(self.a)
         return self.a
     
     def dump_potential(self, fn):
@@ -1075,19 +1077,25 @@ class MFAFunctional(Functional):
         """
         if rmin is None: rmin = sigma
         self.potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
-        mask = self.grid.points[:,:,:,3]>rmin
+         
+        centered = self.grid.points[:,:,:,:3] - self.grid.cell.rvecs.sum(axis=0)/2
+        r = np.sqrt(centered[:,:,:,0]**2 + centered[:,:,:,1]**2 + centered[:,:,:,2]**2)
 
-        x = np.zeros(self.grid.points.shape[:3])
-        x[mask] = sigma/self.grid.points[:,:,:,3][mask]
-        self.potential[mask] = 4*epsilon*(x[mask]**12-x[mask]**6)
+        mask = r > rmin
+        pot = np.full(r.shape, limit_potential, dtype=np.float64)
+        x = np.zeros_like(r)
+        x[mask] = sigma / r[mask]
+        pot[mask] = 4*epsilon*(x[mask]**12 - x[mask]**6)
 
         if cutoff is not None:
-            cutoff_mask = self.grid.points[:,:,:,3]>cutoff
-            shift = 4*epsilon*((sigma/cutoff)**12 - (sigma/cutoff)**6)
-            self.potential[cutoff_mask] = shift
-            self.potential[mask] -= shift
-
+            rc_mask = r <= cutoff
+            rc6 = (sigma/cutoff)**6
+            shift = 4*epsilon*(rc6**2 - rc6)
+            pot[rc_mask & mask] -= shift  # shift within cutoff
+            pot[~rc_mask] = 0.0  
+        self.potential = pot
         self.kpotential = self.grid.fftn(self.potential)*self.grid.sigma_lanczos
+
 
     def derive(self, rho, krho):
         """
@@ -1562,7 +1570,7 @@ class WDAVFunctional(LDAFunctional):
         """
         with log.section('WDA', 3, timer='WDA initialize'):
             k = self.grid.kpoints[:,:,:,3]
-            omega = np.einsum('i,jkl->ijkl', self.D, k, optimize='optimal')
+            omega = np.einsum('i,jkl->ijkl', self.D, k)
             mask = ~np.isclose(omega,0)
             self.kw = np.zeros_like(omega, dtype=np.complex128)
             self.kw[mask] = 3*(np.sin(omega[mask])-omega[mask]*np.cos(omega[mask]))/omega[mask]**3

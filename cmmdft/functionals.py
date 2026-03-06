@@ -193,11 +193,11 @@ class HardSphereFunctional(Functional):
         omega = np.einsum('i,jkl->ijkl', self.R, k)
         mask = ~np.isclose(omega,0)
         
-        kw0 = (sinc(omega) * self.grid.sigma_lanczos[None,...]**2).astype(np.float64)
+        kw0 = (sinc(omega) * self.grid.sigma_lanczos[None,...]).astype(np.float64)
         kw1 = np.einsum('i,ijkl->ijkl', self.R, kw0, dtype=np.float64)
         kw2 = 4.0*np.pi*np.einsum('i,ijkl->ijkl', self.R**2, kw0, dtype=np.float64)
 
-        j2_basis = (sph_bessel_3(omega) * self.grid.sigma_lanczos**2).astype(np.float64)
+        j2_basis = (sph_bessel_3(omega) * self.grid.sigma_lanczos[None,...]).astype(np.float64)
 
         kw3 = 4*np.pi/3.0*np.einsum('i,ijkl->ijkl', self.R**3, j2_basis, dtype=np.float64)
 
@@ -238,7 +238,6 @@ class HardSphereFunctional(Functional):
             kwyz = B*(Hyz - 0.0).astype(np.float64)
             kwzz = B*(Hzz - 1/3).astype(np.float64)
 
-
             self.tensor_weight_functions = (kwxx, kwxy, kwxz, kwyy, kwyz, kwzz)
 
 
@@ -276,7 +275,7 @@ class HardSphereFunctional(Functional):
 
             # #When n3 approaches 1, things can go wrong because the functional
             # # contains terms with log(1-n3) and 1/(1-n3)
-            n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n3 is in [0, 1-1e-12]
+            n3 = np.clip(n3, 1e-30,1-1e-10)  # Ensure n3 is in [0, 1-1e-10]
             # # The vector density functions
             nv1 = np.tensordot(self.grid.ifftn(krho[..., None] * self.vector_weight_functions[0]), self.m, axes=(0,0))
             nv2 = np.tensordot(self.grid.ifftn(krho[..., None] * self.vector_weight_functions[1]), self.m, axes=(0,0))
@@ -368,7 +367,7 @@ class HardSphereFunctional(Functional):
             dFk_total += -np.einsum('pijkv,pnijkv->nijk', kdphi_stacked, self.vector_weight_functions)
 
             if self.version[1] == 1:
-                kdphi = self.grid.fftn(_get_dphi_nt(*self.weighted_densities, self.nt, phi3, version=self.version))
+                kdphi = self.grid.fftn(_get_dphi_nt(self.weighted_densities[-2], self.nt, phi3))
                 dFk_total += (kdphi[None,...,0] * self.tensor_weight_functions[0] + kdphi[None,...,1] * self.tensor_weight_functions[1] + kdphi[None,...,2] * self.tensor_weight_functions[2] 
                                + kdphi[None,...,3] * self.tensor_weight_functions[3] + kdphi[None,...,4] * self.tensor_weight_functions[4] + kdphi[None,...,5] * self.tensor_weight_functions[5])
 
@@ -490,24 +489,19 @@ def _get_vector_dphi(n0, n1, n2, n3, nv1, nv2, xi, nt, phi2, phi3, version):
     return np.stack((dphi_nv1, dphi_nv2))
 
 # @njit(cache=True)
-def _get_dphi_nt(n0, n1, n2, n3, nv1, nv2, xi, nt, phi3, version):
+def _get_dphi_nt(nv2, nt, phi3):
     vx, vy, vz = nv2[...,0], nv2[...,1], nv2[...,2]
     xx, xy, xz, yy, yz, zz = nt
 
-    g_xx =  vx*vx - 3*(xx*xx + xy*xy + xz*xz)
-    g_xy = (vx*vy - 3*(xx*xy + yy*xy + xz*yz))*2
-    g_xz = (vx*vz - 3*(xx*xz + zz*xz + xy*yz))*2
-    g_yy =  vy*vy - 3*(yy*yy + xy*xy + yz*yz)
-    g_yz = (vy*vz - 3*(yy*yz + zz*yz + xy*xz))*2
-    g_zz =  vz*vz - 3*(zz*zz + xz*xz + yz*yz)
     grad_nt = np.empty(xx.shape + (6,))
-    grad_nt[...,0] = g_xx
-    grad_nt[...,1] = g_xy
-    grad_nt[...,2] = g_xz
-    grad_nt[...,3] = g_yy
-    grad_nt[...,4] = g_yz
-    grad_nt[...,5] = g_zz
-    # grad_nt = np.stack([g_xx, g_xy, g_xz, g_yy, g_yz, g_zz], axis=-1)
+
+    grad_nt[...,0] =  vx*vx - 3*(xx*xx + xy*xy + xz*xz)     # g_xx
+    grad_nt[...,1] = (vx*vy - 3*(xx*xy + yy*xy + xz*yz))*2  # g_xy    
+    grad_nt[...,2] = (vx*vz - 3*(xx*xz + zz*xz + xy*yz))*2  # g_xz    
+    grad_nt[...,3] =  vy*vy - 3*(yy*yy + xy*xy + yz*yz)     # g_yy
+    grad_nt[...,4] = (vy*vz - 3*(yy*yz + zz*yz + xy*xz))*2  # g_yz    
+    grad_nt[...,5] =  vz*vz - 3*(zz*zz + xz*xz + yz*yz)     # g_zz
+
     return (9/2)*grad_nt*phi3[...,None]
 
 # @njit(cache=True)
@@ -559,11 +553,11 @@ def _get_dphidn(n3, version):
         dphi3 = 1/(12*np.pi*n3_1_3)
     elif version[2] == 1:
         dphi3 = np.where(n3<=1e-8,
-                        (8/3-0.5*n3-0.1*n3_2)/(36*np.pi*n3_1_3),
+                        (5/3-0.5*n3-0.1*n3_2)/(36*np.pi*n3_1_3),
                         -(2*n3-5*n3_2+n3_3+2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
     elif version[2] == 2:
         dphi3 = np.where(n3<=1e-8,
-                        (7/3-n3/2+n3_2/10)/(36*np.pi*n3_1_3),
+                        (10/3-n3/2+n3_2/10)/(36*np.pi*n3_1_3),
                         (2*n3-5*n3_2+6*n3_3-n3_2*n3_2 + 2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
     return dphi1, dphi2, dphi3
 
@@ -681,7 +675,6 @@ class PCSAFTFunctional(Functional):
             elif self.hs_approx == 'bh':
                 Tt = boltzmann*temperature/self.epsilon_mix[i,i]
                 self.dhs[i] = self.sigma_mix[i,i]*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)
-
         self._init_weight_functions()
 
     def _init_weight_functions(self):
@@ -693,13 +686,13 @@ class PCSAFTFunctional(Functional):
         omega = np.einsum('i,jkl->ijkl', self.dhs, k)
 
         self.kwlambda = sinc(omega)
-        self.kwlambda *= self.grid.sigma_lanczos[None,...]**2
+        self.kwlambda *= self.grid.sigma_lanczos[None,...]
 
         self.kwchain = sph_bessel_3(omega)
-        self.kwchain *= self.grid.sigma_lanczos[None,...]**2
+        self.kwchain *= self.grid.sigma_lanczos[None,...]
 
         self.kwdisp = sph_bessel_3(self.psi*omega)
-        self.kwdisp *= self.grid.sigma_lanczos[None,...]**2
+        self.kwdisp *= self.grid.sigma_lanczos[None,...]
 
     def _get_weighted_densities(self, krho):
         """
@@ -767,7 +760,7 @@ class PCSAFTFunctional(Functional):
     def value_chain(self, rho, lambda_chain, zeta2, zeta3):
         phi_chain = 0
         eps = 1e-10
-        z3_1 = 1/(1-zeta3 + eps)
+        z3_1 = 1/(1-zeta3)
         for i in range(len(self.m)):
             yii = self.dhs[i]*zeta2*z3_1*z3_1*(self.dhs[i]*zeta2*z3_1 * 0.5 + 1.5) + z3_1
             ratio = np.clip((lambda_chain[i] + eps) / (rho[i] + eps), 1e-8,1e8)            
@@ -818,7 +811,7 @@ class PCSAFTFunctional(Functional):
 
         for k in range(len(self.m)):
             dk = self.dhs[k]
-            rho_dyik_yii = np.zeros(self.grid.npoints, dtype=np.complex128)
+            rho_dyik_yii = np.zeros(self.grid.npoints, dtype=np.float64)
             for i in range(len(self.m)):
                 di = self.dhs[i]
                 dyidnk = np.pi/6*self.m[k]*dk**2*(3/2*di*z3_2 + di**2*zeta2*z3_2*z3_1)
@@ -1035,6 +1028,7 @@ class MFAFunctional(Functional):
             Van der Waals A parameter
         """
         self.a = 0.5*self.grid.integrate(self.potential)
+
         return self.a
     
     def dump_potential(self, fn):
@@ -1075,18 +1069,23 @@ class MFAFunctional(Functional):
         """
         if rmin is None: rmin = sigma
         self.potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
-        mask = self.grid.points[:,:,:,3]>rmin
+        
+        centered = self.grid.points[:,:,:,:3] - self.grid.cell.rvecs.sum(axis=0)/2
+        r = np.sqrt(centered[:,:,:,0]**2 + centered[:,:,:,1]**2 + centered[:,:,:,2]**2)
 
-        x = np.zeros(self.grid.points.shape[:3])
-        x[mask] = sigma/self.grid.points[:,:,:,3][mask]
-        self.potential[mask] = 4*epsilon*(x[mask]**12-x[mask]**6)
+        mask = r > rmin
+        pot = np.full(r.shape, limit_potential, dtype=np.float64)
+        x = np.zeros_like(r)
+        x[mask] = sigma / r[mask]
+        pot[mask] = 4*epsilon*(x[mask]**12 - x[mask]**6)
 
         if cutoff is not None:
-            cutoff_mask = self.grid.points[:,:,:,3]>cutoff
-            shift = 4*epsilon*((sigma/cutoff)**12 - (sigma/cutoff)**6)
-            self.potential[cutoff_mask] = shift
-            self.potential[mask] -= shift
-
+            rc_mask = r <= cutoff
+            rc6 = (sigma/cutoff)**6
+            shift = 4*epsilon*(rc6**2 - rc6)
+            pot[rc_mask & mask] -= shift  # shift within cutoff
+            pot[~rc_mask] = 0.0  
+        self.potential = pot
         self.kpotential = self.grid.fftn(self.potential)*self.grid.sigma_lanczos
 
     def derive(self, rho, krho):
@@ -1139,7 +1138,7 @@ class MFAFunctional(Functional):
             else:
                 grid = self.grid
 
-            rho = grid.ifftn(krho)
+            # rho = grid.ifftn(krho)
             if local:
                 return 0.5*rho*self.derive(rho, krho)
             else:

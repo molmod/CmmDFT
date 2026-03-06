@@ -803,6 +803,7 @@ def generate_rotation_matrix(degree, dimension):
         return rot_2.transpose(2, 0, 1), 1 / (degree * 4 * np.pi)
         
     elif dimension == 3:
+        # Lebedev grid for (alpha, beta) x uniform gamma
         scheme = AngularGrid(degree=degree)
         xyz = scheme.points
         phi1 = np.arctan2(np.sqrt(xyz[:,1]**2 + xyz[:,0]**2), xyz[:,2])
@@ -1072,14 +1073,25 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
     ffatypes = guest_data[2]
     ffatype_ids = guest_data[3]
 
+    pos -= np.sum(pos * masses, axis=0) / total_mass
+
     # Broadcast neutral positions and COMs
     neutral_pos = pos[None, :, :] + position_shifts[:, None, :]  # (m, natom, 3)
     COMs = np.sum(neutral_pos * masses[None, :, :], axis=1) / total_mass  # (m, 3)
     rel_pos = neutral_pos - COMs[:, None, :]  # (m, natom, 3)
-              # (11, 3, 3)
-
+    COMs_expanded = np.tile(COMs[:, None, :], (1, natom, 1))  # (m, natom, 3)
     log_sum = None  # will hold running log-sum-exp
+    
+    pot_r = np.zeros(m)
+    for atom_type_id in set(ffatype_ids):
+        indices = [i for i, t in enumerate(ffatype_ids) if t == atom_type_id]
+        if not indices:
+            continue
+        generator = epot_generator_dict[ffatypes[atom_type_id]]
+        coords = COMs_expanded[:, indices, :]# (m, natoms_of_type, 3)
+        pot_r += generator(coords.reshape(-1, 3)).reshape(m, -1).sum(axis=1)  # (m,)
 
+    print(pot_r/kjmol)
     for r in range(nrot):
         R = rotations[r]
 
@@ -1099,6 +1111,8 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
             pot_r += vals.reshape(m, -1).sum(axis=1)
 
         # ---- Streaming log-sum-exp update ----
+        pot_r = np.clip(pot_r, None, limit_potential)
+
         term = np.log(weights[r]) - beta * pot_r  # shape (m,)
 
         if log_sum is None:
@@ -1109,6 +1123,7 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
     result = -log_sum / beta  # (m,)
 
     result = np.where(np.isinf(result), limit_potential, result)
+    print(result/kjmol)
 
     return result  # shape: (m,)
 
@@ -1144,7 +1159,8 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
     R1, weights1 = generate_rotation_matrix(degree, 3)
     R2, weights2 = generate_rotation_matrix(degree, 2)
 
-    combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3).astype(np.float32)  # (nrot, 3, 3)
+    # combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3).astype(np.float32)  # (nrot, 3, 3)
+    combined_rot = np.einsum('aik,bkj->abij', R1, R2).reshape(-1, 3, 3).astype(np.float32)  # (nrot, 3, 3)
     expanded_weights = np.repeat(weights1*weights2, len(R2)).astype(np.float32)   # (nrot,)
     
     max_size_shift_rot = max_size

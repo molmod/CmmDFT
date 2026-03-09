@@ -257,95 +257,6 @@ class Program(object):
         assert isinstance(self.fener, FreeEnergy), "self.fener is not an instance of FreeEnergy, aborting!"
         self.fener.set_temperature(temperature)
         if hasattr(self, 'eos'): self.eos.set_temperature(temperature)
-    
-    def calc_distance(self, rewrite=False):
-        """
-        Calculate distances from grid points to nearest framework atoms.
-        
-        Computes the minimum distance from each grid point to any host atom
-        and stores the result. Used for identifying framework regions.
-        
-        Parameters
-        ----------
-        rewrite : bool, optional
-            If True, recompute distances even if file exists. Default is False
-        
-        Notes
-        -----
-        Results are stored in self.dis and cached to file for reuse.
-        Uses minimum image convention for periodic boundary conditions.
-        """
-        dist_file = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['grid_suffix'] / 'distances.npy'
-        if not dist_file.parent.is_dir():
-            dist_file.parent.mkdir()
-        if rewrite:
-            dist_file.unlink()
-        if not dist_file.is_file():
-            atom_pos = self.system.host.atoms.positions
-            points = self.grid.points[...,:3]
-            points_flat = points.reshape(-1, 3)
-            vec = points_flat[:, np.newaxis, :] - atom_pos[np.newaxis, :, :]
-            vec = self.system.host.cell.mic(vec)
-            distances = np.linalg.norm(vec, axis=-1)
-            min_distances = np.amin(distances, axis=-1)
-            self.dis = min_distances.reshape(self.grid.npoints)
-
-            np.save(dist_file, self.dis)
-        else:
-            self.dis = np.load(dist_file)         
-    
-    def calc_regions(self, energy_cutoff=0.55, range_cutoff=3.4*angstrom, mof_cutoff=5):
-        """
-        Identify distinct regions in the nanoporous material.
-        
-        Classifies grid points into three regions based on distance and energy criteria:
-        interaction sites (energetically favorable), framework atoms (blocked), and
-        empty space (unfavorable).
-        
-        Parameters
-        ----------
-        energy_cutoff : float, optional
-            Energy criterion: fraction of minimum potential defining favorable sites.
-            Default is 0.55
-        range_cutoff : float, optional
-            Distance cutoff in Angstrom for empty space classification.
-            Default is 3.4 Angstrom
-        mof_cutoff : float, optional
-            Energy criterion for framework identification in units of k_B*T.
-            Default is 5
-        
-        Returns
-        -------
-        mask_site : ndarray
-            Boolean mask for adsorption sites (energetically favorable)
-        mask_mof : ndarray
-            Boolean mask for framework atoms (blocked regions)
-        mask_empty : ndarray
-            Boolean mask for empty space (unfavorable)
-        
-        Notes
-        -----
-        Requires external potential to be present in free energy.
-        Also sets self.mask_site, self.mask_mof, self.mask_empty attributes.
-        Calls calc_distance() internally if distance matrix not already computed.
-        """
-        self.calc_distance()
-        range_mask = self.dis<range_cutoff
-        index = None
-        for partname in self.fener.part_names:
-            if 'ExtPot' in partname:
-                index = self.fener.part_names.index(partname)
-        if index is None:
-            log.warning('The regions of a nanoporous material can only be calculated if an external potential is defined', label_section='calc_regions')
-        epot_data = self.fener.parts[index].potential
-        crit = np.amin(epot_data) - energy_cutoff*np.amin(epot_data)
-        energy_mask = epot_data<crit        
-        self.r_mask = range_mask
-        self.e_mask = energy_mask
-        self.mask_mof = epot_data>mof_cutoff*boltzmann*self.fener.temperature
-        self.mask_site = (energy_mask + range_mask)*(~self.mask_mof)
-        self.mask_empty = (~energy_mask)*(~range_mask)*(~self.mask_mof)
-        return self.mask_site, self.mask_mof, self.mask_empty    
 
     def _set_initial_density(self, Ninit=None, chempot=None, rewrite=False, silent=False):
         """
@@ -744,8 +655,8 @@ class Program(object):
         self.set_temperature(temperature)
         chempots = self.eos.compute_chempot(pressure=pressures, temperature=temperature)
         rho_b = self.eos.solve_densities_from_pressures(pressures)
-        for chempot in chempots:
-            self.solve(chempot, Ninit=rho_b, **kwargs)
+        for e, chempot in enumerate(chempots):
+            self.solve(chempot, Ninit=np.nanmin(rho_b[e]), **kwargs)
 
 
     def calculate_reference_chemical_potential(self, chempots, silent=True, rewrite=False):

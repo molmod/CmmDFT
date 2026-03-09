@@ -344,7 +344,7 @@ class Solver(object):
             if 'HardSphere' in self.fener.part_names:
                 self._get_n3 = self.fener.part_dict['HardSphere'].get_n3
             else:
-                HS = HardSphereFunctional(self.fener.system.guest.Rhs, self.grid)
+                HS = HardSphereFunctional(self.grid, self.fener.system.guest.Rhs )
                 HS.set_temperature(self.fener.temperature, self.fener.system.guest.Rhs)
                 self._get_n3 = HS.get_n3
         

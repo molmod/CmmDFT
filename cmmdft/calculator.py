@@ -71,6 +71,25 @@ class Calculator(object):
         self.label = label
 
     def set_eos(self, eosname='PCSAFT', eos=None):
+        """
+        Configure the equation of state (EOS) used for bulk thermodynamic
+        calculations.  Either an existing EOS object may be supplied via
+        ``eos`` or a new instance is created based on ``eosname`` and the
+        current guest information.
+
+        Supported EOS names: ``'MBWR'``, ``'CS'``, ``'MFA'`` and ``'PCSAFT'``.
+        For multi-component guests the corresponding mixture EOS class is
+        selected automatically.
+
+        Parameters
+        ----------
+        eosname : str, optional
+            Name of the EOS to instantiate when ``eos`` is not provided.
+            Defaults to ``'PCSAFT'``.
+        eos : EquationOfState, optional
+            Pre-built EOS object.  Must be an instance of
+            ``EquationOfState``.
+        """
         with log.section('PROGRAM', 1, timer='Initializing'):
             if eos is not None:
                 assert isinstance(eos, EquationOfState)
@@ -105,6 +124,36 @@ class Calculator(object):
                 log.dump(f'eos set to {eosname}')
     
     def get_chempot_from_pressures(self, temp, chempot=None, pressure=None):
+        """
+        Return chemical potential(s) corresponding to the supplied temperature
+        and either a chemical potential or a pressure.
+
+        If ``pressure`` is provided and this calculator has an ``eos`` attribute
+        the chemical potential is computed using
+        ``self.eos.compute_chempot``.  If ``chempot`` is given it is returned
+        unchanged.  When both arguments are ``None`` the available chemical
+        potentials for the given ``temp`` are queried from the density files
+        on disk (via :meth:`get_chemical_potential`).
+
+        Parameters
+        ----------
+        temp : float
+            Temperature in Kelvin for any EOS evaluation.
+        chempot : float or array-like, optional
+            Directly specified chemical potential(s) in atomic units.
+        pressure : float or array-like, optional
+            Pressure(s) in the units understood by :attr:`eos`.
+
+        Returns
+        -------
+        float or ndarray
+            Chemical potential(s) in atomic units.
+
+        Raises
+        ------
+        ValueError
+            If ``pressure`` is supplied but no EOS has been initialized.
+        """
         if chempot is None and pressure is not None:
             if hasattr(self, 'eos'):
                 mus = self.eos.compute_chempot(temperature=temp, pressure=pressure)
@@ -121,12 +170,19 @@ class Calculator(object):
         """
         Compute and return average, minimum, maximum, and standard deviation of the density over the grid.
 
+        Chemical potential(s) may be supplied directly via ``chempot`` or, if
+        ``pressure`` is provided and an EOS has been configured, the chemical
+        potential will be computed from the pressure.
+
         Parameters
         ----------
         temp : float
             Temperature in Kelvin.
-        chempot : float or array-like
+        chempot : float or array-like, optional
             Chemical potential in atomic units (Hartree). For multicomponent, an array.
+        pressure : float or array-like, optional
+            Pressure(s) used to derive chemical potentials when ``chempot`` is
+            not given.
 
         Returns
         -------
@@ -150,14 +206,18 @@ class Calculator(object):
     def loading(self, temp, chempot=None, pressure=None, mask=None):
         """
         Integrate the density of the particles over the volume to determine the number of guest particles present.
-        Provide temperature and chemical potential to find the right density file.
+        The correct density file is selected by temperature and chemical
+        potential; the latter may either be provided directly or obtained from a
+        supplied ``pressure`` if an EOS object is available.
 
         Parameters
         ----------
         temp : float
             Temperature in Kelvin.
-        chempot : float or array-like
+        chempot : float or array-like, optional
             Chemical potential in atomic units (Hartree). For multicomponent, an array.
+        pressure : float or array-like, optional
+            Pressure(s) used to derive chemical potentials when ``chempot`` is not given.
         mask : ndarray, optional
             A mask in the shape of the grid to set density outside to 0 and integrate within the mask region.
 
@@ -197,8 +257,11 @@ class Calculator(object):
         ----------
         temp : float
             Temperature in Kelvin
-        chempot : float or array-like
+        chempot : float or array-like, optional
             chemical potential in atomic units (Hartree)
+        pressure : float or array-like, optional
+            Pressure(s) that will be converted to chemical potentials if
+            ``chempot`` is omitted and an EOS is available.
         mbwr: Instance of ModifiedBenedictWebbRubinEOS
 
         Returns
@@ -692,12 +755,18 @@ class Calculator(object):
         """
         Calculate the free energy contribution of a given functional at a specified temperature and chemical potential.
 
+        Chemical potential can be supplied directly or implicitly via ``pressure``
+        (converted when an EOS is available).
+
         Parameters
         ----------
         temperature : float
             Temperature in Kelvin.
-        chempot : float or array-like
+        chempot : float or array-like, optional
             Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) used to derive chemical potentials if ``chempot`` is
+            omitted.
         partname : str
             Name of the energy contribution (e.g., 'fid', 'ExtPot').
         over_loading : bool, optional
@@ -757,12 +826,18 @@ class Calculator(object):
         """
         Calculate the total free energy of the system at a given temperature and chemical potential.
 
+        The chemical potential may be supplied explicitly or determined from
+        ``pressure`` when an EOS is set.
+
         Parameters
         ----------
         temperature : float
             Temperature in Kelvin.
-        chempot : float or array-like
+        chempot : float or array-like, optional
             Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) used to derive chemical potentials if ``chempot`` is
+            omitted.
         local : bool, optional
             If True, return local grid values; else integrated scalar.
 
@@ -781,12 +856,18 @@ class Calculator(object):
         """
         Calculate the excess free energy of the system at a given temperature and chemical potential.
 
+        The chemical potential may be provided directly or obtained from
+        ``pressure`` if available.
+
         Parameters
         ----------
         temperature : float
             Temperature in Kelvin.
-        chempot : float or array-like
+        chempot : float or array-like, optional
             Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) used to derive chemical potentials when ``chempot`` is
+            not supplied.
         local : bool, optional
             If True, return local grid values; else integrated scalar.
         fn : str or Path, optional
@@ -810,12 +891,16 @@ class Calculator(object):
         """
         Calculate the grand potential of the system at a given temperature and chemical potential.
 
+        Chemical potential can be supplied directly or derived from ``pressure``.
+
         Parameters
         ----------
         temperature : float
             Temperature in Kelvin.
-        chempot : float or array-like
+        chempot : float or array-like, optional
             Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) converted to chemical potential if ``chempot`` is absent.
         local : bool, optional
             If True, return local grid values; else integrated scalar.
 
@@ -840,7 +925,54 @@ class Calculator(object):
                                     dist_from_axis=None, supercell=False,
                                     step_dist=0.5*angstrom, cvs_limits=None,
                                     batch_size=16):
+        """
+        Compute a one-dimensional collective variable (CV) field over the grid by
+        projecting atomic positions along a specified diffusion path.
 
+        The projection axis may be given explicitly as a pair of points
+        ``(start, end)`` or inferred from a set of atom indices describing a ring
+        of atoms; in the latter case the principal axis of the ring is used.
+        A mask can be generated to include only points within a given
+        perpendicular distance from the axis.  Optionally the grid may be
+        replicated to form a 3×3×3 supercell before the calculation.
+
+        Parameters
+        ----------
+        diffusion_path : array-like, shape (2,3), optional
+            Start and end coordinates defining the projection axis.
+        ring_indices : sequence of int, optional
+            Atom indices used to infer ``diffusion_path`` when the path itself
+            is not supplied.
+        dist_from_axis : float, optional
+            Maximum perpendicular distance from the axis; points farther
+            away are marked False in the returned mask.
+        supercell : bool, optional
+            If True build and operate on a 3×3×3 supercell of the original
+            grid.  Default is False.
+        step_dist : float, optional
+            Spacing used to construct the discrete CV axis.
+        cvs_limits : tuple of two floats, optional
+            Lower and upper bounds to truncate the CV axis after construction.
+        batch_size : int, optional
+            Number of z‑slices processed in each loop iteration when streaming
+            through the grid.  Larger values use more memory but reduce
+            overhead.
+
+        Returns
+        -------
+        tuple
+            ``(cvs, cvs_mat, dist_mask)`` where:
+
+            * ``cvs`` – 1‑D array of CV bin edges.
+            * ``cvs_mat`` – 3‑D array giving the CV value at every grid point.
+            * ``dist_mask`` – boolean mask indicating points within
+              ``dist_from_axis`` (all True if ``dist_from_axis`` is None).
+
+        Raises
+        ------
+        AssertionError
+            If neither ``diffusion_path`` nor ``ring_indices`` is supplied.
+        """
 
         assert diffusion_path is not None or ring_indices is not None, \
             "Must provide diffusion_path or ring_indices"
@@ -932,12 +1064,18 @@ class Calculator(object):
         """
         Calculate and return the projected density at a given temperature and chemical potential.
 
+        The chemical potential may be provided directly or obtained from
+        ``pressure`` when available.
+
         Parameters
         ----------
         temperature : float
             Temperature in Kelvin.
-        chempot : float or array-like
+        chempot : float or array-like, optional
             Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) converted to chemical potential if ``chempot`` is
+            omitted.
         cvs : array-like
             Collective variables array.
         cvs_mat : ndarray
@@ -1028,12 +1166,17 @@ class Calculator(object):
         """
         Calculate and return the projected density of a specific contribution to the free energy.
 
+        Chemical potential may be supplied directly or via ``pressure``.
+
         Parameters
         ----------
         temperature : float
             Temperature in Kelvin.
-        chempot : float or array-like
+        chempot : float or array-like, optional
             Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) converted to chemical potential if ``chempot`` not
+            provided.
         contrib_names : list of str
             List of contribution names (e.g., 'fid', 'ExtPot').
         cvs : array-like
@@ -1122,12 +1265,18 @@ class Calculator(object):
         """
         Calculate and save the projected density and grand potential at a given temperature and chemical potential.
 
+        Chemical potential may be specified directly or deduced from
+        ``pressure`` using the configured EOS.
+
         Parameters
         ----------
         temperature : float
             Temperature in Kelvin.
-        chempot : float or array-like
+        chempot : float or array-like, optional
             Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) used to compute chemical potential when ``chempot`` is
+            missing.
         fn : str or Path, optional
             Output filename; auto-generated if None.
 
@@ -1195,6 +1344,8 @@ class Calculator(object):
     def free_energy_path(self, temperature, chempot=None, pressure=None, list_chems=None, fn=None, max_n_chems=0, dens_omega_fn=None, sum=False):
         """
         Calculate the free energy profile along a predefined collective variable (CV), which is the projection of the position of a molecule on a diffusion path.
+
+        Chemical potential may be supplied directly or obtained from ``pressure``.
 
         First, two properties are calculated: n(q) (number of molecules with CV q) and p(q) (probability of finding a molecule at CV q).
 
@@ -1769,3 +1920,91 @@ class Calculator(object):
                     effepot_fn.mkdir(parents=True, exist_ok=True)
                     fn = f'{effepot_fn}/eff_epot_{temperature:3.2f}.npy'
             np.save(fn, ext_pot.real)
+
+    
+    def calc_distance(self, rewrite=False):
+        """
+        Calculate distances from grid points to nearest framework atoms.
+        
+        Computes the minimum distance from each grid point to any host atom
+        and stores the result. Used for identifying framework regions.
+        
+        Parameters
+        ----------
+        rewrite : bool, optional
+            If True, recompute distances even if file exists. Default is False
+        
+        Notes
+        -----
+        Results are stored in self.dis and cached to file for reuse.
+        Uses minimum image convention for periodic boundary conditions.
+        """
+        dist_file = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['grid_suffix'] / 'distances.npy'
+        if not dist_file.parent.is_dir():
+            dist_file.parent.mkdir()
+        if rewrite:
+            dist_file.unlink()
+        if not dist_file.is_file():
+            atom_pos = self.host.atoms.positions
+            points = self.grid.points[...,:3]
+            points_flat = points.reshape(-1, 3)
+            vec = points_flat[:, np.newaxis, :] - atom_pos[np.newaxis, :, :]
+            vec = self.host.cell.mic(vec)
+            distances = np.linalg.norm(vec, axis=-1)
+            min_distances = np.amin(distances, axis=-1)
+            self.dis = min_distances.reshape(self.grid.npoints)
+
+            np.save(dist_file, self.dis)
+        else:
+            self.dis = np.load(dist_file)         
+    
+    def calc_regions(self, energy_cutoff=0.55, range_cutoff=3.4*angstrom, mof_cutoff=5):
+        """
+        Identify distinct regions in the nanoporous material.
+        
+        Classifies grid points into three regions based on distance and energy criteria:
+        interaction sites (energetically favorable), framework atoms (blocked), and
+        empty space (unfavorable).
+        
+        Parameters
+        ----------
+        energy_cutoff : float, optional
+            Energy criterion: fraction of minimum potential defining favorable sites.
+            Default is 0.55
+        range_cutoff : float, optional
+            Distance cutoff in Angstrom for empty space classification.
+            Default is 3.4 Angstrom
+        mof_cutoff : float, optional
+            Energy criterion for framework identification in units of k_B*T.
+            Default is 5
+        
+        Returns
+        -------
+        mask_site : ndarray
+            Boolean mask for adsorption sites (energetically favorable)
+        mask_mof : ndarray
+            Boolean mask for framework atoms (blocked regions)
+        mask_empty : ndarray
+            Boolean mask for empty space (unfavorable)
+        
+        Notes
+        -----
+        Requires external potential to be present in free energy.
+        Also sets self.mask_site, self.mask_mof, self.mask_empty attributes.
+        Calls calc_distance() internally if distance matrix not already computed.
+        """
+        self.calc_distance()
+        range_mask = self.dis<range_cutoff
+        index = None
+        for partname in self.fener.part_names:
+            if 'ExtPot' in partname:
+                index = self.fener.part_names.index(partname)
+        if index is None:
+            log.warning('The regions of a nanoporous material can only be calculated if an external potential is defined', label_section='calc_regions')
+        epot_data = self.fener.parts[index].potential
+        crit = np.amin(epot_data) - energy_cutoff*np.amin(epot_data)
+        energy_mask = epot_data<crit     
+        mask_mof = epot_data>mof_cutoff*boltzmann*self.fener.temperature
+        mask_site = (energy_mask + range_mask)*(~self.mask_mof)
+        mask_empty = (~energy_mask)*(~range_mask)*(~self.mask_mof)
+        return mask_site, mask_mof, mask_empty    

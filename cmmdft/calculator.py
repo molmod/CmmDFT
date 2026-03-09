@@ -1266,7 +1266,6 @@ class Calculator(object):
                 n_proj = proj_data[1:]
                 if sum:
                     n_proj = np.atleast_2d(np.sum(n_proj, axis=0))
-                    print(n_proj.shape)
                 n_proj_prev_mu_list.append(n_proj)
             n_proj_prev_mu_list = np.array(n_proj_prev_mu_list)
             q_len = q_list.shape[0]

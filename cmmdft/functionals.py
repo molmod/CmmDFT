@@ -193,11 +193,11 @@ class HardSphereFunctional(Functional):
         omega = np.einsum('i,jkl->ijkl', self.R, k)
         mask = ~np.isclose(omega,0)
         
-        kw0 = (sinc(omega) * self.grid.sigma_lanczos[None,...]**2).astype(np.float64)
+        kw0 = (sinc(omega) * self.grid.sigma_lanczos[None,...]).astype(np.float64)
         kw1 = np.einsum('i,ijkl->ijkl', self.R, kw0, dtype=np.float64)
         kw2 = 4.0*np.pi*np.einsum('i,ijkl->ijkl', self.R**2, kw0, dtype=np.float64)
 
-        j2_basis = (sph_bessel_3(omega) * self.grid.sigma_lanczos**2).astype(np.float64)
+        j2_basis = (sph_bessel_3(omega) * self.grid.sigma_lanczos[None,...]).astype(np.float64)
 
         kw3 = 4*np.pi/3.0*np.einsum('i,ijkl->ijkl', self.R**3, j2_basis, dtype=np.float64)
 
@@ -368,7 +368,7 @@ class HardSphereFunctional(Functional):
             dFk_total += -np.einsum('pijkv,pnijkv->nijk', kdphi_stacked, self.vector_weight_functions)
 
             if self.version[1] == 1:
-                kdphi = self.grid.fftn(_get_dphi_nt(*self.weighted_densities, self.nt, phi3, version=self.version))
+                kdphi = self.grid.fftn(_get_dphi_nt(self.weighted_densities[-2], self.nt, phi3))
                 dFk_total += (kdphi[None,...,0] * self.tensor_weight_functions[0] + kdphi[None,...,1] * self.tensor_weight_functions[1] + kdphi[None,...,2] * self.tensor_weight_functions[2] 
                                + kdphi[None,...,3] * self.tensor_weight_functions[3] + kdphi[None,...,4] * self.tensor_weight_functions[4] + kdphi[None,...,5] * self.tensor_weight_functions[5])
 
@@ -490,24 +490,19 @@ def _get_vector_dphi(n0, n1, n2, n3, nv1, nv2, xi, nt, phi2, phi3, version):
     return np.stack((dphi_nv1, dphi_nv2))
 
 # @njit(cache=True)
-def _get_dphi_nt(n0, n1, n2, n3, nv1, nv2, xi, nt, phi3, version):
+def _get_dphi_nt(nv2, nt, phi3):
     vx, vy, vz = nv2[...,0], nv2[...,1], nv2[...,2]
     xx, xy, xz, yy, yz, zz = nt
 
-    g_xx =  vx*vx - 3*(xx*xx + xy*xy + xz*xz)
-    g_xy = (vx*vy - 3*(xx*xy + yy*xy + xz*yz))*2
-    g_xz = (vx*vz - 3*(xx*xz + zz*xz + xy*yz))*2
-    g_yy =  vy*vy - 3*(yy*yy + xy*xy + yz*yz)
-    g_yz = (vy*vz - 3*(yy*yz + zz*yz + xy*xz))*2
-    g_zz =  vz*vz - 3*(zz*zz + xz*xz + yz*yz)
     grad_nt = np.empty(xx.shape + (6,))
-    grad_nt[...,0] = g_xx
-    grad_nt[...,1] = g_xy
-    grad_nt[...,2] = g_xz
-    grad_nt[...,3] = g_yy
-    grad_nt[...,4] = g_yz
-    grad_nt[...,5] = g_zz
-    # grad_nt = np.stack([g_xx, g_xy, g_xz, g_yy, g_yz, g_zz], axis=-1)
+
+    grad_nt[...,0] =  vx*vx - 3*(xx*xx + xy*xy + xz*xz)     # g_xx
+    grad_nt[...,1] = (vx*vy - 3*(xx*xy + yy*xy + xz*yz))*2  # g_xy    
+    grad_nt[...,2] = (vx*vz - 3*(xx*xz + zz*xz + xy*yz))*2  # g_xz    
+    grad_nt[...,3] =  vy*vy - 3*(yy*yy + xy*xy + yz*yz)     # g_yy
+    grad_nt[...,4] = (vy*vz - 3*(yy*yz + zz*yz + xy*xz))*2  # g_yz    
+    grad_nt[...,5] =  vz*vz - 3*(zz*zz + xz*xz + yz*yz)     # g_zz
+
     return (9/2)*grad_nt*phi3[...,None]
 
 # @njit(cache=True)
@@ -559,11 +554,11 @@ def _get_dphidn(n3, version):
         dphi3 = 1/(12*np.pi*n3_1_3)
     elif version[2] == 1:
         dphi3 = np.where(n3<=1e-8,
-                        (8/3-0.5*n3-0.1*n3_2)/(36*np.pi*n3_1_3),
+                        (5/3-0.5*n3-0.1*n3_2)/(36*np.pi*n3_1_3),
                         -(2*n3-5*n3_2+n3_3+2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
     elif version[2] == 2:
         dphi3 = np.where(n3<=1e-8,
-                        (7/3-n3/2+n3_2/10)/(36*np.pi*n3_1_3),
+                        (10/3-n3/2+n3_2/10)/(36*np.pi*n3_1_3),
                         (2*n3-5*n3_2+6*n3_3-n3_2*n3_2 + 2*n3_1_3*ln_n3)/(36*np.pi*(n3_3)*n3_1_3))
     return dphi1, dphi2, dphi3
 

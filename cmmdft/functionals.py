@@ -1031,7 +1031,6 @@ class MFAFunctional(Functional):
             Van der Waals A parameter
         """
         self.a = 0.5*self.grid.integrate(self.potential)
-        print(self.a)
         return self.a
     
     def dump_potential(self, fn):

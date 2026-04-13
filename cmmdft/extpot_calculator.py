@@ -802,7 +802,7 @@ def generate_rotation_matrix(degree, dimension):
         theta = np.linspace(0, 2 * np.pi, degree, endpoint=False)
         c, s = np.cos(theta), np.sin(theta)
         rot_2 = np.array([[c, -s, np.zeros_like(c)], [s, c, np.zeros_like(c)], [np.zeros_like(c), np.zeros_like(c), np.ones_like(c)]])
-        return rot_2.transpose(2, 0, 1), 1 / (degree * 4 * np.pi)
+        return rot_2.transpose(2, 0, 1), 1 / (degree)
         
     elif dimension == 3:
         scheme = AngularGrid(degree=degree)
@@ -813,7 +813,7 @@ def generate_rotation_matrix(degree, dimension):
         c2, s2 = np.cos(phi2), np.sin(phi2)
         zeros = np.zeros(len(phi1))
         rot = np.array([[c1*c2, -s2, s1*c2],[c1*s2,c2,s1*s2],[-s1,zeros,c1]])       
-        return rot.transpose(2, 0, 1), scheme.weights
+        return rot.transpose(2, 0, 1), scheme.weights/(4*np.pi)
 
     elif dimension == 4:
         scheme = stroud_1969(4)
@@ -1203,7 +1203,6 @@ def precalculate_effective_potential(points, beta, host_data, host_ff_dict, gues
     potential[potential_mask] = redo_potential
     return potential
 
-
 def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest_data, guest_ff_dict, tmp_epot_dr, 
                                     tmp_spacing=0.15*angstrom, cutoff=12*angstrom, max_size=5e+6, max_pot=200*kjmol, 
                                     degree=11, int_method='trilinear', remove_tmp=True):
@@ -1269,7 +1268,6 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
         interpolator_dict[key] = getattr(interpolator, int_method)
     return interpolator_dict
     
-
 def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_dict, mic=True, cutoff=12*angstrom):
     """
     Create dictionary of external potential generators for guest atom types, for
@@ -1374,7 +1372,12 @@ def _get_system_data_chk(chk_fn, pars_file):
     pos = kwargs['pos']
     masses_ids = kwargs['masses']
     ffatypes = [str(ff) for ff in kwargs['ffatypes']]
-    ffatype_ids = kwargs['ffatype_ids']
+    try:
+        ffatype_ids = kwargs['ffatype_ids']
+    except KeyError:
+        ff_types_unique = list(dict.fromkeys(ffatypes))
+        ffatype_ids = [ff_types_unique.index(fftype) for fftype in ffatypes]
+        ffatypes = ff_types_unique
     masses = np.array([masses_ids[ff_id] for ff_id in ffatype_ids])
 
     natom = len(pos)

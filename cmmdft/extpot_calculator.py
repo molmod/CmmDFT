@@ -537,6 +537,8 @@ def compute_ewald_parameters(rvecs, eta=5.0):
 
 def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
     (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
+    orig_shape = points.shape
+    points_flat = points.reshape(-1,3)
 
     sigmas_mixed   = np.array([0.5*(host_ff_dict[aid][0] + sigmaff) for aid in ffatype_ids])
     epsilons_mixed = np.array([np.sqrt(host_ff_dict[aid][1] * epsilonff) for aid in ffatype_ids])
@@ -546,8 +548,8 @@ def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, 
     cell_matrix = rvecs.astype(np.float64)
     cell_inv    = np.linalg.inv(cell_matrix)
 
-    return _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
-                         cell_matrix, cell_inv, cutoff)
+    return _compute_vext(points_flat, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
+                         cell_matrix, cell_inv, cutoff).reshape(orig_shape[:-1])
 
 
 def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
@@ -1091,7 +1093,6 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
         coords = COMs_expanded[:, indices, :]# (m, natoms_of_type, 3)
         pot_r += generator(coords.reshape(-1, 3)).reshape(m, -1).sum(axis=1)  # (m,)
 
-    print(pot_r/kjmol)
     for r in range(nrot):
         R = rotations[r]
 
@@ -1123,7 +1124,6 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
     result = -log_sum / beta  # (m,)
 
     result = np.where(np.isinf(result), limit_potential, result)
-    print(result/kjmol)
 
     return result  # shape: (m,)
 
@@ -1388,7 +1388,12 @@ def _get_system_data_chk(chk_fn, pars_file):
     pos = kwargs['pos']
     masses_ids = kwargs['masses']
     ffatypes = [str(ff) for ff in kwargs['ffatypes']]
-    ffatype_ids = kwargs['ffatype_ids']
+    try:
+        ffatype_ids = kwargs['ffatype_ids']
+    except KeyError:
+        ff_types_unique = list(dict.fromkeys(ffatypes))
+        ffatype_ids = [ff_types_unique.index(fftype) for fftype in ffatypes]
+        ffatypes = ff_types_unique
     masses = np.array([masses_ids[ff_id] for ff_id in ffatype_ids])
 
     natom = len(pos)

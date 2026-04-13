@@ -60,6 +60,16 @@ def sinc(x):
 def smooth_floor(x, eps=1e-12, alpha=50.0):
     return eps + (1.0/alpha)*np.log1p(np.exp(alpha*(x - eps)))
 
+def safe_softplus(x, x_min, scale=1.0):
+    """
+    Numerically stable softplus smoothing:
+      result = x_min + scale * log1p(exp((x - x_min) / scale))
+    Falls back to x for large arguments to avoid overflow.
+    """
+    z = (x - x_min) / scale
+    # For z > threshold, softplus(z) ≈ z (linear regime), no exp needed
+    return np.where(z > 30.0, x, x_min + scale * np.log1p(np.exp(np.clip(z, -np.inf, 30.0))))
+
 FMT_NAMES = ['FMT', 'aFMT', 'tFMT', 'atFMT', 'taFMT']
 MFMT_NAMES = ['MFMT', 'aMFMT', 'tMFMT', 'atMFMT', 'taMFMT']
 WBII_NAMES = ['WBII', 'aWBII', 'tWBII', 'atWBII', 'taWBII']
@@ -268,9 +278,9 @@ class HardSphereFunctional(Functional):
             n2 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[2]), self.m, axes=(0,0))
             n3 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[3]), self.m, axes=(0,0))
 
-            # n0 = np.clip(n0, 0, None)
-            # n1 = np.clip(n1, 0, None)
-            # n2 = np.clip(n2, 0, None)
+            n0 = np.clip(n0, 0, None)
+            n1 = np.clip(n1, 0, None)
+            n2 = np.clip(n2, 0, None)
             # n3 = np.clip(n3, 0, None)
 
             # #When n3 approaches 1, things can go wrong because the functional
@@ -712,15 +722,17 @@ class PCSAFTFunctional(Functional):
         wrho_chain = self.grid.ifftn(krho*self.kwchain)
 
         lambda_chain = self.grid.ifftn(krho*self.kwlambda)
+        lambda_chain = np.clip(lambda_chain, 0.0 ,None)
 
         zeta2 = np.pi/6*np.einsum('nijk,n->ijk',
                                 wrho_chain,
                                 self.m*(self.dhs**2))
+        zeta2 = np.clip(zeta2, 0.0, None)
 
         zeta3 = np.pi/6*np.einsum('nijk,n->ijk',
                                 wrho_chain,
                                 self.m*(self.dhs**3))
-        zeta3 = np.clip(zeta3, 0,0.99)
+        zeta3 = np.clip(zeta3, 0.0, 0.99)
 
         wrho_disp = self.grid.ifftn(krho*self.kwdisp)
 
@@ -728,7 +740,7 @@ class PCSAFTFunctional(Functional):
         eta_disp = np.pi/6*np.einsum('nijk,n->ijk',
                                     wrho_disp,
                                     self.m*(self.dhs**3))
-        eta_disp = np.clip(eta_disp, 0,0.99)
+        eta_disp = np.clip(eta_disp, 0.0, 0.99)
 
         return lambda_chain, zeta2, zeta3, wrho_disp, eta_disp
 
@@ -811,29 +823,31 @@ class PCSAFTFunctional(Functional):
 
         for k in range(len(self.m)):
             dk = self.dhs[k]
-            rho_dyik_yii = np.zeros(self.grid.npoints, dtype=np.float64)
+            rho_dyik_yii = np.zeros(self.grid.npoints, dtype=np.complex128)
             for i in range(len(self.m)):
                 di = self.dhs[i]
                 dyidnk = np.pi/6*self.m[k]*dk**2*(3/2*di*z3_2 + di**2*zeta2*z3_2*z3_1)
                 dyidnk += np.pi/6*self.m[k]*dk**3*z3_2*(1+3*di*zeta2*z3_1 + 3/2*di**2*zeta2**2*z3_2)
                 rho_dyik_yii += ((1 - self.m[i]) * (rho[i]*(dyidnk/(yii[i] + eps))))
             
-            # Lambda contribution (indirect):
-            rho_min = 1e-14
-            rho_safe = np.maximum(rho[k], rho_min)
-            lambda_safe = np.maximum(lambda_chain[k], rho_min)
-            direct_term = (
-                np.log(yii[k] + eps)
-                + np.log(lambda_safe)
-                - np.log(rho_safe)
-                - 1
-            )
-
             rho_cut = 1e-10
-            mask = rho[k] > rho_cut
-            direct_term *= mask
+            lambda_cut = 1e-10  # below this, bonding shell is geometrically occluded
 
-            k_rho_lambda = self.grid.fftn(rho_safe / lambda_safe)
+            # Mask: fluid voxel AND bonding shell has meaningful density
+            connectivity_mask = (rho[k] > rho_cut) & (lambda_chain[k] > lambda_cut)
+
+            with np.errstate(invalid='ignore', divide='ignore'):
+                # Safe ratio — zero where connectivity is broken
+                ratio = np.where(connectivity_mask, rho[k] / lambda_chain[k], 1.0)
+                # Note: 1.0 not 0.0 — log(1.0) = 0, so these voxels contribute nothing to free energy
+
+                # Direct term — same mask
+                direct_term = np.where(
+                    connectivity_mask,
+                    np.log(yii[k] + eps) + np.log(lambda_chain[k]) - np.log(rho[k]) - 1,
+                    0.0
+                )
+            k_rho_lambda = self.grid.fftn(ratio)
             dphi_chain[k] += self.grid.ifftn(self.grid.fftn(rho_dyik_yii)*self.kwchain[k]) + (1-self.m[k])*self.grid.ifftn(k_rho_lambda*self.kwlambda[k])
 
             dphi_chain[k] += (1 - self.m[k]) * direct_term # direct part

@@ -573,7 +573,7 @@ class Solver(object):
             while self.correction_factor >= 1/4:
                 try:
                     return self._solve(chempot, rho, self.log_level)
-                except FloatingPointError:
+                except (FloatingPointError, np.linalg.LinAlgError):
                     self.correction_factor /= 2
                     self.iphase += 1
                     log.warning('THE CALCULATION OF THE DENSITY at chemical potential %s kJ/mol and temperature %5.3f K HAS FAILED DUE TO A ---FloatingPointError---'%(chempot_str, self.fener.temperature), label_section='Solve')
@@ -644,7 +644,7 @@ class Picard(Solver):
             self.update_rho = self.update_rho_static
                   
 
-    def update_rho_static(self, rho, krho, C1):
+    def update_rho_static(self, rho, krho, C1, alpha=None):
         """
         Update density using simple linear mixing.
         
@@ -672,7 +672,11 @@ class Picard(Solver):
         where G is the Boltzmann operator with chemical potential.
         """
         with log.section(self.name, self.log_level, timer='Update rho'):
-            alpha_mix_cor = self.alpha_mix*self.correction_factor
+            if alpha is not None:
+                alpha_mix_cor = alpha*self.correction_factor
+            else:
+                alpha_mix_cor = self.alpha_mix*self.correction_factor
+            
             rho_new = (1.0-alpha_mix_cor)*rho+alpha_mix_cor*self.get_new_rho(C1, self.fugacity)
             rho_new[rho_new<1e-10/angstrom**3] = 0.0
 
@@ -714,56 +718,68 @@ class Picard(Solver):
             prev_omega = self.omega0
             Grho = self.get_new_rho(C1, self.fugacity)
             alpha_max = self._get_alpha_max(rho, krho, Grho)
-
-            # start with a quadratic approximation for Omega as a function of alpha
-            if np.isclose(alpha_max,0):
-                alpha_opt = 0
-                min_pot, max_pot = 0, 0
-            else:
-                alpha1 = 0.45*alpha_max
-                rho1 = (1-alpha1)*rho + alpha1*Grho
-                omega1 = self._get_Omega(rho1, self.grid.fftn(rho1))
-                #choose the third point for the quadratic approximation
-                if omega1 <= prev_omega:
-                    alpha2 = 0.9*alpha_max
+            try:
+                # start with a quadratic approximation for Omega as a function of alpha
+                if np.isclose(alpha_max,0):
+                    alpha_opt = 0
+                    min_pot, max_pot = 0, 0
                 else:
-                    alpha2 = 0.225*alpha_max
-                rho2 = (1-alpha2)*rho + alpha2*Grho
-                omega2 = self._get_Omega(rho2, self.grid.fftn(rho2))
-                c, b, a = np.polyfit([0, alpha1, alpha2], [prev_omega, omega1, omega2], 2)
-                alphas = np.linspace(-max(alpha1,alpha2)/4, max(alpha1,alpha2), 10000)
-                omegas = a + b*alphas +c*alphas**2
-                alpha_opt = alphas[np.where(omegas==np.min(omegas))[0][0]]
+                    alpha1 = 0.45*alpha_max
+                    rho1 = (1-alpha1)*rho + alpha1*Grho
+                    omega1 = self._get_Omega(rho1, self.grid.fftn(rho1))
+                    #choose the third point for the quadratic approximation
+                    if omega1 <= prev_omega:
+                        alpha2 = 0.9*alpha_max
+                    else:
+                        alpha2 = 0.225*alpha_max
+                    rho2 = (1-alpha2)*rho + alpha2*Grho
+                    omega2 = self._get_Omega(rho2, self.grid.fftn(rho2))
+                    c, b, a = np.polyfit([0, alpha1, alpha2], [prev_omega, omega1, omega2], 2)
+                    alphas = np.linspace(-max(alpha1,alpha2)/4, max(alpha1,alpha2), 10000)
+                    omegas = a + b*alphas +c*alphas**2
+                    alpha_opt = alphas[np.where(omegas==np.min(omegas))[0][0]]
 
-                min_pot = np.min(omegas)/kjmol
-                max_pot = np.max(omegas)/kjmol    
+                    min_pot = np.min(omegas)/kjmol
+                    max_pot = np.max(omegas)/kjmol    
+                # check if the quadratic approximation is valid and if the SLSQP solver should be used
+                if alpha_opt <= 0 and max_pot-min_pot>self.thresh:
+                    log.dump('original alpha_opt: %5.5e'%alpha_opt)
+                    tstart = time.time()
+                    def calc_G_rho(alpha):
+                        rho_temp = (1-alpha)*rho + alpha*Grho
+                        return self._get_Omega(rho_temp, self.grid.fftn(rho_temp))
 
-            # check if the quadratic approximation is valid and if the SLSQP solver should be used
-            if alpha_opt <= 0 and max_pot-min_pot>self.thresh:
-                log.dump('original alpha_opt: %5.5e'%alpha_opt)
-                tstart = time.time()
-                def calc_G_rho(alpha):
-                    rho_temp = (1-alpha)*rho + alpha*Grho
-                    return self._get_Omega(rho_temp, self.grid.fftn(rho_temp))
+                    bounds = opt.Bounds(0.01*alpha_max, 0.9*alpha_max)
+                    alpha_opt_new = opt.minimize(calc_G_rho, [self.alpha_mix*alpha_max], bounds=bounds, method='SLSQP', options= {'ftol':1e-8}).x
+                    tstop = time.time() 
+                    alpha_opt = alpha_opt_new
+                    log.dump('SLSQP alpha opt: %5.5e in %5.5fs'%(alpha_opt, tstop-tstart))
 
-                bounds = opt.Bounds(0.01*alpha_max, 0.9*alpha_max)
-                alpha_opt_new = opt.minimize(calc_G_rho, [self.alpha_mix*alpha_max], bounds=bounds, method='SLSQP', options= {'ftol':1e-8}).x
-                tstop = time.time() 
-                alpha_opt = alpha_opt_new
-                log.dump('SLSQP alpha opt: %5.5e in %5.5fs'%(alpha_opt, tstop-tstart))
+                if alpha_opt <= 0 or np.isclose(alpha_opt,0):
+                    alpha_opt = self.alpha_mix*alpha_max
+                    log.dump(f'Manually set the value of alpha_mix to: {alpha_opt*self.correction_factor}')
 
-            if alpha_opt <= 0 or np.isclose(alpha_opt,0):
+            except (FloatingPointError, np.linalg.LinAlgError):
                 alpha_opt = self.alpha_mix*alpha_max
-                log.dump(f'Manually set the value of alpha_mix to: {alpha_opt*self.correction_factor}')
                 
             rho_new = (1-alpha_opt*self.correction_factor)*rho + alpha_opt*self.correction_factor*Grho
             rho_new = self._clip_density(rho_new)
-
             krho_new = self.grid.fftn(rho_new)
             C1_new = self._get_C1(rho_new, krho_new)
-            self._get_Omega(rho_new, krho_new) # saves the correct Omega as self.omega0, necessary for next line search
-            return rho_new, krho_new, C1_new
+            Omega_new = self._get_Omega(rho_new, krho_new) # saves the correct Omega as self.omega0, necessary for next line search
+            Grho_new = self.get_new_rho(C1_new, self.fugacity)
+            
+            # safeguard for bad steps, fall back on safe static iteration
+            if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
+                return self.update_rho_static(rho, krho, C1, alpha=alpha_opt/50)
 
+            elif np.linalg.norm(Grho_new - rho_new) > np.linalg.norm(Grho - rho)*5:
+                return self.update_rho_static(rho, krho, C1, alpha=alpha_opt/50)
+            else:
+                if Omega_new > prev_omega*(0.8):
+                    return self.update_rho_static(rho, krho, C1, alpha=alpha_opt/50)
+            return rho_new, krho_new, C1_new
+        
 class Anderson(Picard):
     """
     Anderson acceleration solver for DFT optimization.
@@ -791,7 +807,7 @@ class Anderson(Picard):
 
     name = 'ANDERSON'
 
-    def __init__(self, program, nsteps=100, method='hybridanderson', minimize_method='SLSQP_new',
+    def __init__(self, program, nsteps=500, method='hybridanderson', minimize_method='SLSQP_new',
                  m=5, damping=0.3, delta=0.1, damping_max=0.8, damping_min=0.01, adaptive_damping=True,
                    **kwargs):
         """

@@ -339,6 +339,7 @@ class FreeEnergy(object):
                     if  isinstance(self.system.guest, GuestMixture):
                         NonSphericalList = np.array([isinstance(it_guest, NonSphericalGuest) for it_guest in self.system.guest.guests])
                         if np.any(NonSphericalList): NonSphericalPresent = True
+                        else: NonSphericalPresent = False
                     else:
                         NonSphericalPresent = isinstance(self.system.guest, NonSphericalGuest)
                     # If NonSphericalGuest is initiated, the potential is temperature dependent
@@ -613,8 +614,7 @@ class FreeEnergy(object):
                 if 'MFA' in self.part_names:
                     mfa_part = self.part_dict['MFA']
                     a = mfa_part.compute_vdw_a()
-                    print(a)
-                    print(-16/9*np.pi*epsilon*sigma**3)
+
                 if a is not None:
                     MFA = MFAEOS(mass, a=a)
                 else:

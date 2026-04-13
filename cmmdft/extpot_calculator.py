@@ -536,6 +536,8 @@ def compute_ewald_parameters(rvecs, eta=5.0):
     return alpha, kmax
 
 def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
+    orig_shape = points.shape
+    points_flat = points.reshape(-1,3)
     (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
     orig_shape = points.shape
     points_flat = points.reshape(-1,3)
@@ -1159,7 +1161,6 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
     R1, weights1 = generate_rotation_matrix(degree, 3)
     R2, weights2 = generate_rotation_matrix(degree, 2)
 
-    # combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3).astype(np.float32)  # (nrot, 3, 3)
     combined_rot = np.einsum('aik,bkj->abij', R1, R2).reshape(-1, 3, 3).astype(np.float32)  # (nrot, 3, 3)
     expanded_weights = np.repeat(weights1*weights2, len(R2)).astype(np.float32)   # (nrot,)
     

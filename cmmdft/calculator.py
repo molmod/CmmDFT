@@ -947,7 +947,7 @@ class Calculator(object):
             Maximum perpendicular distance from the axis; points farther
             away are marked False in the returned mask.
         supercell : bool, optional
-            If True build and operate on a 3×3×3 supercell of the original
+            If True build and operate on a 3x3x3 supercell of the original
             grid.  Default is False.
         step_dist : float, optional
             Spacing used to construct the discrete CV axis.
@@ -963,9 +963,9 @@ class Calculator(object):
         tuple
             ``(cvs, cvs_mat, dist_mask)`` where:
 
-            * ``cvs`` – 1‑D array of CV bin edges.
-            * ``cvs_mat`` – 3‑D array giving the CV value at every grid point.
-            * ``dist_mask`` – boolean mask indicating points within
+            * ``cvs`` - 1-D array of CV bin edges.
+            * ``cvs_mat`` - 3-D array giving the CV value at every grid point.
+            * ``dist_mask`` - boolean mask indicating points within
               ``dist_from_axis`` (all True if ``dist_from_axis`` is None).
 
         Raises

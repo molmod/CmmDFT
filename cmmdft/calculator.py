@@ -536,7 +536,7 @@ class Calculator(object):
         if fn is None:
             suffix = '_vs_P' if pressure else ''
             prefix = 'excess_' if excess else ''
-            fn = self.workdir / f'{prefix}loading_{temperature:#3.0f}K{suffix}.csv'
+            fn = self.workdir / f'{prefix}loading_{temperature:#0.5f}K{suffix}.csv'
         else:
             fn = Path(fn)
         np.savetxt(fn, data, delimiter=',', header=header, comments='')
@@ -1103,7 +1103,7 @@ class Calculator(object):
         """
         with log.section('CALCULATOR', 2, timer='projecting density'):
             chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)        
-            if self.ncomp == 1:
+            if not hasattr(chempot, '__iter__'):
                 chempot_str = f'{chempot/kjmol:#7.5f}'
             
             else:
@@ -1402,7 +1402,7 @@ class Calculator(object):
                 max_n_chems = int(max_n_chems)
                 indices = np.rint(np.linspace(0,len(chems)-1,max_n_chems)).astype(int)
                 it_chems = chems[indices]
-                it_chems = np.concatenate((it_chems, chempot))
+                it_chems = np.concatenate((it_chems, np.atleast_2d(chempot)))
             else:
                 it_chems = chems
             # it_chems is a list of chemical potentials which are lower than the input chemical potential, and the input chemical potential itself

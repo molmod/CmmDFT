@@ -613,6 +613,7 @@ class FreeEnergy(object):
                 if 'MFA' in self.part_names:
                     mfa_part = self.part_dict['MFA']
                     a = mfa_part.compute_vdw_a()
+
                 if a is not None:
                     MFA = MFAEOS(mass, a=a)
                 else:

@@ -238,7 +238,6 @@ class HardSphereFunctional(Functional):
             kwyz = B*(Hyz - 0.0).astype(np.float64)
             kwzz = B*(Hzz - 1/3).astype(np.float64)
 
-
             self.tensor_weight_functions = (kwxx, kwxy, kwxz, kwyy, kwyz, kwzz)
 
 
@@ -276,7 +275,7 @@ class HardSphereFunctional(Functional):
 
             # #When n3 approaches 1, things can go wrong because the functional
             # # contains terms with log(1-n3) and 1/(1-n3)
-            n3 = np.clip(n3, 1e-30, 0.99)  # Ensure n3 is in [0, 1-1e-12]
+            n3 = np.clip(n3, 1e-30,1-1e-10)  # Ensure n3 is in [0, 1-1e-10]
             # # The vector density functions
             nv1 = np.tensordot(self.grid.ifftn(krho[..., None] * self.vector_weight_functions[0]), self.m, axes=(0,0))
             nv2 = np.tensordot(self.grid.ifftn(krho[..., None] * self.vector_weight_functions[1]), self.m, axes=(0,0))
@@ -676,7 +675,6 @@ class PCSAFTFunctional(Functional):
             elif self.hs_approx == 'bh':
                 Tt = boltzmann*temperature/self.epsilon_mix[i,i]
                 self.dhs[i] = self.sigma_mix[i,i]*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)
-
         self._init_weight_functions()
 
     def _init_weight_functions(self):
@@ -688,13 +686,13 @@ class PCSAFTFunctional(Functional):
         omega = np.einsum('i,jkl->ijkl', self.dhs, k)
 
         self.kwlambda = sinc(omega)
-        self.kwlambda *= self.grid.sigma_lanczos[None,...]**2
+        self.kwlambda *= self.grid.sigma_lanczos[None,...]
 
         self.kwchain = sph_bessel_3(omega)
-        self.kwchain *= self.grid.sigma_lanczos[None,...]**2
+        self.kwchain *= self.grid.sigma_lanczos[None,...]
 
         self.kwdisp = sph_bessel_3(self.psi*omega)
-        self.kwdisp *= self.grid.sigma_lanczos[None,...]**2
+        self.kwdisp *= self.grid.sigma_lanczos[None,...]
 
     def _get_weighted_densities(self, krho):
         """
@@ -762,7 +760,7 @@ class PCSAFTFunctional(Functional):
     def value_chain(self, rho, lambda_chain, zeta2, zeta3):
         phi_chain = 0
         eps = 1e-10
-        z3_1 = 1/(1-zeta3 + eps)
+        z3_1 = 1/(1-zeta3)
         for i in range(len(self.m)):
             yii = self.dhs[i]*zeta2*z3_1*z3_1*(self.dhs[i]*zeta2*z3_1 * 0.5 + 1.5) + z3_1
             ratio = np.clip((lambda_chain[i] + eps) / (rho[i] + eps), 1e-8,1e8)            
@@ -813,7 +811,7 @@ class PCSAFTFunctional(Functional):
 
         for k in range(len(self.m)):
             dk = self.dhs[k]
-            rho_dyik_yii = np.zeros(self.grid.npoints, dtype=np.complex128)
+            rho_dyik_yii = np.zeros(self.grid.npoints, dtype=np.float64)
             for i in range(len(self.m)):
                 di = self.dhs[i]
                 dyidnk = np.pi/6*self.m[k]*dk**2*(3/2*di*z3_2 + di**2*zeta2*z3_2*z3_1)
@@ -1141,7 +1139,7 @@ class MFAFunctional(Functional):
             else:
                 grid = self.grid
 
-            rho = grid.ifftn(krho)
+            # rho = grid.ifftn(krho)
             if local:
                 return 0.5*rho*self.derive(rho, krho)
             else:

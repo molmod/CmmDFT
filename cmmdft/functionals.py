@@ -118,7 +118,7 @@ class HardSphereFunctional(Functional):
     
     name = 'HardSphere'
     
-    def __init__(self, grid, Rhs, m=None, version='atWBII', workdir='.'):
+    def __init__(self, grid, Rhs, m=None, version='atWBII'):
         """
         Initialize the hard sphere functional.
 
@@ -158,7 +158,6 @@ class HardSphereFunctional(Functional):
                 raise ValueError("Length of m should be equal to length of Rhs")
         version_array = decode_version(version)
         self.version = version_array
-        self.workdir=workdir
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         """
@@ -616,7 +615,7 @@ class PCSAFTFunctional(Functional):
     
     name = 'PCSAFT'
     
-    def __init__(self, grid, guest, sigma_smooth=None, debug=False, hs_approx='exp'):
+    def __init__(self, grid, guest, chain=True, sigma_smooth=None, debug=False, hs_approx='exp'):
         """
         Initialize the PC-SAFT functional.
 
@@ -637,6 +636,7 @@ class PCSAFTFunctional(Functional):
         self.beta = None
         self.grid = grid
         self.guest = guest
+        self.chain = chain
         self.m = np.atleast_1d(guest.m)
         self.fractions = guest.fractions
         if len(self.m) == 1:
@@ -782,6 +782,11 @@ class PCSAFTFunctional(Functional):
 
         return phi_chain/self.beta
     
+    def value_chain_ideal(self, rho):
+        rho_reg = np.clip(rho, 1e-15, None)
+        rho_int = self.grid.integrate(rho_reg*(np.log(rho_reg)-1))
+        return np.sum((self.m -1) * rho_int)/self.beta
+
     def value_disp(self, wrho_disp, eta_disp):
         eps = 1e-14
 
@@ -852,6 +857,11 @@ class PCSAFTFunctional(Functional):
             dphi_chain[k] += (1 - self.m[k]) * direct_term # direct part
 
         return dphi_chain/self.beta
+    
+    def derive_chain_ideal(self, rho):
+        rho_reg = np.clip(rho, 1e-10, None)
+        dchain = (self.m - 1)[:, None, None, None] * np.log(rho_reg)
+        return dchain/self.beta
 
     def derive_disp(self, wrho_disp, eta_disp):
         m_avg, a_prefact, b_prefact = self._get_mavg_a_b_prefact(wrho_disp)
@@ -947,7 +957,12 @@ class PCSAFTFunctional(Functional):
         with log.section('PC-SAFT', 3, timer='PC-SAFT derive'):
 
             lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(krho)
-            dphi_chain = self.derive_chain(rho, lambda_chain, zeta2, zeta3)
+            if self.chain == 'True':
+                dphi_chain = self.derive_chain(rho, lambda_chain, zeta2, zeta3)
+            elif self.chain == 'ideal':
+                dphi_chain = self.derive_chain_ideal(rho)
+            else:
+                dphi_chain = np.zeros_like(rho)
             dphi_disp = self.derive_disp(wrho_disp, eta_disp)
             return dphi_chain + dphi_disp
     
@@ -969,8 +984,15 @@ class PCSAFTFunctional(Functional):
         """
         with log.section('PC-SAFT', 3, timer='PC-SAFT value'):
             lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(krho)
-            val_chain = self.value_chain(rho, lambda_chain, zeta2, zeta3)
+            if self.chain == 'True':
+                val_chain = self.value_chain(rho, lambda_chain, zeta2, zeta3)
+            elif self.chain == 'ideal':
+                val_chain = self.value_chain_ideal(rho)
+            else:
+                val_chain = 0
+
             val_disp = self.value_disp(wrho_disp, eta_disp)
+
             return val_chain + val_disp
 
 class MFAFunctional(Functional):
@@ -1278,6 +1300,7 @@ class MFAFunctionalMixture(MFAFunctional):
                 self.potential[i,j] = lj_potential(sigmas[i,j], epsilons[i,j], r, cutoff)
         self.kpotential = self.grid.fftn(self.potential)*self.grid.sigma_lanczos[None,:,:,:]
 
+
     def derive(self, rho, krho):
         """
         Functional derivative, which is the convolution of the density and
@@ -1325,7 +1348,7 @@ class ExternalPotential(Functional):
 
     name = 'ExtPot'
 
-    def __init__(self, grid, system, epot_dr, positive=False, limit_potential=1e+4*kjmol, degree=11, cutoff=12*angstrom, interpolate=False):
+    def __init__(self, grid, system, epot_dr, sum_potential=False, positive=False, limit_potential=1e+4*kjmol, degree=11, cutoff=12*angstrom, interpolate=False):
         """
         Initialize the external potential functional.
 
@@ -1359,6 +1382,7 @@ class ExternalPotential(Functional):
         self.host = system.host
         self.epot_dr = epot_dr
 
+        self.sum_potential = sum_potential
         self.positive = positive
         self.limit_potential = limit_potential
         self.degree = degree
@@ -1433,7 +1457,9 @@ class ExternalPotential(Functional):
             guest_data = real_guest.guest_data
             guest_ff_dict = real_guest.guest_ff_dict
 
-            if self.interpolate:
+            if self.sum_potential:
+                potential = generate_sum_potential(points, host.host_data, host.host_ff_dict, guest_data, guest_ff_dict, cutoff=self.cutoff)
+            elif self.interpolate:
                 potential = interpolate_effective_potential(1/temperature/boltzmann, points, host.host_data, host.host_ff_dict, guest_data, guest_ff_dict, self.epot_dr, 
                                         tmp_spacing=0.15*angstrom, cutoff=self.cutoff,
                                         degree=self.degree, int_method='trilinear', remove_tmp=True)

@@ -734,7 +734,7 @@ class EOS_MIX(EquationOfState):
         else:
             assert len(homogeneous_fraction) == ncomp, 'homogeneous_fraction and sigma must have the same length'
             self.homogeneous_fraction = homogeneous_fraction/np.sum(homogeneous_fraction)
-
+   
     def _get_fractional_coefficients(self, rho):
         """
         Compute fractional coefficients for mixture density distribution.
@@ -864,7 +864,7 @@ class EOS_MIX(EquationOfState):
         ValueError
             If neither rho nor pressure is provided.
         """
-        assert self.homogeneous, 'Chemical potential calculation only supported for homogeneous mixtures'
+        # assert self.homogeneous, 'Chemical potential calculation only supported for homogeneous mixtures'
         if temperature is not None:
             s_temp = getattr(self, 'temperature', None)
             if s_temp != temperature:

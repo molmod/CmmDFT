@@ -512,7 +512,7 @@ def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff,
     FF_dict : dict
         Dictionary mapping atom types to (sigma, epsilon) parameters.
     sigmaff : float
-        Sigma parameter for guest atom in Angstrom.
+        Sigma parameter for guest atom in bohr.
     epsilonff : float
         Epsilon parameter for guest atom in energy units.
     spacings : tuple

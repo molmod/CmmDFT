@@ -257,7 +257,7 @@ class FreeEnergy(object):
             self.tracking_step += 1
             return G
     
-    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e4*kjmol, degree=11, 
+    def add_external_potential(self, temperature=None, rcut=12*angstrom, upper_limit=1e4*kjmol, degree=11, sum_potential=False,
                                interpolate=False, rewrite=False, load_fn=None, save_fn=None, **kwargs):
         """
         Add guest-host interaction potential (external field).
@@ -320,7 +320,7 @@ class FreeEnergy(object):
                 assert os.path.isfile(load_fn), f'fn must be a filename of an external potential, {load_fn}'
                 fn = Path(load_fn)
                 epot_dr = fn.parent
-                epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, **kwargs)
+                epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, sum_potential=sum_potential, **kwargs)
                 log.dump('loading external potential from %s' %fn)
                 epot.load_potential(fn)  
                 # create a symlink in the workdir to the directory where external potentials are found
@@ -354,7 +354,7 @@ class FreeEnergy(object):
                     if not sym_fn.is_symlink():
                         sym_fn.symlink_to(epot_dr.absolute())    
 
-                epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, 
+                epot = ExternalPotential(self.grid, system=self.system, epot_dr=epot_dr, sum_potential=sum_potential, 
                                          limit_potential=upper_limit, cutoff=rcut, degree=degree, interpolate=interpolate, **kwargs)
 
                 if not os.path.isfile(fn) or self.overwrite or rewrite:
@@ -625,7 +625,7 @@ class FreeEnergy(object):
 
             self.add_part(corr)
 
-    def add_PCSAFT(self, hs_approx='exp', **kwargs):
+    def add_PCSAFT(self, hs_approx='exp', chain=True, **kwargs):
         """
         Add PC-SAFT (Perturbed-Chain SAFT) functional.
         
@@ -675,5 +675,5 @@ class FreeEnergy(object):
         """
         with log.section('FREEENER', 2, timer='Initializing'):
             log.dump('Initializing PC-SAFT functional for attractive and repulsive interaction contribution')
-            PCSAFT = PCSAFTFunctional(self.grid, self.system.guest, hs_approx=hs_approx, **kwargs)
+            PCSAFT = PCSAFTFunctional(self.grid, self.system.guest, hs_approx=hs_approx, chain=chain, **kwargs)
             self.add_part(PCSAFT)

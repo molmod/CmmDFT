@@ -259,7 +259,22 @@ class EquationOfState(object):
             return self.compute_pressure(rho=rho, temperature=self.temperature)
         else:
             raise ValueError('Either rho or chemical potential must be provided')
-        
+    
+    def compute_density(self, chempot=None, pressure=None, temperature=None):
+        if temperature is not None:
+            s_temp = getattr(self, 'temperature', None)
+            if s_temp != temperature:
+                self.set_temperature(temperature)
+
+        if chempot is not None:
+            rho = self.solve_densities_from_chempots(chempot)
+            return np.nanmin(rho, axis=1)
+        elif pressure is not None:
+            rho = self.solve_densities_from_pressures(pressure)
+            return np.nanmin(rho, axis=1)
+        else:
+            raise ValueError('Either rho or chemical potential must be provided')        
+
     def compute_excess_pressure(self, rho=None, chempot=None, temperature=None):
         """
         Compute the pressure.
@@ -697,7 +712,7 @@ class EOS_MIX(EquationOfState):
         else:
             assert len(homogeneous_fraction) == ncomp, 'homogeneous_fraction and sigma must have the same length'
             self.homogeneous_fraction = homogeneous_fraction/np.sum(homogeneous_fraction)
-
+   
     def _get_fractional_coefficients(self, rho):
         """
         Compute fractional coefficients for mixture density distribution.
@@ -713,23 +728,16 @@ class EOS_MIX(EquationOfState):
             (rho, rho_sum, x): Component densities, total density, and mole fractions.
         """
         if self.homogeneous:
-            rho_sum = np.atleast_1d(rho)
-            if isinstance(rho, list):
-                rho = np.array(rho)
-            if isinstance(rho, np.ndarray):
-                rho = np.ones((self.ncomp,) + rho.shape)*rho_sum
-            else:
-                rho = np.ones((self.ncomp,1))*rho_sum
-            rho = self.homogeneous_fraction[:,None]*rho
-            x = np.zeros((self.ncomp,) + rho_sum.shape)
-
-            x = np.full_like(rho.T, self.homogeneous_fraction).T
+            rho_sum = np.atleast_1d(np.asarray(rho, dtype=float))
+            rho = self.homogeneous_fraction.reshape(-1, *([1]*rho_sum.ndim)) * rho_sum
+            x = np.full_like(rho, self.homogeneous_fraction.reshape(-1, *([1]*rho_sum.ndim)))
         else:
-            assert rho.shape[0]==self.ncomp, 'For a mixture, rho should be an array with shape (ncomp, ...)'
+            rho = np.asarray(rho, dtype=float)
+            assert rho.shape[0] == self.ncomp, 'For a mixture, rho should be an array with shape (ncomp, ...)'
             rho_sum = np.sum(rho, axis=0)
-            x = rho/rho_sum
-        return rho, rho_sum, x     
-      
+            x = rho / rho_sum
+        return rho, rho_sum, x      
+    
     def set_reference_state(self, P_ref=1*bar):
         """
         Set reference state for fugacity calculations.
@@ -834,15 +842,15 @@ class EOS_MIX(EquationOfState):
         ValueError
             If neither rho nor pressure is provided.
         """
-        assert self.homogeneous, 'Chemical potential calculation only supported for homogeneous mixtures'
+        # assert self.homogeneous, 'Chemical potential calculation only supported for homogeneous mixtures'
         if temperature is not None:
             s_temp = getattr(self, 'temperature', None)
             if s_temp != temperature:
                 self.set_temperature(temperature)
         if rho is not None:    
-            rho, rho_sum, x = self._get_fractional_coefficients(rho)
-            a = self.excess_free_energy_particle(rho_sum)
-            da_drhoi = self._drhoi_excess_free_energy_particle(rho_sum)
+            a = self.excess_free_energy_particle(rho)
+            da_drhoi = self.df_drhoi(rho)
+            rho_copy, rho_sum, x = self._get_fractional_coefficients(rho)
             return (a + rho_sum*da_drhoi).T
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
@@ -916,7 +924,11 @@ class EOS_MIX(EquationOfState):
         P = self.compute_pressure(rho)
         rho, rho_sum, x = self._get_fractional_coefficients(rho_orig)
         return x * P * np.exp(mu_res/(kT))
-    
+
+    def excess_free_energy_volume(self, rho):
+        rho_arr, rho_sum, x = self._get_fractional_coefficients(rho)
+        return rho_sum * self.excess_free_energy_particle(rho)
+
     def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=5000):
         """
         Solve EOS for density as function of chemical potential at fixed temperature.
@@ -978,7 +990,7 @@ class EOS_MIX(EquationOfState):
 
         return densities
 
-    def _drhoi_excess_free_energy_particle(self, rho):
+    def df_drhoi(self, rho):
         """
         Compute derivative of excess free energy per particle w.r.t. component density.
 
@@ -1613,22 +1625,29 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
             dA[i] += -dAdTr*d_epsilon[i]
         return dA
 
+    def df_drho(self, rho):
+        rho, rho_sum, x = self._get_fractional_coefficients(rho)
+        self._set_mixture_parameters(x, self.temperature)
+        return super().derivative_excess_free_energy_particle(rho_sum)
+    
+    def df_drhoi(self, rho):
+        rho, rho_sum, x = self._get_fractional_coefficients(rho)
+        self._set_mixture_parameters(x, self.temperature)
+        d_sigma3, d_epsilon = self._set_mixing_derivatives(rho_sum, x)
+        dA = self.dAr_drhoi(rho_sum, x, d_sigma3, d_epsilon)
+        A_eps = (super().excess_free_energy_particle(rho_sum)/self.epsilon)[None,...]*d_epsilon
+        return A_eps + dA
+
     def excess_free_energy_particle(self, rho):
         rho, rho_sum, x = self._get_fractional_coefficients(rho)
         self._set_mixture_parameters(x, self.temperature)
         return super().excess_free_energy_particle(rho_sum)     
        
     def derivative_excess_free_energy_particle(self, rho):
-        rho, rho_sum, x = self._get_fractional_coefficients(rho)
-        self._set_mixture_parameters(x, self.temperature)
         if self.homogeneous:
-            return super().derivative_excess_free_energy_particle(rho_sum)
+            return self.df_drho(rho)
         else:
-            d_sigma3, d_epsilon = self._set_mixing_derivatives(rho_sum, x)
-
-            dA = self.dAr_drhoi(rho_sum, x, d_sigma3, d_epsilon)
-            A_eps = (super().excess_free_energy_particle(rho_sum)/self.epsilon)[None,...]*d_epsilon
-            return A_eps + dA
+            return self.df_drhoi(rho)
     
     def derivative2_excess_free_energy_particle(self, rho):
         if self.homogeneous:
@@ -1645,15 +1664,6 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
             return super().derivative3_excess_free_energy_particle(rho_sum)
         else:
             raise NotImplementedError('Third derivative of MBWR mixture EOS not implemented')
-
-    def _drhoi_excess_free_energy_particle(self, rho):
-        assert self.homogeneous, 'Only homogeneous mixtures are supported for derivative calculation' 
-        rho, rho_sum, x = self._get_fractional_coefficients(rho)
-        self._set_mixture_parameters(x, self.temperature)            
-        d_sigma3, d_epsilon = self._set_mixing_derivatives(rho_sum, x)
-        dA = self.dAr_drhoi(rho_sum, x, d_sigma3, d_epsilon)
-        A_eps = (self.excess_free_energy_particle(rho_sum)/self.epsilon)[None,...]*d_epsilon
-        return A_eps + dA
 
     def get_rough_density_grid(self, npoints):
         "Define rough density grid (for use in solve_densities) based on reduced units and knowledge of the MBWR EOS"
@@ -1704,7 +1714,7 @@ class CarnahanStarlingEOS(EquationOfState):
         m : float, optional
             Segment number, default 1.
         hs_approx : str, optional
-            Hard-sphere approximation, 'exp' or polynomial, default 'exp'.
+            Hard-sphere approximation, 'exp' or 'bh', default 'bh'.
         """
         EquationOfState.__init__(self, mass)
         self.sigma = sigma
@@ -1794,7 +1804,7 @@ class CarnahanStarlingEOS(EquationOfState):
         return 12*self.m_mix*kT*self.eta**3*(3-self.eta*rho)/(1-self.eta*rho)**5
     
     
-class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
+class CarnahanStarlingMixEOS(EOS_MIX):
     
     name = 'CSMIX'
     """
@@ -1820,7 +1830,7 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
         Identifier 'CSMIX'.
     """
    
-    def __init__(self, mass, sigma, epsilon, m=None, homogeneous=True, homogeneous_fraction=None):
+    def __init__(self, mass, sigma, epsilon, m=None, hs_approx='bh', homogeneous=True, homogeneous_fraction=None):
         """
         Initialize Carnahan-Starling mixture EOS.
 
@@ -1845,7 +1855,9 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
             If sigma and epsilon lengths do not match.
         """        
         assert len(sigma)==len(epsilon), 'sigma and m should have the same length'
-        CarnahanStarlingEOS.__init__(self, mass, sigma, epsilon)
+        EquationOfState.__init__(self, mass)
+        self.sigma = np.array(sigma)
+        self.epsilon = np.array(epsilon)
         ncomp = len(sigma)    
         EOS_MIX.__init__(self, ncomp, homogeneous, homogeneous_fraction)
         if m is None:
@@ -1853,6 +1865,8 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
         else:
             assert len(epsilon)==len(m), 'epsilon and m should have the same length'
         self.m = np.array(m)
+        self.hs_approx = hs_approx
+        self.d = None
 
     @classmethod
     def from_guest(cls, guest, **kwargs):
@@ -1876,7 +1890,12 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
         epsilon = guest.epsilon
         m = getattr(guest, 'm', np.ones(len(sigma)))
         x = getattr(guest, 'fractions', None)
-        return cls(mass, sigma, epsilon, m=m, homogeneous_fraction=x, **kwargs)
+        # print(guest.hs_def)
+        hs_approx = []
+        for guest_part in guest.guests:
+            hs_approx.append(getattr(guest_part, 'hs_def', 'bh'))
+
+        return cls(mass, sigma, epsilon, m=m, homogeneous_fraction=x, hs_approx=hs_approx, **kwargs)
     
     def set_temperature(self, temperature, **kwargs):
         """
@@ -1896,88 +1915,116 @@ class CarnahanStarlingMixEOS(CarnahanStarlingEOS, EOS_MIX):
         """
         EquationOfState.set_temperature(self, temperature)
         beta = 1/(boltzmann*temperature)
-        Tt = 1/beta/self.epsilon
-        # self.R = self.sigma*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
-        self.R = self.sigma*(1-0.12*np.exp(-3*self.epsilon/boltzmann/temperature))/2
-    
-    def _set_mixture_parameters(self, x):
-        """
-        Compute mixture-dependent eta and m_mix from mole fractions.
+        self.R = np.zeros(self.ncomp)
+        for i, hs_appr in enumerate(self.hs_approx):
+            Tt = 1/beta/self.epsilon[i]
+            if hs_appr=='exp':
+                self.R[i] = self.sigma[i]*(1-0.12*np.exp(-3*self.epsilon[i]/boltzmann/temperature))/2
+            else:
+                self.R[i] = self.sigma[i]*(1+0.2977*Tt)/(1+0.33163*Tt+0.0010477*Tt**2)/2
+        self.dhs = 2.0 * self.R
 
-        Parameters
-        ----------
-        x : ndarray
-            Mole fractions, shape (ncomp, ...).
+    def _get_mixture_parameters(self, rho_sum, x):
+        """Compute BMCSL composition-dependent mixture diameter moments safely across dimensions."""
+        m_mix = np.einsum('i...,i->...', x, self.m)
+        
+        # Using einsum handles multi-dimensional density grids flawlessly
+        zeta0 = (np.pi / 6.0) * rho_sum * np.einsum('i,i...->...', self.m, x)
+        zeta1 = (np.pi / 6.0) * rho_sum * np.einsum('i,i...->...', self.m * self.dhs, x)
+        zeta2 = (np.pi / 6.0) * rho_sum * np.einsum('i,i...->...', self.m * self.dhs**2, x)
+        zeta3 = (np.pi / 6.0) * rho_sum * np.einsum('i,i...->...', self.m * self.dhs**3, x)
+        
+        return m_mix, zeta0, zeta1, zeta2, zeta3
 
-        Returns
-        -------
-        None
-            Sets self.eta and self.m_mix.
-        """
-        factor = self.m*4/3*np.pi*self.R**3
-        self.eta = np.einsum('i...,i->...', x, factor)
-        self.m_mix = np.einsum('i...,i->...', x, self.m)
 
-    def _set_mixing_derivatives(self, rho_sum, x):
-        """
-        Compute derivatives of mixture parameters w.r.t. composition.
-
-        Parameters
-        ----------
-        rho_sum : float or array-like
-            Total density.
-        x : ndarray
-            Mole fractions, shape (ncomp, ...).
-
-        Returns
-        -------
-        tuple
-            (deta, dm_drhoi): Derivatives of eta and m_mix w.r.t. component densities.
-        """
-        deta = np.zeros_like(x)
-        for k in range(self.ncomp):
-            deta[k] += self.m[k]*self.R[k]**3 
-            for i in range(self.ncomp):
-                deta[k] +=  - self.m[i]*self.R[i]**3*x[i]
-        deta *= 4*np.pi/3/rho_sum
-        dm_drhoi = np.zeros_like(x)
-        for k in range(self.ncomp):
-            dm_drhoi[k] = (self.m[k] - self.m_mix)/rho_sum
-        return deta, dm_drhoi
+    def _hard_sphere_contribution(self, zeta0, zeta1, zeta2, zeta3):
+        """Compute hard-sphere free energy contribution from zeta moments."""
+        z3_1 = (1.0 - zeta3)
+        term1 = 3.0 * zeta1 * zeta2 / z3_1
+        term2 = zeta2**3 / (zeta3 * z3_1**2)
+        term3 = (zeta2**3 / zeta3**2 - zeta0) * np.log(z3_1)
+        return (term1 + term2 + term3) / zeta0
     
     def excess_free_energy_particle(self, rho):
-        rho, rho_sum, x = self._get_fractional_coefficients(rho)
-        self._set_mixture_parameters(x)
-        return super().excess_free_energy_particle(rho_sum)
-    
-    def _drhoi_excess_free_energy_particle(self, rho):
-        assert self.homogeneous, 'Only homogeneous mixtures are supported for derivative calculation' 
-        rho, rho_sum, x = self._get_fractional_coefficients(rho)
-        self._set_mixture_parameters(x)
-        da_deta = super().derivative_excess_free_energy_particle(rho_sum)/self.eta
-        dm_drhoi = np.zeros((self.ncomp,) + rho_sum.shape)
-        for i in range(self.ncomp):
-            dm_drhoi[i] = (self.m[i] - self.m_mix)/rho_sum
-
-        ahs = super().excess_free_energy_particle(rho_sum)
-        da_drhoi = np.zeros((self.ncomp,) + rho_sum.shape)
-        for i in range(self.ncomp):
-            da_drhoi[i] = (4*np.pi/3*self.m[i]*self.R[i]**3)*da_deta
-        return da_drhoi + ahs/self.m_mix*dm_drhoi
-    
-    def derivative_excess_free_energy_particle(self, rho):
-        rho, rho_sum, x = self._get_fractional_coefficients(rho)
-        self._set_mixture_parameters(x)
+        """
+        Compute hard-sphere free energy contribution from zeta moments.
+        """
+        rho_arr, rho_sum, x = self._get_fractional_coefficients(rho)
+        m_mix, zeta0, zeta1, zeta2, zeta3 = self._get_mixture_parameters(rho_sum, x)
+        a_hs = self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
         
-        dF = super().derivative_excess_free_energy_particle(rho_sum)
-        if self.homogeneous:
-            return dF
-        else:
-            deta, dm_drhoi = self._set_mixing_derivatives(rho_sum, x)
-            ahs = super().excess_free_energy_particle(rho_sum)
-            
-            return (deta*rho_sum/self.eta + 1)*dF + ahs/self.m_mix*dm_drhoi
+        return boltzmann * self.temperature * m_mix * a_hs
 
+
+    def df_drhoi(self, rho):
+        rho_arr, rho_sum, x = self._get_fractional_coefficients(rho)
+        m_mix, zeta0, zeta1, zeta2, zeta3 = self._get_mixture_parameters(rho_sum, x)
+
+        a_hs = self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3)
+        drhoi_dhs = np.zeros_like(rho_arr)
+
+        # Derivatives of a_hs with respect to zeta_n
+        da_deta = np.zeros((4,) + rho_sum.shape)
+        da_deta[0] = (1.0 / zeta0) * (-a_hs - np.log(1.0 - zeta3))
+        da_deta[1] = (1.0 / zeta0) * 3.0 * zeta2 / (1.0 - zeta3)
+        da_deta[2] = (1.0 / zeta0) * (3.0 * zeta1 / (1.0 - zeta3) + 3.0 * zeta2**2 / ((1.0 - zeta3)**2 * zeta3) + 3.0 * zeta2**2 / zeta3**2 * np.log(1.0 - zeta3))
+        da_deta[3] = (1.0 / zeta0) * (3.0 * zeta1 * zeta2 / (1.0 - zeta3)**2 - zeta2**3 * (1.0 - 3.0 * zeta3) / (zeta3**2 * (1.0 - zeta3)**3) - (zeta2**3 / zeta3**2 - zeta0) / (1.0 - zeta3) - np.log(1.0 - zeta3) * 2.0 * zeta2**3 / zeta3**3)
+        
+        # Compute total derivative partial(m_mix * a_hs) / partial(rho_i)
+        for k in range(self.ncomp):
+            # Term 1: m_mix * [ sum_n (da_hs / dzeta_n) * (dzeta_n / drhoi) ]
+            # Note: dzeta_n/drho_i = (pi/6) * m_k * dhs_k^n
+            term_da = (da_deta[0] + 
+                       da_deta[1] * self.dhs[k] + 
+                       da_deta[2] * self.dhs[k]**2 + 
+                       da_deta[3] * self.dhs[k]**3)
+            
+            drhoi_dhs[k] += m_mix * (np.pi / 6.0) * self.m[k] * term_da
+            
+            # Term 2: a_hs * (d m_mix / d rho_i)
+            # Since m_mix = sum(rho_k * m_k) / rho_sum, dm_mix/drho_i = (m_k - m_mix) / rho_sum
+            drhoi_dhs[k] += (a_hs / rho_sum) * (self.m[k] - m_mix)
+
+        return boltzmann * self.temperature * drhoi_dhs
+
+    def df_drho(self, rho):
+        """Derivative with respect to total density (homogeneous)."""
+
+        rho_arr, rho_sum, x = self._get_fractional_coefficients(rho)
+        m_mix, zeta0, zeta1, zeta2, zeta3 = self._get_mixture_parameters(rho_sum, x)
+
+        rho_dF_hs = -self._hard_sphere_contribution(zeta0, zeta1, zeta2, zeta3) - np.log(1-zeta3) # dzeta0
+        rho_dF_hs += (zeta1/zeta0)*3*zeta2/(1-zeta3) # dzeta1
+        rho_dF_hs += (zeta2/zeta0)*(3*zeta1/(1-zeta3) + 3*zeta2**2/(1-zeta3)**2/zeta3 + 3*zeta2**2/zeta3**2*np.log(1-zeta3)) # dzeta2
+        rho_dF_hs += (zeta3/zeta0)*(3*zeta1*zeta2/(1-zeta3)**2 - zeta2**3*(1-3*zeta3)/(zeta3**2)/(1-zeta3)**3  - (zeta2**3/zeta3**2-zeta0)/(1-zeta3) - np.log(1-zeta3)*2*zeta2**3/zeta3**3) # dzeta3
+        
+        return boltzmann * self.temperature * m_mix * rho_dF_hs / rho_sum
+
+    def derivative_excess_free_energy_particle(self, rho):
+        if self.homogeneous:
+            return self.df_drho(rho)
+        else:
+            return self.df_drhoi(rho)    
+    
+    def get_rough_density_grid(self, npoints):
+        """
+        Generate a rough logarithmic density grid in accessible range.
+
+        Parameters
+        ----------
+        npoints : int
+            Number of grid points.
+
+        Returns
+        -------
+        ndarray
+            Logarithmic density grid spanning practical range.
+        """
+        eta_mix = np.max(self.m*4/3*np.pi*self.R**3)
+        log_start = -10
+        log_end = np.log(angstrom**3/eta_mix)/np.log(10)-0.01
+        return np.logspace(log_start, log_end, npoints)/angstrom**3
+    
 class MFAEOS(EquationOfState):
     """
     Mean-Field Approximation (MFA) equation of state.
@@ -2064,7 +2111,7 @@ class MFAMixEOS(MFAEOS, EOS_MIX):
 
     name = 'MFAMIX'
 
-    def __init__(self, mass, sigma, epsilon, aij=None, kij=None, homogeneous=True, homogeneous_fraction=None):
+    def __init__(self, mass, sigma=None, epsilon=None, aij=None, kij=None, homogeneous=True, homogeneous_fraction=None):
         """
         Initialize MFA mixture EOS.
 
@@ -2090,23 +2137,26 @@ class MFAMixEOS(MFAEOS, EOS_MIX):
         AssertionError
             If aij or kij shapes are incorrect.
         """        
+
         EquationOfState.__init__(self, mass)
-        ncomp = len(sigma)    
+        try:
+            ncomp = len(sigma)    
+        except TypeError:
+            ncomp = aij.shape[0]
         EOS_MIX.__init__(self, ncomp, homogeneous, homogeneous_fraction)
-        self.sigma = np.array(sigma)
-        self.epsilon = np.array(epsilon)
-        assert len(sigma)==len(epsilon), 'sigma and m should have the same length'
 
         if kij is None:
             self.kij = np.zeros((self.ncomp,self.ncomp))
         else:
             self.kij = np.array(kij)
         assert self.kij.shape == (self.ncomp,self.ncomp), 'kij should be a square matrix with size equal to number of components'
+
         if aij is not None:
             aij = np.atleast_2d(aij)
             assert aij.shape == (self.ncomp,self.ncomp), 'aij should be a square matrix with size equal to number of components'
             self.aij = aij
         else:
+            assert len(sigma)==len(epsilon), 'sigma and m should have the same length'
             self.aij = np.zeros((len(sigma),len(sigma)))
             for i in range(len(sigma)):
                 for j in range(len(sigma)):
@@ -2122,7 +2172,7 @@ class MFAMixEOS(MFAEOS, EOS_MIX):
         m = getattr(guest, 'm', np.ones(len(sigma)))
         x = getattr(guest, 'fractions', None)
         kij = getattr(guest, 'kij', None)
-        return cls(mass, sigma, epsilon, m=m, homogeneous_fraction=x, kij=kij, **kwargs)
+        return cls(mass, sigma, epsilon, homogeneous_fraction=x, kij=kij, **kwargs)
 
     def _set_mixture_parameters(self, x):
         self.x = x/np.sum(x, axis=0)
@@ -2135,7 +2185,7 @@ class MFAMixEOS(MFAEOS, EOS_MIX):
         da = np.zeros_like(x)
         for i in range(self.ncomp):
             for j in range(self.ncomp):
-                da[i] += self.x[j]*self.aij[i,j]
+                da[i] += x[j]*self.aij[i,j]
             da[i] += -self.a
         da *= 2/rho_sum
         return da  
@@ -2145,11 +2195,22 @@ class MFAMixEOS(MFAEOS, EOS_MIX):
         self._set_mixture_parameters(x)
         return self.a*rho_sum
     
-    def derivative_excess_free_energy_particle(self, rho):
+    def df_drho(self, rho):
+        rho, rho_sum, x = self._get_fractional_coefficients(rho)
+        self._set_mixture_parameters(x)
+        return self.a
+
+    def df_drhoi(self, rho):
         rho, rho_sum, x = self._get_fractional_coefficients(rho)
         self._set_mixture_parameters(x)
         da = self._set_mixing_derivatives(rho_sum, x)
         return self.a + da*rho_sum
+
+    def derivative_excess_free_energy_particle(self, rho):
+        if self.homogeneous:
+            return self.df_drho(rho)
+        else:
+            return self.df_drhoi(rho)   
 
 class MFMT_MFA_EOS(EquationOfState):
     """
@@ -2704,7 +2765,7 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
             self.CS = CarnahanStarlingMixEOS(self.mass, self.sigma, self.epsilon, m=m, homogeneous=True, homogeneous_fraction=self.x)
     
     @classmethod
-    def from_guest(cls, guest):
+    def from_guest(cls, guest, **kwargs):
         """
         Create PC-SAFT mixture EOS from a guest species object.
 
@@ -2724,7 +2785,7 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
         m = getattr(guest, 'm', 1)
         x = getattr(guest, 'fractions', None)
         kij = getattr(guest, 'k_inter', None)
-        return cls(mass, sigma, epsilon, m=m, x=x, kij=kij)
+        return cls(mass, sigma, epsilon, m=m, x=x, kij=kij, **kwargs)
 
     def set_temperature(self, temperature):
         """
@@ -2941,13 +3002,13 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
 
         return drhoi_ddisp
 
-    def _drhoi_excess_free_energy_particle(self, rho):
-        """ da/drhoi"""
+    def df_drhoi(self, rho):
+        """ df/drhoi"""
         kT = boltzmann*self.temperature
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)
         if self.CS_HS:
-            drhoi_dhs = self.CS._drhoi_excess_free_energy_particle(rho)/kT
+            drhoi_dhs = self.CS.df_drhoi(rho)/kT
         else:
             drhoi_dhs = self._drhoi_hard_sphere_contribution(rho, zeta0, zeta1, zeta2, zeta3)
         drhoi_dch = self._drhoi_chain_contribution(rho, zeta2, zeta3)
@@ -3143,7 +3204,7 @@ class PengRobinsonMixEOS(PengRobinsonEOS, EOS_MIX):
         self.a = self.x @ self.a_ij @ self.x
         self.b = np.dot(self.x, self.b_i)
 
-    def _drhoi_excess_free_energy_particle(self, rho):
+    def df_drhoi(self, rho):
         rho = np.atleast_1d(rho)
         kT = boltzmann * self.temperature
         br = self.b * rho
@@ -3332,7 +3393,7 @@ class SoaveRedlichKwongMixEOS(SoaveRedlichKwongEOS, EOS_MIX):
         self.a = self.x @ self.a_ij @ self.x
         self.b = np.dot(self.x, self.b_i)
 
-    def _drhoi_excess_free_energy_particle(self, rho):
+    def df_drhoi(self, rho):
         rho = np.atleast_1d(rho)
         kT = boltzmann * self.temperature
         br = self.b * rho

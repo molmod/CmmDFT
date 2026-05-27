@@ -17,7 +17,8 @@ import xml.etree.ElementTree as ET
 from ase.io import read
 
 from numba import njit, prange
-from scipy.special import logsumexp, erfc
+from scipy.special import logsumexp
+from math import erfc
 
 from .rotations.AngGrid import AngularGrid
 from .rotations._stroud_1969 import *
@@ -406,7 +407,8 @@ def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, rvecs, epsilon_r
     return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
 
 @njit(cache=True)
-def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alpha, kmax, rvecs, inv_rvecs, epsilon_r=1.0, ke=1.0, derivatives=False):
+def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, 
+                               alpha, kmax, rvecs, inv_rvecs, epsilon_r=1.0, ke=1.0):
     """
     Reciprocal-space Ewald contribution (computed once for all grid points).
     
@@ -419,96 +421,171 @@ def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alph
     host_charges : ndarray
         Host atom charges, shape (natoms,).
     guest_charge : float
-        Guest atom charge.
+        Guest atom charge in units of e.
     alpha : float
-        Ewald damping parameter.
+        Ewald damping parameter in Å⁻¹.
     kmax : int
         Reciprocal space cutoff order.
     rvecs : ndarray
-        Cell vectors, shape (3, 3).
+        Real-space cell vectors, shape (3, 3), rows are vectors.
     inv_rvecs : ndarray
-        Inverse cell vectors, shape (3, 3).
+        Inverse of rvecs, shape (3, 3).
     epsilon_r : float, optional
         Relative permittivity, default 1.0.
     ke : float, optional
         Coulomb constant, default 1.0.
-    
+    derivatives : bool, optional
+        If True, also return derivatives, default False.
+
     Returns
     -------
-    tuple
-        (V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz) all shape (npoints,)
+    ndarray or tuple
+        V shape (npoints,), or tuple of 8 arrays if derivatives=True.
     """
+    points = points.reshape(-1, 3)
     npoints = points.shape[0]
     natoms = host_pos.shape[0]
-    
+
     V = np.zeros(npoints, dtype=np.float64)
-    if derivatives:
-        dVdx = np.zeros(npoints, dtype=np.float64)
-        dVdy = np.zeros(npoints, dtype=np.float64)
-        dVdz = np.zeros(npoints, dtype=np.float64)
-        dVdxy = np.zeros(npoints, dtype=np.float64)
-        dVdxz = np.zeros(npoints, dtype=np.float64)
-        dVdyz = np.zeros(npoints, dtype=np.float64)
-        dVdxyz = np.zeros(npoints, dtype=np.float64)
-    
+
     volume = np.abs(np.linalg.det(rvecs))
     q_prod = ke * guest_charge / epsilon_r
     alpha2 = alpha * alpha
-    inv_volume = 1.0 / volume
-    
     for n1 in range(-kmax, kmax + 1):
         for n2 in range(-kmax, kmax + 1):
             for n3 in range(-kmax, kmax + 1):
                 if n1 == 0 and n2 == 0 and n3 == 0:
                     continue
-                
-                # Reciprocal lattice vector
-                kvec = 2.0 * np.pi * (n1 * inv_rvecs[:, 0] + n2 * inv_rvecs[:, 1] + n3 * inv_rvecs[:, 2])
-                k2 = kvec[0] * kvec[0] + kvec[1] * kvec[1] + kvec[2] * kvec[2]
-                
+
+                # Reciprocal lattice vector: 2π * inv(rvecs).T @ n
+                nvec = np.array([n1, n2, n3], dtype=np.float64)
+                kvec = 2.0 * np.pi * (inv_rvecs.T @ nvec)
+                k2 = np.dot(kvec, kvec)
+
                 if k2 < 1e-16:
                     continue
-                
-                # Structure factor: sum over host atoms
-                rho_k_real = 0.0
-                rho_k_imag = 0.0
-                for i in range(natoms):
-                    phase = kvec[0] * host_pos[i, 0] + kvec[1] * host_pos[i, 1] + kvec[2] * host_pos[i, 2]
-                    rho_k_real += host_charges[i] * np.cos(phase)
-                    rho_k_imag += host_charges[i] * np.sin(phase)
-                
-                # Reciprocal space factors
-                exp_factor = np.exp(-k2 / (4.0 * alpha2))
-                k_factor = 2.0 * np.pi * exp_factor / (k2 * volume)
-                
-                # Phase at all evaluation points
-                phase_guest = points @ kvec  # (npoints,)
+
+                # Structure factor over host atoms
+                phase_host = host_pos @ kvec          # (natoms,)
+                rho_k_real = host_charges @ np.cos(phase_host)
+                rho_k_imag = host_charges @ np.sin(phase_host)
+
+                # Reciprocal space weight: 4π/V * exp(-k²/4α²) / k²
+                k_factor = 4.0 * np.pi * np.exp(-k2 / (4.0 * alpha2)) / (k2 * volume)
+
+                # Phase at evaluation points
+                phase_guest = points @ kvec            # (npoints,)
                 cos_phase = np.cos(phase_guest)
                 sin_phase = np.sin(phase_guest)
-                
-                # Potential contribution
+
+                # Potential: Re[S(k) * exp(ik·r)]
                 contrib = k_factor * (rho_k_real * cos_phase - rho_k_imag * sin_phase)
+                
                 V += q_prod * contrib
-                if derivatives:
-                    # First derivatives
-                    dV_coeff = k_factor * (rho_k_real * (-sin_phase) - rho_k_imag * cos_phase)
-                    dVdx += q_prod * dV_coeff * kvec[0]
-                    dVdy += q_prod * dV_coeff * kvec[1]
-                    dVdz += q_prod * dV_coeff * kvec[2]
-                    
-                    # Second derivatives
-                    contrib_2nd = -k_factor * (rho_k_real * cos_phase - rho_k_imag * sin_phase)
-                    dVdxy += q_prod * contrib_2nd * kvec[0] * kvec[1]
-                    dVdxz += q_prod * contrib_2nd * kvec[0] * kvec[2]
-                    dVdyz += q_prod * contrib_2nd * kvec[1] * kvec[2]
-                    
-                    # Third derivative
-                    contrib_3rd = -k_factor * (rho_k_real * (-sin_phase) - rho_k_imag * cos_phase)
-                    dVdxyz += q_prod * contrib_3rd * kvec[0] * kvec[1] * kvec[2]
-    if derivatives:
-        return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
-    else:
-        return V
+    return V
+
+
+@njit(cache=True)
+def _coulomb_reciprocal_space_derivatives(points, host_pos, host_charges, guest_charge, 
+                               alpha, kmax, rvecs, inv_rvecs, epsilon_r=1.0, ke=1.0):
+    """
+    Reciprocal-space Ewald contribution (computed once for all grid points).
+    
+    Parameters
+    ----------
+    points : ndarray
+        All grid points, shape (npoints, 3).
+    host_pos : ndarray
+        Host atom positions, shape (natoms, 3).
+    host_charges : ndarray
+        Host atom charges, shape (natoms,).
+    guest_charge : float
+        Guest atom charge in units of e.
+    alpha : float
+        Ewald damping parameter in Å⁻¹.
+    kmax : int
+        Reciprocal space cutoff order.
+    rvecs : ndarray
+        Real-space cell vectors, shape (3, 3), rows are vectors.
+    inv_rvecs : ndarray
+        Inverse of rvecs, shape (3, 3).
+    epsilon_r : float, optional
+        Relative permittivity, default 1.0.
+    ke : float, optional
+        Coulomb constant, default 1.0.
+    derivatives : bool, optional
+        If True, also return derivatives, default False.
+
+    Returns
+    -------
+    ndarray or tuple
+        V shape (npoints,), or tuple of 8 arrays if derivatives=True.
+    """
+    points = points.reshape(-1, 3)
+    npoints = points.shape[0]
+    natoms = host_pos.shape[0]
+
+    V = np.zeros(npoints, dtype=np.float64)
+    dVdx   = np.zeros(npoints, dtype=np.float64)
+    dVdy   = np.zeros(npoints, dtype=np.float64)
+    dVdz   = np.zeros(npoints, dtype=np.float64)
+    dVdxy  = np.zeros(npoints, dtype=np.float64)
+    dVdxz  = np.zeros(npoints, dtype=np.float64)
+    dVdyz  = np.zeros(npoints, dtype=np.float64)
+    dVdxyz = np.zeros(npoints, dtype=np.float64)
+
+    volume = np.abs(np.linalg.det(rvecs))
+    q_prod = ke * guest_charge / epsilon_r
+    alpha2 = alpha * alpha
+    for n1 in range(-kmax, kmax + 1):
+        for n2 in range(-kmax, kmax + 1):
+            for n3 in range(-kmax, kmax + 1):
+                if n1 == 0 and n2 == 0 and n3 == 0:
+                    continue
+
+                # Reciprocal lattice vector: 2π * inv(rvecs).T @ n
+                nvec = np.array([n1, n2, n3], dtype=np.float64)
+                kvec = 2.0 * np.pi * (inv_rvecs.T @ nvec)
+                k2 = np.dot(kvec, kvec)
+
+                if k2 < 1e-16:
+                    continue
+
+                # Structure factor over host atoms
+                phase_host = host_pos @ kvec          # (natoms,)
+                rho_k_real = host_charges @ np.cos(phase_host)
+                rho_k_imag = host_charges @ np.sin(phase_host)
+
+                # Reciprocal space weight: 4π/V * exp(-k²/4α²) / k²
+                k_factor = 4.0 * np.pi * np.exp(-k2 / (4.0 * alpha2)) / (k2 * volume)
+
+                # Phase at evaluation points
+                phase_guest = points @ kvec            # (npoints,)
+                cos_phase = np.cos(phase_guest)
+                sin_phase = np.sin(phase_guest)
+
+                # Potential: Re[S(k) * exp(ik·r)]
+                contrib = k_factor * (rho_k_real * cos_phase - rho_k_imag * sin_phase)
+                
+                V += q_prod * contrib
+
+                # First derivatives: k * Im[S(k) * exp(ik·r)] with sign
+                dV_coeff = k_factor * (-rho_k_real * sin_phase - rho_k_imag * cos_phase)
+                dVdx += q_prod * dV_coeff * kvec[0]
+                dVdy += q_prod * dV_coeff * kvec[1]
+                dVdz += q_prod * dV_coeff * kvec[2]
+
+                # Second derivatives: -k_i*k_j * Re[S(k) * exp(ik·r)]
+                contrib_2nd = -contrib  # = -k_factor * (rho_k_real * cos - rho_k_imag * sin)
+                dVdxy  += q_prod * contrib_2nd * kvec[0] * kvec[1]
+                dVdxz  += q_prod * contrib_2nd * kvec[0] * kvec[2]
+                dVdyz  += q_prod * contrib_2nd * kvec[1] * kvec[2]
+
+                # Third derivative: k_x*k_y*k_z * Im[S(k) * exp(ik·r)]
+                contrib_3rd = -dV_coeff  # = k_factor * (rho_k_real * sin + rho_k_imag * cos)
+                dVdxyz += q_prod * contrib_3rd * kvec[0] * kvec[1] * kvec[2]
+
+    return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
 
 def compute_ewald_parameters(rvecs, eta=5.0):
     """
@@ -554,47 +631,7 @@ def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, 
                          cell_matrix, cell_inv, cutoff).reshape(orig_shape[:-1])
 
 
-def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
-    """
-    Calculate the external potential using Lennard-Jones interactions.
-
-    Parameters
-    ----------
-    points : ndarray
-        Grid points at which to evaluate the potential, shape (N, 3).
-    host_data : tuple
-        Host system data containing positions, ffatype_ids, and cell vectors.
-    FF_dict : dict
-        Dictionary mapping atom types to (sigma, epsilon) force field parameters.
-    sigmaff : float
-        Sigma parameter for the guest atom in Angstrom.
-    epsilonff : float
-        Epsilon parameter for the guest atom in energy units.
-    cutoff : float, optional
-        Cutoff distance for Lennard-Jones interactions, default 12*angstrom.
-
-    Returns
-    -------
-    Vext : ndarray
-        External potential at each grid point, shape (N,).
-    """    
-    orig_shape = points.shape
-    points = points.reshape(-1,3)
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
-
-    sigmas_mixed   = np.array([0.5*(host_ff_dict[aid][0] + sigmaff) for aid in ffatype_ids])
-    epsilons_mixed = np.array([np.sqrt(host_ff_dict[aid][1] * epsilonff) for aid in ffatype_ids])
-    rc6     = (sigmas_mixed / cutoff) ** 6
-    v_shifts = 4 * epsilons_mixed * (rc6**2 - rc6)
-
-    cell_matrix = rvecs.astype(np.float64)
-    cell_inv    = np.linalg.inv(cell_matrix)
-
-    return _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
-                         cell_matrix, cell_inv, cutoff).reshape(orig_shape)
-
-
-def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, guest_charge=0.0, cutoff=12*angstrom, use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
+def get_external_potential_LJ_Coulomb(points, host_data, host_ff_dict, host_charge_dict, sigmaff, epsilonff, guest_charge=0.0, cutoff=12*angstrom, use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
     """
     Calculate the external potential using Lennard-Jones and optionally Coulomb interactions.
 
@@ -629,10 +666,13 @@ def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff,
         External potential at each grid point, shape (N,).
     """
 
-    (host_pos, masses, ffatypes, ffatype_ids, charges, natom, rvecs) = host_data
+    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
+    charges = np.array([host_charge_dict[id] for id in ffatype_ids])
 
     cell = Cell(rvecs)
     inv_rvecs = np.linalg.inv(rvecs)
+    orig_shape = points.shape[:-1]
+    points = points.reshape(-1, 3)
 
     Vext = np.zeros(points.shape[:-1])
     
@@ -675,8 +715,11 @@ def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff,
             rvecs, inv_rvecs, coulomb_epsilon_r, derivatives=False
         )
         Vext += V_recip
+        
+        V_self = -(coulomb_alpha / np.sqrt(np.pi)) * np.sum(charges)
+        Vext += (guest_charge / coulomb_epsilon_r) * V_self 
 
-    return Vext
+    return Vext.reshape(orig_shape)
     
 
 def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
@@ -855,7 +898,7 @@ class Interpolator:
         Corner offsets for unit cube, shape (8, 3).
     """
 
-    def __init__(self, grid_values, grid_origin, grid_spacing):
+    def __init__(self, grid_values, grid_origin, grid_spacing, charge=None, EsGrid=None, Esgrid_origin=None, Esgrid_spacing=None):
         """
         Initialize the interpolator.
 
@@ -869,8 +912,28 @@ class Interpolator:
             Grid spacing in x, y, z directions, shape (3,).
         """
         self.grid_values = grid_values  # (8, Nx, Ny, Nz) or (Nx, Ny, Nz)
+        self.grid_dims = np.array(self.grid_values.shape[-3:]) - 1
+        self.charge = charge
+        self.EsGrid = EsGrid
+
+        if self.EsGrid is not None and self.charge is None:
+            raise ValueError("charge must be provided when EsGrid is set")
+
         self.origin = np.array(grid_origin)
         self.spacing = np.array(grid_spacing)
+
+        if self.EsGrid is not None:
+            if Esgrid_spacing is None:
+                assert EsGrid.shape == self.grid_values.shape, "If no spacing is given for the Electrostatic grid, it must be the same shape as the LJ grid"
+                self.Esgrid_spacing = self.spacing
+            else:
+                self.Esgrid_spacing = np.array(Esgrid_spacing)
+
+            if Esgrid_origin is None:
+                self.Esgrid_origin = self.origin
+            else:
+                self.Esgrid_origin = np.array(Esgrid_origin)
+            self.Esgrid_dims = np.array(self.EsGrid.shape[1:]) - 1
 
         self.tricubic = self.tricubic_interpolation
         self.trilinear = self.trilinear_interpolation
@@ -882,25 +945,27 @@ class Interpolator:
             [0, 0, 1], [1, 0, 1],
             [0, 1, 1], [1, 1, 1]
         ])
+        self.block_threshold = 1000*kjmol
+        self.block_value = 10000*kjmol
 
     def _wrap_indices(self, idx, dim):
         """ Ensure indices wrap around for periodic boundary conditions. """
         return idx % dim
-    
-    def _get_fractional_indices(self, positions):
-        """ Convert Cartesian coordinates to fractional grid indices. """
-        s = (positions - self.origin) / self.spacing
+
+    def _get_fractional_indices(self, positions, spacing, grid_dims):
+        cell = spacing * grid_dims  # unit cell lengths
+        pos_wrapped = positions - cell * np.round(positions / cell)
+        pos_wrapped = np.where(pos_wrapped < 0, pos_wrapped + cell, pos_wrapped)
+        
+        s = pos_wrapped / spacing
         ix = np.floor(s).astype(int)
         rx = s - ix
         return ix, rx
     
-    def _get_corner_indices(self, ix, Nx, Ny, Nz):
+    def _get_corner_indices(self, ix, grid_dims):
         """ Get the corner indices for the cubic interpolation. """
-
-        # Wrap indices for periodic boundaries
-        ix0 = self._wrap_indices(ix[:, 0], Nx)
-        iy0 = self._wrap_indices(ix[:, 1], Ny)
-        iz0 = self._wrap_indices(ix[:, 2], Nz)
+        ix0, iy0, iz0 = ix.T
+        Nx, Ny, Nz = grid_dims
 
         corner_indices = []
         for dx, dy, dz in self.corner_offsets:
@@ -910,7 +975,7 @@ class Interpolator:
             corner_indices.append((xi, yi, zi))
         return corner_indices
     
-    def estimate_all_derivatives(self, V, dx, dy, dz):
+    def estimate_all_derivatives(self, V):
         """
         Estimate all derivatives of the potential function using finite differences in unit cube format.
         """
@@ -927,8 +992,19 @@ class Interpolator:
         Vxyz = (np.roll(Vxy, -1, axis=2) - np.roll(Vxy, 1, axis=2)) / (2)
 
         return np.stack([V, Vx, Vy, Vz, Vxy, Vxz, Vyz, Vxyz], axis=0)
-
     
+    def _interpolate_grid(self, values, rx, ry, rz, xyzi, N):
+        weights = np.array([
+            (1-rx)*(1-ry)*(1-rz), rx*(1-ry)*(1-rz),
+            (1-rx)*ry*(1-rz),     rx*ry*(1-rz),
+            (1-rx)*(1-ry)*rz,     rx*(1-ry)*rz,
+            (1-rx)*ry*rz,         rx*ry*rz
+        ]).T  # (N, 8)
+        V = np.zeros((N, 8))
+        for i, (xi, yi, zi) in enumerate(xyzi):
+            V[:, i] = values[xi, yi, zi]
+        return (V * weights).sum(axis=1)
+
     def trilinear_interpolation(self, positions):
         """
         Perform trilinear interpolation at given positions.
@@ -953,28 +1029,54 @@ class Interpolator:
         N = positions.shape[0]
 
         # Compute fractional grid coordinates
-        ix, rdist = self._get_fractional_indices(positions)
+        ix, rdist = self._get_fractional_indices(positions, self.spacing, self.grid_dims)
         rx, ry, rz = rdist[:, 0], rdist[:, 1], rdist[:, 2]
 
         # Get corner indices
-        xyzi = self._get_corner_indices(ix, Nx, Ny, Nz)
+        xyzi = self._get_corner_indices(ix, self.grid_dims)
 
         # Gather all 8 corner values
-        V = np.zeros((N, 8)) 
-        for corner_idx, (xi, yi, zi) in enumerate(xyzi):
-            V[:, corner_idx] = values[xi, yi, zi]
+        V = self._interpolate_grid(values, rx, ry, rz, xyzi, N)
+            # Block points where VDW energy exceeds threshold
+        blocked = V > self.block_threshold
 
-        # Interpolate
-        V = np.sum(V * np.array([(1 - rx) * (1 - ry) * (1 - rz),
-                     rx * (1 - ry) * (1 - rz),
-                     (1 - rx) * ry * (1 - rz),
-                     rx * ry * (1 - rz),
-                     (1 - rx) * (1 - ry) * rz,
-                     rx * (1 - ry) * rz,
-                     (1 - rx) * ry * rz,
-                     rx * ry * rz]).T, axis=1)
-        
+        if self.EsGrid is not None:
+            if self.EsGrid.ndim == 4:
+                values = self.EsGrid[0]
+            else:
+                values = self.EsGrid
+            
+            ix, rdist = self._get_fractional_indices(positions, self.Esgrid_spacing, self.Esgrid_dims)
+            rx, ry, rz = rdist[:, 0], rdist[:, 1], rdist[:, 2]
+            xyzi = self._get_corner_indices(ix, self.Esgrid_dims)
+            # Gather all 8 corner values
+            V_ei = self.charge * self._interpolate_grid(values, rx, ry, rz, xyzi, N)
+            V_ei[blocked] = 0
+            V += V_ei
+
+        V[blocked] = self.block_value
         return V
+    
+    def _interpolate_grid_tricubic(self, values, rx, ry, rz, xyzi, N):
+        result = np.zeros(N)
+
+        X = np.zeros((N, 64))
+        for corner_idx, (xi, yi, zi) in enumerate(xyzi):
+            for deriv in range(8):
+                X[:, corner_idx + deriv * 8] = values[deriv, xi, yi, zi]      
+
+        # Compute interpolation coefficients (N, 64)
+        a = X @ coefficients.T
+        # Compute relative distances for polynomial powers
+        for i in range(4):
+            ui = rx ** i
+            for j in range(4):
+                vj = ry ** j
+                for k in range(4):
+                    wk = rz ** k
+                    idx = i + 4 * j + 16 * k
+                    result += a[:, idx] * ui * vj * wk
+        return result
 
     def tricubic_interpolation(self, positions, estimate_derivatives=False):
         """
@@ -992,48 +1094,46 @@ class Interpolator:
         ndarray
             Interpolated values, shape (N,).
         """
-        positions = np.atleast_2d(positions)
+        # positions = np.atleast_2d(positions)
         if self.grid_values.ndim == 3:
-            values = self.estimate_all_derivatives(self.grid_values, *self.spacing)
+            values = self.estimate_all_derivatives(self.grid_values)
         elif self.grid_values.ndim == 4 and estimate_derivatives:
-            values = self.estimate_all_derivatives(self.grid_values[0], *self.spacing)
+            values = self.estimate_all_derivatives(self.grid_values[0])
         else:
             values = self.grid_values
-        Nx, Ny, Nz = values.shape[1:]
+
+        if self.EsGrid is not None:
+            if self.EsGrid.ndim == 3:
+                Es_values = self.estimate_all_derivatives(self.EsGrid)
+            elif self.EsGrid.ndim == 4 and estimate_derivatives:
+                Es_values = self.estimate_all_derivatives(self.EsGrid[0])
+            else:
+                Es_values = self.EsGrid
+        positions = np.atleast_2d(positions)
         N = positions.shape[0]
 
         # Compute fractional grid coordinates
-        ix, rdist = self._get_fractional_indices(positions)
+        ix, rdist = self._get_fractional_indices(positions, self.spacing, self.grid_dims)
         rx, ry, rz = rdist[:, 0], rdist[:, 1], rdist[:, 2]
         
         # Get corner indices
-        xyzi = self._get_corner_indices(ix, Nx, Ny, Nz)
+        xyzi = self._get_corner_indices(ix, self.grid_dims)
+        result = self._interpolate_grid_tricubic(values, rx, ry, rz, xyzi, N)
 
-        # Prepare X: (N, 64)
-        X = np.zeros((N, 64))
-        for corner_idx, (xi, yi, zi) in enumerate(xyzi):
-            for deriv in range(8):
-                X[:, corner_idx + deriv * 8] = values[deriv, xi, yi, zi]
-        
-        # Cap extreme values to avoid overflow
-        result = np.zeros(N)
+        # Block points where VDW energy exceeds threshold
+        blocked = result > self.block_threshold
 
-        # Compute interpolation coefficients (N, 64)
-        a = X @ coefficients.T
-        # Compute relative distances for polynomial powers
-        for i in range(4):
-            ui = rx ** i
-            for j in range(4):
-                vj = ry ** j
-                for k in range(4):
-                    wk = rz ** k
-                    idx = i + 4 * j + 16 * k
-                    result += a[:, idx] * ui * vj * wk
+        if self.EsGrid is not None:
+            ix, rdist = self._get_fractional_indices(positions, self.Esgrid_spacing, self.Esgrid_dims)
+            rx, ry, rz = rdist[:, 0], rdist[:, 1], rdist[:, 2]
+            xyzi = self._get_corner_indices(ix, self.Esgrid_dims)
+            result_ei = self.charge * self._interpolate_grid_tricubic(Es_values, rx, ry, rz, xyzi, N)
+            result_ei[blocked] = 0.0  # no Coulomb contribution for blocked points
+            result += result_ei
+        # result[blocked] = self.block_value  # cap VDW at threshold
+        return result
 
-        if result.shape[0] > 1:
-            return result
-        else:
-            return result[0]
+
 
 def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict, rotations, weights, limit_potential=1e+4*kjmol):
     """
@@ -1086,14 +1186,6 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
     COMs_expanded = np.tile(COMs[:, None, :], (1, natom, 1))  # (m, natom, 3)
     log_sum = None  # will hold running log-sum-exp
     
-    pot_r = np.zeros(m)
-    for atom_type_id in set(ffatype_ids):
-        indices = [i for i, t in enumerate(ffatype_ids) if t == atom_type_id]
-        if not indices:
-            continue
-        generator = epot_generator_dict[ffatypes[atom_type_id]]
-        coords = COMs_expanded[:, indices, :]# (m, natoms_of_type, 3)
-        pot_r += generator(coords.reshape(-1, 3)).reshape(m, -1).sum(axis=1)  # (m,)
 
     for r in range(nrot):
         R = rotations[r]
@@ -1124,9 +1216,7 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
             # stable pairwise logaddexp
             log_sum = np.logaddexp(log_sum, term)
     result = -log_sum / beta  # (m,)
-
     result = np.where(np.isinf(result), limit_potential, result)
-
     return result  # shape: (m,)
 
 
@@ -1218,6 +1308,17 @@ def precalculate_effective_potential(points, beta, host_data, host_ff_dict, gues
     potential[potential_mask] = redo_potential
     return potential
 
+def generate_sum_potential(points, host_data, host_ff_dict, guest_data, guest_ff_dict, 
+                                     cutoff=12*angstrom, max_pot=200*kjmol):
+    potential = np.zeros(points.shape[:-1])
+    ffatypes = guest_data[2]
+    ffatypes_id = guest_data[3]
+    for i in ffatypes_id:
+        sigmaff, epsilonff = guest_ff_dict[i]
+
+        potential += get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=cutoff)
+    
+    return potential
 
 def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest_data, guest_ff_dict, tmp_epot_dr, 
                                     tmp_spacing=0.15*angstrom, cutoff=12*angstrom, max_size=5e+6, max_pot=200*kjmol, 
@@ -1255,7 +1356,7 @@ def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest
             
         return potential
 
-def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_method='tricubic'):
+def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_method='tricubic', charge_dict=None, Electrostatic_Grid=None):
     """
     Create interpolator dictionary for multiple atom types, to be used in
     the calculation of the effective external potential.
@@ -1277,15 +1378,19 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
         Dictionary mapping guest atom types to interpolation function objects.
     """
     
+    EsGrid = np.load(Electrostatic_Grid) if Electrostatic_Grid is not None else None
+
     interpolator_dict = {}
     for key in grid_values_fn_dict:
+        charge = charge_dict[key] if charge_dict is not None else None
         grid_values = np.load(grid_values_fn_dict[key])
-        interpolator = Interpolator(grid_values, grid_origin, grid_spacing)
+        interpolator = Interpolator(grid_values, grid_origin, grid_spacing, 
+                                    charge=charge, EsGrid=EsGrid)
         interpolator_dict[key] = getattr(interpolator, int_method)
     return interpolator_dict
     
 
-def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_dict, mic=True, cutoff=12*angstrom):
+def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_dict, host_charge_dict=None, guest_charge_dict=None, mic=True, cutoff=12*angstrom):
     """
     Create dictionary of external potential generators for guest atom types, for
     generation of effective external potentials.
@@ -1321,13 +1426,15 @@ def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_di
     external_potential_dict = {}
     for i in range(len(guest_ff_dict)):
         sigmaff, epsilonff = guest_ff_dict[i]
-        if mic:
-            key = guest_ffatypes[i]
+        key = guest_ffatypes[i]
+        if host_charge_dict is not None and guest_charge_dict is not None:
             external_potential_dict[key] = partial(get_external_potential, host_data=host_data, host_ff_dict=host_ff_dict, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
         else:
-            raise NotImplementedError("Non-MIC external potentials are not implemented yet.")
-            # external_potential_dict[key] = partial(compute_batch_insertion_energy_typed, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst)
-        
+            guest_charge = guest_charge_dict[i]
+            external_potential_dict[key] = partial(get_external_potential_LJ_Coulomb, host_data=host_data, host_ff_dict=host_ff_dict, host_charge_dict=host_charge_dict, 
+                                                   sigmaff=sigmaff, epsilonff=epsilonff, guest_charge=guest_charge, cutoff=cutoff)
+
+
     return external_potential_dict
 
 def read_pars_file_dict(pars_file):
@@ -1420,7 +1527,27 @@ def _get_system_data_chk(chk_fn, pars_file):
         epsilon = float(pp[2]) * units[1]
         FF_dict[index] = np.array([sigma, epsilon])
 
-    return (pos, masses, ffatypes, ffatype_ids, natom, rvecs), FF_dict
+    charge_dict = None
+    try:
+        EIpar = Parameters.from_file(str(pars_file)).sections['FIXQ']
+        units = [parse_unit(unit[1].split()[1]) for unit in EIpar.definitions['UNIT'].lines]
+        charge_dict = np.empty((len(EIpar.definitions['ATOM'].lines),2))
+
+        for par in EIpar.definitions['ATOM'].lines:
+            pp = par[1].split()
+            atom = pp[0]
+            if atom not in ffatypes:
+                print(f"Warning: Atom type {atom} not found in ffatypes. Skipping.")
+                continue
+            index = ffatypes.index(atom)
+            charge = float(pp[1]) * units[0]
+            radius = float(pp[2]) * units[1]
+            charge_dict[index] = np.array([charge, radius])      
+    
+    except KeyError:
+        print('No charges present in parameters')
+
+    return (pos, masses, ffatypes, ffatype_ids, natom, rvecs), FF_dict, charge_dict
 
 
 def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, 
@@ -1570,6 +1697,7 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn,
     # Create ffatypes list with meaningful names (e.g., 'H1', 'C1', 'N2')
     ffatypes = []
     FF_dict = np.empty((len(unique_params), 2))
+    charge_dict = np.empty((len(unique_params), 2))
     for type_idx in sorted(unique_params.keys()):
         param_info = unique_params[type_idx]
         element = param_info['element']
@@ -1577,6 +1705,8 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn,
         ffatype_name = f"{element}{count}"
         ffatypes.append(ffatype_name)
         FF_dict[type_idx] = np.array([param_info['sigma'], param_info['epsilon']])
-    
-    return (pos*distance_unit, masses*mass_unit, ffatypes, ffatype_ids, natom, rvecs*distance_unit), FF_dict
+        charge_dict[type_idx] = np.array([param_info['charge'], 0])
+
+
+    return (pos*distance_unit, masses*mass_unit, ffatypes, ffatype_ids, natom, rvecs*distance_unit), FF_dict, charge_dict
 

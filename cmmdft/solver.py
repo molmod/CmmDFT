@@ -808,7 +808,7 @@ class Anderson(Picard):
     name = 'ANDERSON'
 
     def __init__(self, program, nsteps=500, method='hybridanderson', minimize_method='SLSQP_new',
-                 m=5, damping=0.3, delta=0.1, damping_max=0.8, damping_min=0.01, adaptive_damping=True,
+                 m=5, damping=0.1, delta=0.1, damping_max=0.8, damping_min=0.01, adaptive_damping=True,
                    **kwargs):
         """
         Initialize Anderson acceleration solver.
@@ -941,7 +941,7 @@ class Anderson(Picard):
 
         while np.max(n3_new) > 0.99 and self.damping > (self.damping_min*0.1)*1.01:
             self.damping = max(self.damping*self.damping_factors[1], self.damping_min*0.1)
-            log.dump('Max(n3) = %5.3f > 0.99, reducing damping factor to %5.3f'%(np.max(n3_new), self.damping))
+            log.dump('Max(n3) = %0.3e > 0.99, reducing damping factor to %0.3e'%(np.max(n3_new), self.damping))
 
             rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
             rho_new = self._clip_density(rho_new)

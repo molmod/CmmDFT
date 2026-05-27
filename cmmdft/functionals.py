@@ -9,7 +9,7 @@ from .units_constants import kjmol, planck, boltzmann, angstrom
 
 from .log import log
 from .system import NanoporousHost, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
-from .extpot_calculator import get_system_data, get_external_potential_dict, get_interpolator_dict, generate_effective_potential, get_external_potential, interpolate_effective_potential, precalculate_effective_potential
+from .extpot_calculator import generate_effective_potential, get_external_potential, interpolate_effective_potential, precalculate_effective_potential, generate_sum_potential
 
 from numba import njit
 
@@ -118,7 +118,7 @@ class HardSphereFunctional(Functional):
     
     name = 'HardSphere'
     
-    def __init__(self, grid, Rhs, m=None, version='atWBII', workdir='.'):
+    def __init__(self, grid, Rhs, m=None, version='atWBII'):
         """
         Initialize the hard sphere functional.
 
@@ -158,7 +158,6 @@ class HardSphereFunctional(Functional):
                 raise ValueError("Length of m should be equal to length of Rhs")
         version_array = decode_version(version)
         self.version = version_array
-        self.workdir=workdir
 
     def set_temperature(self, temperature, Rhs, **kwargs):
         """
@@ -616,7 +615,7 @@ class PCSAFTFunctional(Functional):
     
     name = 'PCSAFT'
     
-    def __init__(self, grid, guest, sigma_smooth=None, debug=False, hs_approx='exp'):
+    def __init__(self, grid, guest, chain=True, sigma_smooth=None, debug=False, hs_approx='exp'):
         """
         Initialize the PC-SAFT functional.
 
@@ -637,6 +636,7 @@ class PCSAFTFunctional(Functional):
         self.beta = None
         self.grid = grid
         self.guest = guest
+        self.chain = chain
         self.m = np.atleast_1d(guest.m)
         self.fractions = guest.fractions
         if len(self.m) == 1:
@@ -782,6 +782,11 @@ class PCSAFTFunctional(Functional):
 
         return phi_chain/self.beta
     
+    def value_chain_ideal(self, rho):
+        rho_reg = np.clip(rho, 1e-15, None)
+        rho_int = self.grid.integrate(rho_reg*(np.log(rho_reg)-1))
+        return np.sum((self.m -1) * rho_int)/self.beta
+
     def value_disp(self, wrho_disp, eta_disp):
         eps = 1e-14
 
@@ -853,6 +858,11 @@ class PCSAFTFunctional(Functional):
             dphi_chain[k] += (1 - self.m[k]) * direct_term # direct part
 
         return dphi_chain/self.beta
+    
+    def derive_chain_ideal(self, rho):
+        rho_reg = np.clip(rho, 1e-10, None)
+        dchain = (self.m - 1)[:, None, None, None] * np.log(rho_reg)
+        return dchain/self.beta
 
     def derive_disp(self, wrho_disp, eta_disp):
         m_avg, a_prefact, b_prefact = self._get_mavg_a_b_prefact(wrho_disp)
@@ -948,7 +958,12 @@ class PCSAFTFunctional(Functional):
         with log.section('PC-SAFT', 3, timer='PC-SAFT derive'):
 
             lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(krho)
-            dphi_chain = self.derive_chain(rho, lambda_chain, zeta2, zeta3)
+            if self.chain == 'True':
+                dphi_chain = self.derive_chain(rho, lambda_chain, zeta2, zeta3)
+            elif self.chain == 'ideal':
+                dphi_chain = self.derive_chain_ideal(rho)
+            else:
+                dphi_chain = np.zeros_like(rho)
             dphi_disp = self.derive_disp(wrho_disp, eta_disp)
             return dphi_chain + dphi_disp
     
@@ -970,8 +985,15 @@ class PCSAFTFunctional(Functional):
         """
         with log.section('PC-SAFT', 3, timer='PC-SAFT value'):
             lambda_chain, zeta2, zeta3, wrho_disp, eta_disp = self._get_weighted_densities(krho)
-            val_chain = self.value_chain(rho, lambda_chain, zeta2, zeta3)
+            if self.chain == 'True':
+                val_chain = self.value_chain(rho, lambda_chain, zeta2, zeta3)
+            elif self.chain == 'ideal':
+                val_chain = self.value_chain_ideal(rho)
+            else:
+                val_chain = 0
+
             val_disp = self.value_disp(wrho_disp, eta_disp)
+
             return val_chain + val_disp
 
 class MFAFunctional(Functional):
@@ -1174,7 +1196,7 @@ class MFAFunctionalMixture(MFAFunctional):
         Shape: (ncomp, ncomp, nx, ny, nz) - pairwise interaction potentials
     """
     
-    name = 'MIXMFA'
+    name = 'MFAMIX'
         
     def __init__(self, grid, ncomp, tailcorrections=False):
         """
@@ -1229,7 +1251,7 @@ class MFAFunctionalMixture(MFAFunctional):
                 self.a[i,j] = 0.5*self.grid.integrate(self.potential[i,j])
         return self.a
     
-    def generate_potential_lj(self, sigmas, epsilons, rmin=None, limit_potential=0, **kwargs):
+    def generate_potential_lj(self, sigmas, epsilons, rmin=None, limit_potential=0, cutoff=None, **kwargs):
         """
         Calculate the Lennard-Jones potential matrix on the real-space grid.
 
@@ -1246,24 +1268,37 @@ class MFAFunctionalMixture(MFAFunctional):
         **kwargs : dict
             Additional keyword arguments
         """
-        def lj_potential(sigma, epsilon):
+        def lj_potential(sigma, epsilon, r, cutoff):
             rmin = sigma
             potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
-            mask = self.grid.points[:,:,:,3]>rmin
+            mask = r>rmin
 
             x = np.zeros(self.grid.points.shape[:3])
-            x[mask] = sigma/self.grid.points[:,:,:,3][mask]
+            x[mask] = sigma/r[mask]
+
             potential[mask] = 4*epsilon*(x[mask]**12-x[mask]**6)
+
+            if cutoff is not None:
+                rc_mask = r <= cutoff
+                rc6 = (sigma/cutoff)**6
+                shift = 4*epsilon*(rc6**2 - rc6)
+                potential[rc_mask & mask] -= shift  # shift within cutoff
+                potential[~rc_mask] = 0.0         
+
             return potential
 
         assert sigmas.shape == epsilons.shape
         assert sigmas.shape == (self.ncomp, self.ncomp)
+
         self.potential = np.zeros((len(sigmas),len(sigmas)) + self.grid.points.shape[:3], dtype=np.float64)
+                 
+        centered = self.grid.points[:,:,:,:3] - self.grid.cell.rvecs.sum(axis=0)/2
+        r = np.sqrt(centered[:,:,:,0]**2 + centered[:,:,:,1]**2 + centered[:,:,:,2]**2)
         for i in range(len(sigmas)):
             for j in range(len(sigmas)):
-                self.potential[i,j] = lj_potential(sigmas[i,j], epsilons[i,j])
-
+                self.potential[i,j] = lj_potential(sigmas[i,j], epsilons[i,j], r, cutoff)
         self.kpotential = self.grid.fftn(self.potential)*self.grid.sigma_lanczos[None,:,:,:]
+
 
     def derive(self, rho, krho):
         """
@@ -1312,7 +1347,7 @@ class ExternalPotential(Functional):
 
     name = 'ExtPot'
 
-    def __init__(self, grid, system, epot_dr, positive=False, limit_potential=1e+4*kjmol, degree=11, cutoff=12*angstrom, interpolate=False):
+    def __init__(self, grid, system, epot_dr, sum_potential=False, positive=False, limit_potential=1e+4*kjmol, degree=11, cutoff=12*angstrom, interpolate=False):
         """
         Initialize the external potential functional.
 
@@ -1346,6 +1381,7 @@ class ExternalPotential(Functional):
         self.host = system.host
         self.epot_dr = epot_dr
 
+        self.sum_potential = sum_potential
         self.positive = positive
         self.limit_potential = limit_potential
         self.degree = degree
@@ -1420,7 +1456,9 @@ class ExternalPotential(Functional):
             guest_data = real_guest.guest_data
             guest_ff_dict = real_guest.guest_ff_dict
 
-            if self.interpolate:
+            if self.sum_potential:
+                potential = generate_sum_potential(points, host.host_data, host.host_ff_dict, guest_data, guest_ff_dict, cutoff=self.cutoff)
+            elif self.interpolate:
                 potential = interpolate_effective_potential(1/temperature/boltzmann, points, host.host_data, host.host_ff_dict, guest_data, guest_ff_dict, self.epot_dr, 
                                         tmp_spacing=0.15*angstrom, cutoff=self.cutoff,
                                         degree=self.degree, int_method='trilinear', remove_tmp=True)

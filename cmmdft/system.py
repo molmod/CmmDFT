@@ -141,7 +141,7 @@ class NanoporousHost(Host):
             self.struct = struct
             self.par = par
             self.ffname = ffname
-            self.host_data, self.host_ff_dict = get_system_data(struct, par, 
+            self.host_data, self.host_ff_dict, self.host_charge_dict = get_system_data(struct, par, 
                                                                 unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
 
     
@@ -311,7 +311,7 @@ class NonSphericalGuest(Guest):
             self.par = par
             mass = None
             mass = np.sum(self.atoms.get_masses())
-            self.guest_data, self.guest_ff_dict = get_system_data(struct, par, 
+            self.guest_data, self.guest_ff_dict, self.guest_charge_dict = get_system_data(struct, par, 
                                                                 unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
             Guest.__init__(self, name, mass, ffname)
 

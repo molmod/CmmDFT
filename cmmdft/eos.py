@@ -585,7 +585,6 @@ class EquationOfState(object):
             else:
                 index = min(4,len(solutions))
                 densities[i,:index] = np.array(sorted(solutions))
-            # densities[i,0] = np.nanmin(solutions)
                 
         return densities
     

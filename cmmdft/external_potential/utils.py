@@ -201,7 +201,27 @@ def _get_system_data_chk(chk_fn, pars_file):
         epsilon = float(pp[2]) * units[1]
         FF_dict[index] = np.array([sigma, epsilon])
 
-    return (pos, masses, ffatypes, ffatype_ids, natom, rvecs), FF_dict
+    charge_dict = None
+    try:
+        EIpar = Parameters.from_file(str(pars_file)).sections['FIXQ']
+        units = [parse_unit(unit[1].split()[1]) for unit in EIpar.definitions['UNIT'].lines]
+        charge_dict = np.empty((len(EIpar.definitions['ATOM'].lines),2))
+
+        for par in EIpar.definitions['ATOM'].lines:
+            pp = par[1].split()
+            atom = pp[0]
+            if atom not in ffatypes:
+                print(f"Warning: Atom type {atom} not found in ffatypes. Skipping.")
+                continue
+            index = ffatypes.index(atom)
+            charge = float(pp[1]) * units[0]
+            radius = float(pp[2]) * units[1]
+            charge_dict[index] = np.array([charge, radius])      
+    
+    except KeyError:
+        print('No charges present in parameters')
+
+    return (pos, masses, ffatypes, ffatype_ids, natom, rvecs), FF_dict, charge_dict
 
 
 def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, 
@@ -351,6 +371,7 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn,
     # Create ffatypes list with meaningful names (e.g., 'H1', 'C1', 'N2')
     ffatypes = []
     FF_dict = np.empty((len(unique_params), 2))
+    charge_dict = np.empty((len(unique_params), 2))
     for type_idx in sorted(unique_params.keys()):
         param_info = unique_params[type_idx]
         element = param_info['element']
@@ -358,8 +379,11 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn,
         ffatype_name = f"{element}{count}"
         ffatypes.append(ffatype_name)
         FF_dict[type_idx] = np.array([param_info['sigma'], param_info['epsilon']])
-    
-    return (pos*distance_unit, masses*mass_unit, ffatypes, ffatype_ids, natom, rvecs*distance_unit), FF_dict
+        charge_dict[type_idx] = np.array([param_info['charge'], 0])
+
+
+    return (pos*distance_unit, masses*mass_unit, ffatypes, ffatype_ids, natom, rvecs*distance_unit), FF_dict, charge_dict
+
 
 
 def generate_rotation_matrix(degree, dimension):

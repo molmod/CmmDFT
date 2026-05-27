@@ -408,47 +408,7 @@ def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, 
                          cell_matrix, cell_inv, cutoff).reshape(orig_shape[:-1])
 
 
-def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
-    """
-    Calculate the external potential using Lennard-Jones interactions.
-
-    Parameters
-    ----------
-    points : ndarray
-        Grid points at which to evaluate the potential, shape (N, 3).
-    host_data : tuple
-        Host system data containing positions, ffatype_ids, and cell vectors.
-    FF_dict : dict
-        Dictionary mapping atom types to (sigma, epsilon) force field parameters.
-    sigmaff : float
-        Sigma parameter for the guest atom in Angstrom.
-    epsilonff : float
-        Epsilon parameter for the guest atom in energy units.
-    cutoff : float, optional
-        Cutoff distance for Lennard-Jones interactions, default 12*angstrom.
-
-    Returns
-    -------
-    Vext : ndarray
-        External potential at each grid point, shape (N,).
-    """    
-    orig_shape = points.shape
-    points = points.reshape(-1,3)
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
-
-    sigmas_mixed   = np.array([0.5*(host_ff_dict[aid][0] + sigmaff) for aid in ffatype_ids])
-    epsilons_mixed = np.array([np.sqrt(host_ff_dict[aid][1] * epsilonff) for aid in ffatype_ids])
-    rc6     = (sigmas_mixed / cutoff) ** 6
-    v_shifts = 4 * epsilons_mixed * (rc6**2 - rc6)
-
-    cell_matrix = rvecs.astype(np.float64)
-    cell_inv    = np.linalg.inv(cell_matrix)
-
-    return _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
-                         cell_matrix, cell_inv, cutoff).reshape(orig_shape)
-
-
-def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, guest_charge=0.0, cutoff=12*angstrom, use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
+def get_external_potential_LJ_Coulomb(points, host_data, host_ff_dict, host_charge_dict, sigmaff, epsilonff, guest_charge=0.0, cutoff=12*angstrom, use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
     """
     Calculate the external potential using Lennard-Jones and optionally Coulomb interactions.
 
@@ -483,10 +443,13 @@ def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff,
         External potential at each grid point, shape (N,).
     """
 
-    (host_pos, masses, ffatypes, ffatype_ids, charges, natom, rvecs) = host_data
+    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
+    charges = np.array([host_charge_dict[id] for id in ffatype_ids])
 
     cell = Cell(rvecs)
     inv_rvecs = np.linalg.inv(rvecs)
+    orig_shape = points.shape[:-1]
+    points = points.reshape(-1, 3)
 
     Vext = np.zeros(points.shape[:-1])
     
@@ -529,8 +492,11 @@ def _get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff,
             rvecs, inv_rvecs, coulomb_epsilon_r, derivatives=False
         )
         Vext += V_recip
+        
+        V_self = -(coulomb_alpha / np.sqrt(np.pi)) * np.sum(charges)
+        Vext += (guest_charge / coulomb_epsilon_r) * V_self 
 
-    return Vext
+    return Vext.reshape(orig_shape)
     
 
 def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
@@ -676,14 +642,6 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
     COMs_expanded = np.tile(COMs[:, None, :], (1, natom, 1))  # (m, natom, 3)
     log_sum = None  # will hold running log-sum-exp
     
-    pot_r = np.zeros(m)
-    for atom_type_id in set(ffatype_ids):
-        indices = [i for i, t in enumerate(ffatype_ids) if t == atom_type_id]
-        if not indices:
-            continue
-        generator = epot_generator_dict[ffatypes[atom_type_id]]
-        coords = COMs_expanded[:, indices, :]# (m, natoms_of_type, 3)
-        pot_r += generator(coords.reshape(-1, 3)).reshape(m, -1).sum(axis=1)  # (m,)
 
     for r in range(nrot):
         R = rotations[r]
@@ -809,6 +767,17 @@ def precalculate_effective_potential(points, beta, host_data, host_ff_dict, gues
     potential[potential_mask] = redo_potential
     return potential
 
+def generate_sum_potential(points, host_data, host_ff_dict, guest_data, guest_ff_dict, 
+                                     cutoff=12*angstrom, max_pot=200*kjmol):
+    potential = np.zeros(points.shape[:-1])
+    ffatypes = guest_data[2]
+    ffatypes_id = guest_data[3]
+    for i in ffatypes_id:
+        sigmaff, epsilonff = guest_ff_dict[i]
+
+        potential += get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=cutoff)
+    
+    return potential
 
 def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest_data, guest_ff_dict, tmp_epot_dr, 
                                     tmp_spacing=0.15*angstrom, cutoff=12*angstrom, max_size=5e+6, max_pot=200*kjmol, 
@@ -846,7 +815,7 @@ def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest
             
         return potential
 
-def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_method='tricubic'):
+def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_method='tricubic', charge_dict=None, Electrostatic_Grid=None):
     """
     Create interpolator dictionary for multiple atom types, to be used in
     the calculation of the effective external potential.
@@ -868,15 +837,19 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
         Dictionary mapping guest atom types to interpolation function objects.
     """
     
+    EsGrid = np.load(Electrostatic_Grid) if Electrostatic_Grid is not None else None
+
     interpolator_dict = {}
     for key in grid_values_fn_dict:
+        charge = charge_dict[key] if charge_dict is not None else None
         grid_values = np.load(grid_values_fn_dict[key])
-        interpolator = Interpolator(grid_values, grid_origin, grid_spacing)
+        interpolator = Interpolator(grid_values, grid_origin, grid_spacing, 
+                                    charge=charge, EsGrid=EsGrid)
         interpolator_dict[key] = getattr(interpolator, int_method)
     return interpolator_dict
     
 
-def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_dict, mic=True, cutoff=12*angstrom):
+def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_dict, host_charge_dict=None, guest_charge_dict=None, mic=True, cutoff=12*angstrom):
     """
     Create dictionary of external potential generators for guest atom types, for
     generation of effective external potentials.
@@ -912,11 +885,13 @@ def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_di
     external_potential_dict = {}
     for i in range(len(guest_ff_dict)):
         sigmaff, epsilonff = guest_ff_dict[i]
-        if mic:
-            key = guest_ffatypes[i]
+        key = guest_ffatypes[i]
+        if host_charge_dict is not None and guest_charge_dict is not None:
             external_potential_dict[key] = partial(get_external_potential, host_data=host_data, host_ff_dict=host_ff_dict, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
         else:
-            raise NotImplementedError("Non-MIC external potentials are not implemented yet.")
-            # external_potential_dict[key] = partial(compute_batch_insertion_energy_typed, FF_dict=FF_dict, sigmaff=sigmaff, epsilonff=epsilonff, host_syst=host_syst)
-        
+            guest_charge = guest_charge_dict[i]
+            external_potential_dict[key] = partial(get_external_potential_LJ_Coulomb, host_data=host_data, host_ff_dict=host_ff_dict, host_charge_dict=host_charge_dict, 
+                                                   sigmaff=sigmaff, epsilonff=epsilonff, guest_charge=guest_charge, cutoff=cutoff)
+
+
     return external_potential_dict

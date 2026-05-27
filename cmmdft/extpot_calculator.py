@@ -847,7 +847,7 @@ def generate_rotation_matrix(degree, dimension):
         theta = np.linspace(0, 2 * np.pi, degree, endpoint=False)
         c, s = np.cos(theta), np.sin(theta)
         rot_2 = np.array([[c, -s, np.zeros_like(c)], [s, c, np.zeros_like(c)], [np.zeros_like(c), np.zeros_like(c), np.ones_like(c)]])
-        return rot_2.transpose(2, 0, 1), 1 / (degree * 4 * np.pi)
+        return rot_2.transpose(2, 0, 1), 1 / (degree)
         
     elif dimension == 3:
         # Lebedev grid for (alpha, beta) x uniform gamma
@@ -859,7 +859,7 @@ def generate_rotation_matrix(degree, dimension):
         c2, s2 = np.cos(phi2), np.sin(phi2)
         zeros = np.zeros(len(phi1))
         rot = np.array([[c1*c2, -s2, s1*c2],[c1*s2,c2,s1*s2],[-s1,zeros,c1]])       
-        return rot.transpose(2, 0, 1), scheme.weights
+        return rot.transpose(2, 0, 1), scheme.weights/(4*np.pi)
 
     elif dimension == 4:
         scheme = stroud_1969(4)

@@ -88,6 +88,7 @@ class FreeEnergy(object):
         self.overwrite = overwrite
         self.fn_tracking = None
         self.set_temperature(temperature)
+        self.excess_table = ['HardSphere', 'PCSAFT', 'MFA', 'MIXMFA', 'LDA', 'WDA-V']
 
     def copy(self):
         return copy_module.deepcopy(self)

@@ -802,6 +802,7 @@ class Calculator(object):
 
         if over_loading: N = self.grid.integrate(rho)
         krho = self.grid.fftn(rho)
+        self.fener.set_temperature(temperature)
         if partname.lower() in ["fid", "fideal"]:
             prefactor = boltzmann*temperature
             rho_reg = rho.copy()
@@ -817,8 +818,6 @@ class Calculator(object):
             assert partname in self.fener.part_names, f'{partname} not found in {self.fener.part_names}. The provided partname must be present in the fener object, or the ideal gas contribution ("fid" or "fideal")'
             for part in self.fener.parts:
                 if part.name == partname:
-                    if partname in ['MFMT', 'FMT', 'WDA-V', 'WDA-N', 'CORR']:
-                        if self.fener.temperature != temperature: self.fener.set_temperature(temperature)
                     if over_loading: return part.value(rho, krho)/N
                     else: return part.value(rho, krho)
 
@@ -1123,7 +1122,6 @@ class Calculator(object):
 
             else:
 
-                n_list = np.empty((self.ncomp, cvs.shape[0]-1))
 
                 header = 'cv'
                 if self.ncomp == 1:
@@ -1137,23 +1135,24 @@ class Calculator(object):
                 rho = np.load(fn).real
 
                 n_list = np.empty((rho.shape[0],cvs.shape[0]-1))
+                # Precompute CV bin edges and centers
+                q_list = (cvs[1:] + cvs[:-1]) / 2
+                step_dists = np.diff(cvs)
+
                 for i, rho_part in enumerate(rho):
-
                     if supercell:
-                        rho_part = make_supercell(rho_part, repetitions=[3,3,3], periodic=True)
+                        rho_part = make_supercell(rho_part, repetitions=[3, 3, 3], periodic=True)
 
-                    for e in range(len(cvs)-1):  # now calculating n and p for the different input collective variables
-                        q_min = cvs[e]
-                        q_max = cvs[e+1]
-                        step_dist = q_max - q_min
-                        mask = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
+                    # Assign each grid point to a bin once — shape (*grid_shape,)
+                    bin_indices = np.digitize(cvs_mat, cvs) - 1  # 0-indexed, -1 and n_bins are out of range
+                    valid = dist_mask & (bin_indices >= 0) & (bin_indices < len(q_list))
 
-                        if normalize:
-                            n_list[i, e] =  self.grid.integrate(mask*rho_part)/step_dist
-                        else:
-                            n_list[i, e] =  self.grid.integrate(mask*rho_part)
+                    for e in range(len(q_list)):
+                        mask = valid & (bin_indices == e)
+                        n_list[i, e] = self.grid.integrate(mask * rho_part)
 
-                    q_list = (cvs[1:]+cvs[:-1])/2
+                    if normalize:
+                        n_list[i] /= step_dists       
 
                 if save:
                     data = np.vstack((q_list[np.newaxis,...], n_list)).T
@@ -1833,35 +1832,29 @@ class Calculator(object):
             assert fn.is_file(), 'No density found for %3.0f K and %4.5f kJ/mol' %(temperature,chempot/kjmol)
             rho = np.load(fn)
 
-            if weighted_density:
-                wda = WDAVFunctional((T1+T2)/2, self.grid, D=self.system.guest.Rhs, eos=None)
-                wda._init_weight_function()
-                rho = wda._get_weighted_density(self.grid.fftn(rho)).real
-                fn = self.workdir / f'wrho_{file_suff}.npy'
-                np.save(fn, rho)
-
             mask = rho>10**-8 #remove densities which are close to zero or negative
 
-            Fex1 = self.excess_free_energy(T1, chempot, local=True, fn=fn)
-            Fex2 = self.excess_free_energy(T2, chempot, local=True, fn=fn)
+            Fex1 = self.excess_free_energy(T1, chempot=chempot, fn=fn)
+            Fex2 = self.excess_free_energy(T2, chempot=chempot, fn=fn)
 
-            N = self.loading(temperature, chempot)
+            N = self.loading(temperature, chempot)[0]
             if not np.isclose(N,0):
                     
                 rho_avg = N/self.host.cell.volume
-                s_ex = -(Fex1 - Fex2)/dT/N/boltzmann 
+                s_ex = -(Fex1 - Fex2)/dT
 
-                mass = np.sum(self.guest.mol.masses)
+                mass = np.sum(self.guest.atoms.get_masses()*amu)
 
-                Ds_local = np.zeros_like(rho)
-                Ds_local[mask] = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex[mask])
-                Ds = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*self.grid.integrate(s_ex))
-
+                # Ds_local = np.zeros_like(rho)
+                # Ds_local[mask] = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex[mask])
                 S_ex = self.grid.integrate(s_ex)
-                log.dump(f'The excess entropy of the system is {S_ex*N*boltzmann*mol/joule:4e}J/mol/K')
-                if save:
-                    log.dump(f'Saved the local diffusion constants to {self.workdir}/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
-                    np.save(self.workdir / f'local_diffusion_constants_{(T1+T2)/2:#7.5f}K_{chempot/kjmol:#7.5f}.npy', Ds_local)
+                print(alpha*S_ex/N/boltzmann)
+                Ds = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*S_ex/N/boltzmann)
+
+                log.dump(f'The excess entropy of the system is {S_ex*mol/joule:4e}J/mol/K')
+                # if save:
+                #     log.dump(f'Saved the local diffusion constants to {self.workdir}/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
+                #     np.save(self.workdir / f'local_diffusion_constants_{(T1+T2)/2:#7.5f}K_{chempot/kjmol:#7.5f}.npy', Ds_local)
                 return Ds                 
             else:
                 Ds = np.nan

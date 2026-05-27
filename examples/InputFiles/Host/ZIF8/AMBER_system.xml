@@ -1,0 +1,589 @@
+<?xml version="1.0" ?>
+<System openmmVersion="8.0" type="System" version="1">
+	<PeriodicBoxVectors>
+		<A x="3.4996000000000005" y="0" z="0"/>
+		<B x="0" y="3.4992" z="0"/>
+		<C x="0" y=".00061070815546575" z="3.49909994670566"/>
+	</PeriodicBoxVectors>
+	<Particles>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="1.008"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="12.01"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="65.409"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+		<Particle mass="14.0067"/>
+	</Particles>
+	<Constraints/>
+	<Forces>
+		<Force forceGroup="0" name="HarmonicBondForce" type="HarmonicBondForce" usesPeriodic="0" version="2">
+			<Bonds/>
+		</Force>
+		<Force forceGroup="0" name="HarmonicAngleForce" type="HarmonicAngleForce" usesPeriodic="0" version="2">
+			<Angles/>
+		</Force>
+		<Force energy="k * (1 - cos(m*(theta - theta0)))" forceGroup="0" name="CustomTorsionForce" type="CustomTorsionForce" usesPeriodic="0" version="3">
+			<PerTorsionParameters>
+				<Parameter name="k"/>
+				<Parameter name="m"/>
+				<Parameter name="theta0"/>
+			</PerTorsionParameters>
+			<GlobalParameters/>
+			<EnergyParameterDerivatives/>
+			<Torsions/>
+		</Force>
+		<Force alpha="0" cutoff="1" dispersionCorrection="1" ewaldTolerance="1e-05" exceptionsUsePeriodic="0" forceGroup="0" includeDirectSpace="1" ljAlpha="0" ljnx="0" ljny="0" ljnz="0" method="4" name="NonbondedForce" nx="0" ny="0" nz="0" recipForceGroup="-1" rfDielectric="78.3" switchingDistance="-1" type="NonbondedForce" useSwitchingFunction="0" version="4">
+			<GlobalParameters/>
+			<ParticleOffsets/>
+			<ExceptionOffsets/>
+			<Particles>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".06276" q=".0912" sig=".2511"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".0656888" q=".0499" sig=".265"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q=".7551" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".359824" q="-.0622" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".4577296" q="-.2697" sig=".34"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".0523" q="1.3429" sig=".196"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+				<Particle eps=".71128" q="-.6822" sig=".325"/>
+			</Particles>
+			<Exceptions/>
+		</Force>
+	</Forces>
+</System>

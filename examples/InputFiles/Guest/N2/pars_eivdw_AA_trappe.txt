@@ -1,0 +1,36 @@
+# Fixed charges
+# =============
+
+FIXQ:UNIT Q0 e
+FIXQ:UNIT P e
+FIXQ:UNIT R angstrom
+FIXQ:SCALE 1 0.0
+FIXQ:SCALE 2 0.0
+FIXQ:SCALE 3 0.0
+FIXQ:DIELECTRIC 1.0
+
+# Atom parameters
+# -------------------------------------------
+# KEY        label        Q0             R   
+# -------------------------------------------
+
+FIXQ:ATOM     M_CD   0.964000000  0.000000000
+FIXQ:ATOM     O_CD  -0.482000000  0.000000000
+
+
+
+# van der Waals
+#==============
+
+LJ:UNIT SIGMA angstrom
+LJ:UNIT EPSILON kcalmol
+LJ:SCALE 1 0.0
+LJ:SCALE 2 0.0
+LJ:SCALE 3 0.0
+
+# ------------------------------------
+# KEY      ffatype  SIGMA  EPSILON
+# ------------------------------------
+
+LJ:PARS    M_CD     0.000  0.0000000000
+LJ:PARS    O_CD     3.310  0.0715394339

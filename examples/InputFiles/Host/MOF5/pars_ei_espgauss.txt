@@ -1,0 +1,33 @@
+#Fixed charges
+#---------------
+
+FIXQ:UNIT Q0 e
+FIXQ:UNIT P e
+FIXQ:UNIT R angstrom
+FIXQ:SCALE 1 1.0
+FIXQ:SCALE 2 1.0
+FIXQ:SCALE 3 1.0
+FIXQ:DIELECTRIC 1.0
+
+# Atomic parameters
+# ----------------------------------------------------
+# KEY        label  Q_0A              R_A
+# ----------------------------------------------------
+FIXQ:ATOM       Zn  0.0000000000  2.0730000000
+FIXQ:ATOM     H_ph  0.0000000000  0.7240000000
+FIXQ:ATOM     C_ca  0.0000000000  1.1630000000
+FIXQ:ATOM     C_pc  0.0000000000  1.1630000000
+FIXQ:ATOM     O_ca  0.0000000000  1.1180000000
+FIXQ:ATOM     C_ph  0.0000000000  1.1630000000
+FIXQ:ATOM     O_ce  0.0000000000  1.1180000000
+# Bond parameters
+# ----------------------------------------------------
+# KEY         label0   label1           P_AB          
+# ----------------------------------------------------
+FIXQ:BOND      C_ph      C_ph  -0.0000000000
+FIXQ:BOND      C_ca      C_pc  -0.1800000000
+FIXQ:BOND      O_ce        Zn  -0.4450000000
+FIXQ:BOND      C_ph      H_ph  -0.1200000000
+FIXQ:BOND      C_ca      O_ca   0.3950000000
+FIXQ:BOND      C_pc      C_ph  -0.0000000000
+FIXQ:BOND      O_ca        Zn  -0.3250000000

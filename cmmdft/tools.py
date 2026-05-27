@@ -8,14 +8,12 @@ from __future__ import division
 import numpy as np
 import itertools
 
-from ase import Atoms
-from .units_constants import boltzmann, kjmol, angstrom, kcalmol, amu, gram, centimeter
+from .units_constants import boltzmann, kjmol, angstrom, kcalmol, amu, gram, centimeter, parse_unit
 
 __all__ = [
     'selection_sort', 'bisect_left', 'get_file_suffix',
     'find_local_maxima', 'find_neighbours'
     'potential_from_mfa', 'make_supercell',
-    'atoms_from_chk', 'load_chk'
 ]
 
 def selection_sort(x):
@@ -274,6 +272,9 @@ class Document(object):
 
 
 class Block(object):
+    """
+    Class for writing in .aif files
+    """
     def __init__(self, name):
         self.name = name
         self.pairs = {}
@@ -288,6 +289,9 @@ class Block(object):
         return loop
 
 class Loop(object):
+    """
+    Class for writing loop objects .aif files
+    """
     def __init__(self, prefix, keys):
         self.prefix = prefix
         self.keys = keys
@@ -298,95 +302,71 @@ class Loop(object):
             self.data[key] = column
 
 
-def atoms_from_chk(chk_file):
-    allowed_keys = [
-        'numbers', 'pos', 'scopes', 'scope_ids', 'ffatypes',
-        'ffatype_ids', 'bonds', 'rvecs', 'charges', 'radii',
-        'valence_charges', 'dipoles', 'radii2', 'masses',
-    ]
-    kwargs = {}
-    for key, value in load_chk(chk_file).items():
-        if key in allowed_keys:
-            kwargs.update({key: value})
+energy_sign = ['enthalpy', 'energy', 'potential']
+pressure_sign = ['pressure', 'fugacity', 'pres', 'p']
+loading_sign = ['loading', 'amount']
 
-    if 'rvecs' in kwargs.keys():
-        if len(kwargs['rvecs']):
-            return Atoms(numbers=kwargs['numbers'],
-                        positions=kwargs['pos'],
-                        cell=kwargs['rvecs'])
+unit_dict = {
+    'kJ/mol': kjmol,
+    'kjmol': kjmol,
+}
+
+class aif_reader(object):
+
+    def __init__(self, aif_fn):
+        self.aif_fn = aif_fn
+        self.read_data()
         
-    
-    return Atoms(numbers=kwargs['numbers'],
-                positions=kwargs['pos'])
-    
+    @staticmethod
+    def get_unit(property_name):
+        for sign in energy_sign:
+            if sign in property_name.lower():
+                return 'energy'
+        for sign in pressure_sign:
+            if sign in property_name.lower():
+                return 'pressure'
+        for sign in loading_sign:
+            if sign in property_name.lower():
+                return 'loading'
+        return None
 
-def load_chk(filename):
-    '''Load a checkpoint file
+    def read_data(self):
+        """Reads an AIF file and returns a dictionary with its contents."""
+        units = {}
+        loop = False
+        loop_values = {}
+        with open(self.aif_fn, 'r') as f:
+            lines = f.readlines()
+            for line in lines:
+                if line.startswith('_unit'):
+                    units_line = line.strip().split()
+                    unit_key = units_line[0].split('_')[-1]
+                    unit_str = units_line[1]
+                    try:
+                        unit_value = parse_unit(unit_str)
+                        units[unit_key] = unit_value
+                    except ValueError:
+                        unit_value = unit_dict[unit_str]
+                        units[unit_key] = unit_value
+                if line.startswith('loop_'):
+                    loop = True
+                elif loop and line.startswith('_adsorp'):
+                    property = line.strip().replace('_adsorp_', '')
+                    unit = units[self.get_unit(property)]
+                    loop_values[property] = ([], unit)
+                elif loop and not line.startswith('_'):
+                    values = line.strip().split(' ')
+                    for i, v in enumerate(values):
+                        v = float(v)
+                        
+                        key = list(loop_values.keys())[i]
+                        loop_values[key][0].append(v*loop_values[key][1])
+                
+        self.data = loop_values
+        self.units = units
 
-       Argument:
-        | filename  --  the file to load from
-
-       The return value is a dictionary whose keys are field labels and the
-       values can be None, string, integer, float, boolean or an array of
-       strings, integers, booleans or floats.
-
-       The file format is similar to the Gaussian fchk format, but has the extra
-       feature that the shapes of the arrays are also stored.
-    '''
-    with open(filename) as f:
-        result = {}
-        while True:
-            line = f.readline()
-            if line == '':
-                break
-            if len(line) < 54:
-                raise IOError('Header lines must be at least 54 characters long.')
-            key = line[:40].strip()
-            kind = line[47:52].strip()
-            value = line[53:-1] # discard newline
-            if kind == 'str':
-                result[key] = value
-            elif kind == 'int':
-                result[key] = int(value)
-            elif kind == 'bln':
-                result[key] = value.lower() in ['true', '1', 'yes']
-            elif kind == 'flt':
-                result[key] = float(value)
-            elif kind[3:5] == 'ar':
-                if kind[:3] == 'str':
-                    dtype = np.dtype('U22')
-                elif kind[:3] == 'int':
-                    dtype = int
-                elif kind[:3] == 'bln':
-                    dtype = bool
-                elif kind[:3] == 'flt':
-                    dtype = float
-                else:
-                    raise IOError('Unsupported kind: %s' % kind)
-                shape = tuple(int(i) for i in value.split(','))
-                array = np.zeros(shape, dtype)
-                if array.size > 0:
-                    work = array.ravel()
-                    counter = 0
-                    while True:
-                        short = f.readline().split()
-                        if len(short) == 0:
-                            raise IOError('Insufficient data')
-                        for s in short:
-                            if dtype == bool:
-                                work[counter] = s.lower() in ['true', '1', 'yes']
-                            elif callable(dtype):
-                                work[counter] = dtype(s)
-                            else:
-                                work[counter] = s
-                            counter += 1
-                            if counter == array.size:
-                                break
-                        if counter == array.size:
-                            break
-                result[key] = array
-            elif kind == 'none':
-                result[key] = None
-            else:
-                raise IOError('Unsupported kind: %s' % kind)
-    return result
+    def return_data(self, key):
+        if key in self.data.keys():
+            return self.data[key]
+        else:
+            raise KeyError(f"{key} not found in keys, keys present are: " + ', '.join(self.data.keys()))

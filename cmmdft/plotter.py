@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 
-import os, sys, numpy as np, matplotlib.pyplot as pp
+import os, sys, numpy as np, matplotlib.pyplot as plt
 from pathlib import Path
 import matplotlib.cm as cmap
 
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, parse_unit
-
+from .tools import aif_reader
 from .eos import ModifiedBenedictWebbRubinEOS
 
 __all__ = ['Plotter', 'MultiPlotter']
@@ -88,7 +88,7 @@ class Plotter(object):
             a matplotlib figure object.
         
         '''
-        self.fig = pp.figure()
+        self.fig = plt.figure()
         fn_suffix = 'convergence_%7.5fkJmol_%7.5fK.txt' %(chempot/kjmol, temp)
 
         fn = self.calculator.workdir / fn_suffix
@@ -175,8 +175,8 @@ class Plotter(object):
             a matplotlib figure object.
         
         '''
-        self.fig = pp.figure()
-        pp.clf()
+        self.fig = plt.figure()
+        plt.clf()
         self.fig.clear()
         axs = self.fig.gca()
         if not (isinstance(temperatures, list) or isinstance(temperatures,np.ndarray)):
@@ -256,8 +256,8 @@ class Plotter(object):
         -------
             matplotlib figure
         '''
-        self.fig = pp.figure()
-        pp.clf()
+        self.fig = plt.figure()
+        plt.clf()
         self.fig.clear()
         axs = self.fig.gca()
         if not (isinstance(temperatures, list) or isinstance(temperatures,np.ndarray)):
@@ -313,7 +313,7 @@ class Plotter(object):
                             a function that allows to compute/extract the value of the observable that needs to be plotted
                             using the temperature and chemical potential as arguments (in that order).
         '''
-        self.fig = pp.figure()
+        self.fig = plt.figure()
         self.fig.clear()
         axs = self.fig.subplots(nrows=1,ncols=1)
         if not (isinstance(temperatures, list) or isinstance(temperatures,np.ndarray)):
@@ -464,7 +464,7 @@ class Plotter(object):
                         0 means that the whole volume is 'empty space'
         '''
         #read data for given observable
-        self.fig = pp.figure(0)
+        self.fig = plt.figure(0)
         if obs.lower() == 'log_rho':
             try:
                 assert os.path.isfile('%s/%s_%4.5fkJmol_%3.0fK.npy' %(self.calculator.workdir,'rho',chempot/kjmol,temperature/kelvin))
@@ -651,7 +651,7 @@ class Plotter(object):
         grand_pot = data[3]
         free_energy = data[4]
 
-        self.fig = pp.figure()
+        self.fig = plt.figure()
 
         color1 = 'tab:red'
         ax1 = self.fig.gca()
@@ -695,27 +695,22 @@ class Plotter(object):
             self.fig.savefig(fn, dpi=150)
         return self.fig
 
-    def plot_loading_AIF(self, temperature, x_key='pressure',  y_keys='amount'):
-        from gemmi import cif
+    def plot_loading_AIF(self, temperature, x_key='pressure',  y_key='amount', x_unit='au', y_unit='au'):
         fn = f'{self.workdir}/loading_{temperature}K.aif'
-        aif = cif.read(fn)
-        block = aif.sole_block()
-        values = []
-        for key in y_keys:
-            values.append(np.array(block.find_loop(f'_adsorp_{key}'), dtype=float))
-        self.fig = pp.figure()
-        ax = self.fig.gca()
+        aif_read = aif_reader(fn)
 
-        ax.plot(values[0], values[1], label=f'')
-        unit_x = block.find_pair(f'_units_{x_key[0]}')
-        unit_y = block.find_pair(f'_units_{y_keys[1]}')
-        pp.xlabel(f'{key[0]} [{unit_x}]')
-        pp.ylabel(f'{key[1]} [{unit_y}]')
+        x_data = aif_read.return_data(x_key)
+        y_data = aif_read.return_data(y_key)
+        
+        fig = plt.figure()
+        ax = fig.gca()
 
-        pp.show()
+        ax.plot(x_data, y_data, label=f'')
 
-        pass
-
+        ax.set_xlabel(f'{x_key} [{x_unit}]')
+        ax.set_ylabel(f'{y_key} [{y_unit}]')
+        return fig
+       
         
 class MultiPlotter(Plotter):
     '''
@@ -751,8 +746,8 @@ class MultiPlotter(Plotter):
                             a function that allows to compute/extract the value of the observable that needs to be plotted
                             using the temperature and chemical potential as arguments (in that order).
         '''
-        pp.clf()
-        self.fig = pp.figure()        
+        plt.clf()
+        self.fig = plt.figure()        
         self.fig.clear()
         axs = self.fig.gca()
         if not (isinstance(temperatures, list) or isinstance(temperatures,np.ndarray)):
@@ -798,7 +793,7 @@ class MultiPlotter(Plotter):
                             a function that allows to compute/extract the value of the observable that needs to be plotted
                             using the temperature and chemical potential as arguments (in that order).
         '''
-        self.fig = pp.figure()        
+        self.fig = plt.figure()        
         self.fig.clear()
         axs = self.fig.subplots(nrows=1,ncols=1)
         if not (isinstance(temperatures, list) or isinstance(temperatures,np.ndarray)):

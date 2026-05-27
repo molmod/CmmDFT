@@ -26,20 +26,30 @@ import glob
 from distutils.core import setup
 
 setup(
-        name='CmmDFT',
-        version='1.0',
-        description='Python library to perform adsorption calculations using classical DFT.',
-        author='Louis Vanduyfhuys',
-        author_email='Louis.Vanduyfhuys@UGent.be',
-        package_dir = {'cmmdft': 'cmmdft'},
-        packages=['cmmdft'],
-        classifiers=[
-            'Development Status :: 3 - Alpha',
-            'Environment :: Console',
-            'Intended Audience :: Science/Research',
-            'License :: OSI Approved :: GNU General Public License (GPL)',
-            'Operating System :: POSIX :: Linux',
-            'Programming Language :: Python',
-            'Topic :: Science/Engineering :: Molecular Science'
-        ],
+    name='CmmDFT',
+    version='1.0',
+    description='Python library to perform adsorption calculations using classical DFT.',
+    author='Louis Vanduyfhuys',
+    author_email='Louis.Vanduyfhuys@UGent.be',
+    package_dir = {'cmmdft': 'cmmdft'},
+    packages=['cmmdft', 'cmmdft.external_potential'],
+    package_data={
+        'cmmdft': ['rotations/lebedev/*.npz'],
+    },
+    classifiers=[
+        'Development Status :: 3 - Alpha',
+        'Environment :: Console',
+        'Intended Audience :: Science/Research',
+        'License :: OSI Approved :: GNU General Public License (GPL)',
+        'Operating System :: POSIX :: Linux',
+        'Programming Language :: Python',
+        'Topic :: Science/Engineering :: Molecular Science'
+    ],
+    install_requires=['numpy>=1.0',
+                      'scipy',
+                      'matplotlib',
+                      'ase>=3.23.0',
+                      'numba',
+                      ],
+
 )

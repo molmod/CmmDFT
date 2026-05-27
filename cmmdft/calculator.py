@@ -11,13 +11,12 @@ import json, zipfile, itertools
 from .units_constants import avogadro, planck, boltzmann, kjmol, bar, kelvin, joule, mol, angstrom, amu, convert_units
 
 from .system import NanoporousHost, System, GuestMixture, Guest
-from .program import Program
-from .free_energy import FreeEnergy
 from .functionals import WDAVFunctional, ExternalPotential
 from .eos import *
 from .log import log
 from .tools import selection_sort, bisect_left, make_supercell, get_file_suffix, Document, get_chempot_key
-from .extpot_calculator import get_external_potential, get_system_data
+from .external_potential.extpot_calculator import get_external_potential
+from .external_potential.utils import get_system_data
 #log.set_level('silent')
 
 
@@ -984,7 +983,7 @@ class Calculator(object):
             pts = self.host.atoms.positions[ring_indices] - center
             _, _, vh = np.linalg.svd(pts)
             diffusion_path[0] = center
-            diffusion_path[1] = (vh[-1] + center) / np.linalg.norm(vh[-1] + center)
+            diffusion_path[1] = vh[-1] + center
 
         unit_vector = diffusion_path[1] - diffusion_path[0]
         unit_vector /= np.linalg.norm(unit_vector)

@@ -5,7 +5,6 @@
 from __future__ import division
 
 import numpy as np, sys, os
-import matplotlib.pyplot as plt
 import time
 import scipy.optimize as opt
 
@@ -13,7 +12,6 @@ from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom
 
 from .log import log
 from .functionals import HardSphereFunctional
-from .tools import selection_sort
 
 __all__ = ['Solver', 'Picard', 'Anderson', 'Fire', 'QuasiNewton']
 

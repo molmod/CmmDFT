@@ -12,8 +12,7 @@ import json
 
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, planck, amu, parse_unit
 from .grid import Cell
-from .tools import atoms_from_chk
-from .extpot_calculator import get_system_data
+from .external_potential.utils import atoms_from_chk, get_system_data
 from .log import log
 
 from ase.io import read
@@ -345,6 +344,7 @@ class GuestMixture(Guest, object):
         self.names = [guest.name for guest in guests]
         self.guests = guests
         self.fractions = fractions
+        self.mix_name = '_'.join(self.names)
 
         assert len(guests) == len(fractions) == len(self.names)
         # assert all(isinstance(g, Guest) for g in guests)

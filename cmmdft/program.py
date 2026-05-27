@@ -15,7 +15,7 @@ from .system import System, GuestMixture, Guest
 from .grid import Grid
 from .solver import Solver, Picard, Anderson, NoSolutionError
 from .log import log
-from .tools import find_local_maxima, find_neighbours, get_file_suffix
+from .tools import find_local_maxima, get_file_suffix
 from .eos import *
 __all__ = ['Program']
 

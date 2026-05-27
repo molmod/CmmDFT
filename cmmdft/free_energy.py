@@ -88,6 +88,7 @@ class FreeEnergy(object):
         self.overwrite = overwrite
         self.fn_tracking = None
         self.set_temperature(temperature)
+        self.excess_table = ['HardSphere', 'PCSAFT', 'MFA', 'MFAMIX', 'LDA', 'WDA-V']
 
     def copy(self):
         return copy_module.deepcopy(self)
@@ -434,7 +435,7 @@ class FreeEnergy(object):
             wda = WDAVFunctional(self.grid, self.system.guest.Rhs, eos)
         self.add_part(wda)
 
-    def add_hard_sphere(self,version='atWBII'):
+    def add_hard_sphere(self,version='tWBII'):
         """
         Add hard-sphere repulsion functional.
         
@@ -450,7 +451,7 @@ class FreeEnergy(object):
             - 'MFMT': Modified FMT (better for chains)
             'a' and/or 't' can be added to the beginning to use the anti-symmetrized 
             and tensor corrected versions
-            Default is 'atWBII'
+            Default is 'tWBII'
         
         Notes
         -----
@@ -593,7 +594,6 @@ class FreeEnergy(object):
             Rhs = self.system.guest.Rhs
             sigma = self.system.guest.sigma
             epsilon = self.system.guest.epsilon
-
             if isinstance(self.system.guest, GuestMixture):
                 MBWR = ModifiedBenedictWebbRubinMixEOS.from_guest(self.system.guest, homogeneous=False)
                 CS = CarnahanStarlingMixEOS.from_guest(self.system.guest, homogeneous=False)

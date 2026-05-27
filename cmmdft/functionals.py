@@ -9,7 +9,7 @@ from .units_constants import kjmol, planck, boltzmann, angstrom
 
 from .log import log
 from .system import NanoporousHost, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
-from .extpot_calculator import get_system_data, get_external_potential_dict, get_interpolator_dict, generate_effective_potential, get_external_potential, interpolate_effective_potential, precalculate_effective_potential
+from .external_potential.extpot_calculator import get_external_potential, interpolate_effective_potential, precalculate_effective_potential
 
 from numba import njit
 
@@ -269,9 +269,9 @@ class HardSphereFunctional(Functional):
             n2 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[2]), self.m, axes=(0,0))
             n3 = np.tensordot(self.grid.ifftn(krho*self.scalar_weight_functions[3]), self.m, axes=(0,0))
 
-            # n0 = np.clip(n0, 0, None)
-            # n1 = np.clip(n1, 0, None)
-            # n2 = np.clip(n2, 0, None)
+            n0 = np.clip(n0, 0, None)
+            n1 = np.clip(n1, 0, None)
+            n2 = np.clip(n2, 0, None)
             # n3 = np.clip(n3, 0, None)
 
             # #When n3 approaches 1, things can go wrong because the functional
@@ -719,10 +719,12 @@ class PCSAFTFunctional(Functional):
         wrho_chain = self.grid.ifftn(krho*self.kwchain)
 
         lambda_chain = self.grid.ifftn(krho*self.kwlambda)
+        lambda_chain = np.clip(lambda_chain, 0.0 ,None)
 
         zeta2 = np.pi/6*np.einsum('nijk,n->ijk',
                                 wrho_chain,
                                 self.m*(self.dhs**2))
+        zeta2 = np.clip(zeta2, 0.0, None)
 
         zeta3 = np.pi/6*np.einsum('nijk,n->ijk',
                                 wrho_chain,
@@ -825,22 +827,23 @@ class PCSAFTFunctional(Functional):
                 dyidnk += np.pi/6*self.m[k]*dk**3*z3_2*(1+3*di*zeta2*z3_1 + 3/2*di**2*zeta2**2*z3_2)
                 rho_dyik_yii += ((1 - self.m[i]) * (rho[i]*(dyidnk/(yii[i] + eps))))
             
-            # Lambda contribution (indirect):
-            rho_min = 1e-14
-            rho_safe = np.maximum(rho[k], rho_min)
-            lambda_safe = np.maximum(lambda_chain[k], rho_min)
-            direct_term = (
-                np.log(yii[k] + eps)
-                + np.log(lambda_safe)
-                - np.log(rho_safe)
-                - 1
-            )
-
             rho_cut = 1e-10
-            mask = rho[k] > rho_cut
-            direct_term *= mask
+            lambda_cut = 1e-10  # below this, bonding shell is geometrically occluded
 
-            k_rho_lambda = self.grid.fftn(rho_safe / lambda_safe)
+            # Mask: fluid voxel AND bonding shell has meaningful density
+            connectivity_mask = (rho[k] > rho_cut) & (lambda_chain[k] > lambda_cut)
+            with np.errstate(invalid='ignore', divide='ignore'):
+                # Safe ratio — zero where connectivity is broken
+                ratio = np.where(connectivity_mask, rho[k] / lambda_chain[k], 1.0)
+                # Note: 1.0 not 0.0 — log(1.0) = 0, so these voxels contribute nothing to free energy
+
+                # Direct term — same mask
+                direct_term = np.where(
+                    connectivity_mask,
+                    np.log(yii[k] + eps) + np.log(lambda_chain[k]) - np.log(rho[k]) - 1,
+                    0.0
+                )
+            k_rho_lambda = self.grid.fftn(ratio)
             dphi_chain[k] += self.grid.ifftn(self.grid.fftn(rho_dyik_yii)*self.kwchain[k]) + (1-self.m[k])*self.grid.ifftn(k_rho_lambda*self.kwlambda[k])
 
             dphi_chain[k] += (1 - self.m[k]) * direct_term # direct part
@@ -1036,7 +1039,6 @@ class MFAFunctional(Functional):
             Van der Waals A parameter
         """
         self.a = 0.5*self.grid.integrate(self.potential)
-        print(self.a)
         return self.a
     
     def dump_potential(self, fn):
@@ -1168,7 +1170,7 @@ class MFAFunctionalMixture(MFAFunctional):
         Shape: (ncomp, ncomp, nx, ny, nz) - pairwise interaction potentials
     """
     
-    name = 'MIXMFA'
+    name = 'MFAMIX'
         
     def __init__(self, grid, ncomp, tailcorrections=False):
         """
@@ -1191,6 +1193,7 @@ class MFAFunctionalMixture(MFAFunctional):
             self.grid = grid.supercell(self.repetitions)
         else:
             self.grid = grid
+
         self.potential = None
         self.kpotential = None
 
@@ -1221,9 +1224,10 @@ class MFAFunctionalMixture(MFAFunctional):
         for i in range(self.potential.shape[0]):
             for j in range(self.potential.shape[1]):
                 self.a[i,j] = 0.5*self.grid.integrate(self.potential[i,j])
+
         return self.a
     
-    def generate_potential_lj(self, sigmas, epsilons, rmin=None, limit_potential=0, **kwargs):
+    def generate_potential_lj(self, sigmas, epsilons, rmin=None, limit_potential=0, cutoff=None, **kwargs):
         """
         Calculate the Lennard-Jones potential matrix on the real-space grid.
 
@@ -1240,23 +1244,35 @@ class MFAFunctionalMixture(MFAFunctional):
         **kwargs : dict
             Additional keyword arguments
         """
-        def lj_potential(sigma, epsilon):
+        def lj_potential(sigma, epsilon, r, cutoff):
             rmin = sigma
             potential = np.full(self.grid.points.shape[:3], limit_potential, dtype=np.float64)
-            mask = self.grid.points[:,:,:,3]>rmin
+            mask = r>rmin
 
             x = np.zeros(self.grid.points.shape[:3])
-            x[mask] = sigma/self.grid.points[:,:,:,3][mask]
+            x[mask] = sigma/r[mask]
+
             potential[mask] = 4*epsilon*(x[mask]**12-x[mask]**6)
+
+            if cutoff is not None:
+                rc_mask = r <= cutoff
+                rc6 = (sigma/cutoff)**6
+                shift = 4*epsilon*(rc6**2 - rc6)
+                potential[rc_mask & mask] -= shift  # shift within cutoff
+                potential[~rc_mask] = 0.0         
+
             return potential
 
         assert sigmas.shape == epsilons.shape
         assert sigmas.shape == (self.ncomp, self.ncomp)
+
         self.potential = np.zeros((len(sigmas),len(sigmas)) + self.grid.points.shape[:3], dtype=np.float64)
+                 
+        centered = self.grid.points[:,:,:,:3] - self.grid.cell.rvecs.sum(axis=0)/2
+        r = np.sqrt(centered[:,:,:,0]**2 + centered[:,:,:,1]**2 + centered[:,:,:,2]**2)
         for i in range(len(sigmas)):
             for j in range(len(sigmas)):
-                self.potential[i,j] = lj_potential(sigmas[i,j], epsilons[i,j])
-
+                self.potential[i,j] = lj_potential(sigmas[i,j], epsilons[i,j], r, cutoff)
         self.kpotential = self.grid.fftn(self.potential)*self.grid.sigma_lanczos[None,:,:,:]
 
     def derive(self, rho, krho):

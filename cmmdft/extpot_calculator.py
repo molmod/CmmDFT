@@ -638,7 +638,7 @@ def generate_effective_potential(guest_chk_fn, points, beta, epot_generator_dict
     R1, weights1 = generate_rotation_matrix(degree, 3)          # (50, 3, 3), (50,)
     R2, weights2 = generate_rotation_matrix(degree, 2)          # (11, 3, 3) - Fixed dimension
 
-    combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3)  # (nrot, 3, 3)
+    combined_rot = np.einsum('aij,bjk->abij', R1, R2).reshape(-1, 3, 3)  # (nrot, 3, 3)
     expanded_weights = np.repeat(weights1*weights2, len(R2))   # (nrot,)
 
     if max_size is None:

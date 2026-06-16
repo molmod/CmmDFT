@@ -886,7 +886,7 @@ def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_di
     for i in range(len(guest_ff_dict)):
         sigmaff, epsilonff = guest_ff_dict[i]
         key = guest_ffatypes[i]
-        if host_charge_dict is not None and guest_charge_dict is not None:
+        if host_charge_dict is None or guest_charge_dict is None:
             external_potential_dict[key] = partial(get_external_potential, host_data=host_data, host_ff_dict=host_ff_dict, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
         else:
             guest_charge = guest_charge_dict[i]

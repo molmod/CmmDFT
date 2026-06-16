@@ -219,7 +219,8 @@ def _get_system_data_chk(chk_fn, pars_file):
             charge_dict[index] = np.array([charge, radius])      
     
     except KeyError:
-        print('No charges present in parameters')
+        pass
+        # print('No charges present in parameters')
 
     return (pos, masses, ffatypes, ffatype_ids, natom, rvecs), FF_dict, charge_dict
 

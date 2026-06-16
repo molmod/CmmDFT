@@ -801,7 +801,8 @@ class Calculator(object):
 
         if over_loading: N = self.grid.integrate(rho)
         krho = self.grid.fftn(rho)
-        self.fener.set_temperature(temperature)
+        if self.fener.temperature != temperature:
+            self.fener.set_temperature(temperature)
         if partname.lower() in ["fid", "fideal"]:
             prefactor = boltzmann*temperature
             rho_reg = rho.copy()

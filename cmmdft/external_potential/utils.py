@@ -436,3 +436,75 @@ def generate_rotation_matrix(degree, dimension):
         return rot.transpose(2, 0, 1), scheme.weights
     else:
         print('Must provide an integer with a valid dimension, choices are 2 or 3')
+
+def generate_smooth_so3_angles(N_beta):
+    """
+    Generates efficiently sampled Euler angles (alpha, beta, gamma) 
+    for high-accuracy orientational averaging of smooth functions.
+    
+    Parameters
+    ----------
+    N_beta : int
+        Number of sampling points for the beta (tilt) angle. 
+        Controls the overall density of the grid.
+        
+    Returns
+    -------
+    rotations : ndarray
+        Rotation matrices, shape (total_rotations, 3, 3).
+    weights : ndarray
+        Quadrature weights summing to 1.0, shape (total_rotations,).
+    """
+    angles = []
+    raw_weights = []
+    
+    # 1. Sample beta using a mid-point rule to avoid exact poles (Gimbal lock)
+    beta_grid = np.linspace(0.5 / N_beta, 1.0 - 0.5 / N_beta, N_beta) * np.pi
+    
+    for beta in beta_grid:
+        # Scale the number of alpha and gamma samples based on sin(beta)
+        # This prevents over-sampling and wasting evaluations near the poles.
+        sin_beta = np.sin(beta)
+        N_alpha = max(1, int(np.round(2 * N_beta * sin_beta)))
+        N_gamma = max(1, int(np.round(2 * N_beta * sin_beta)))
+        
+        alpha_grid = np.linspace(0, 2 * np.pi, N_alpha, endpoint=False)
+        gamma_grid = np.linspace(0, 2 * np.pi, N_gamma, endpoint=False)
+        
+        # Calculate the quadrature weight for this specific latitudinal ring
+        # Weight is proportional to the surface area element sin(beta)d_beta
+        ring_weight = sin_beta / (N_alpha * N_gamma)
+        
+        for alpha in alpha_grid:
+            for gamma in gamma_grid:
+                angles.append((alpha, beta, gamma))
+                raw_weights.append(ring_weight)
+                
+    # Convert lists to arrays
+    angles = np.array(angles)
+    weights = np.array(raw_weights)
+    weights /= np.sum(weights)  # Normalize weights to sum to 1.0
+    
+    # 2. Convert Euler angles (ZYZ convention) to Rotation Matrices
+    alpha, beta, gamma = angles[:, 0], angles[:, 1], angles[:, 2]
+    
+    ca, sa = np.cos(alpha), np.sin(alpha)
+    cb, sb = np.cos(beta), np.sin(beta)
+    cg, sg = np.cos(gamma), np.sin(gamma)
+    
+    rotations = np.zeros((len(angles), 3, 3))
+    
+    # Standard ZYZ Matrix Construction
+    rotations[:, 0, 0] =  ca * cb * cg - sa * sg
+    rotations[:, 0, 1] = -ca * cb * sg - sa * cg
+    rotations[:, 0, 2] =  ca * sb
+    
+    rotations[:, 1, 0] =  sa * cb * cg + ca * sg
+    rotations[:, 1, 1] = -sa * cb * sg + ca * cg
+    rotations[:, 1, 2] =  sa * sb
+    
+    rotations[:, 2, 0] = -sb * cg
+    rotations[:, 2, 1] =  sb * sg
+    rotations[:, 2, 2] =  cb
+    
+    return rotations, weights

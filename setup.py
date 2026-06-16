@@ -32,7 +32,7 @@ setup(
     author='Louis Vanduyfhuys',
     author_email='Louis.Vanduyfhuys@UGent.be',
     package_dir = {'cmmdft': 'cmmdft'},
-    packages=['cmmdft', 'cmmdft.external_potential'],
+    packages=['cmmdft', 'cmmdft.external_potential', 'cmmdft.external_potential.rotations'],
     package_data={
         'cmmdft': ['rotations/lebedev/*.npz'],
     },

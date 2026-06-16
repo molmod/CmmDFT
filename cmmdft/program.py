@@ -4,6 +4,7 @@
 
 from __future__ import division
 import copy as copy_module
+import warnings
 
 import numpy as np, sys, os, time, gc
 from pathlib import Path
@@ -383,7 +384,10 @@ class Program(object):
         elif pressure is not None:
             chempot = self.eos.compute_chempot(pressure=pressure, temperature=self.fener.temperature)[0]
             rho = self.eos.solve_densities_from_pressures([pressure])
-        rho_bulk = np.nanmin(rho)
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', message='All-NaN slice encountered', category=RuntimeWarning)
+            rho_bulk = np.nanmin(rho)
         
         if isinstance(self.system.guest, GuestMixture):
             rho_bulk = np.array(self.system.guest.fractions)*rho_bulk

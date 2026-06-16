@@ -446,7 +446,7 @@ class EquationOfState(object):
         """
         return np.logspace(-10,0,npoints)/angstrom**3
     
-    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=5000):    
+    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=10000):
         """
         Solve EOS for density as a function of chemical potential at fixed temperature.
 
@@ -465,7 +465,7 @@ class EquationOfState(object):
         chempots : float or array-like
             Chemical potential(s) in atomic units (Hartree).
         n_rough_gridpoints : int, optional
-            Number of coarse grid points used for bracketing, by default 1000.
+            Number of coarse grid points used for bracketing, by default 5000.
 
         Returns
         -------
@@ -473,46 +473,55 @@ class EquationOfState(object):
             Density solutions of shape ``(len(chempots), n_branches)``.
             Columns correspond to distinct phases (gas, liquid, solid);
             unused branches are filled with ``NaN``.
-
-        Raises
-        ------
-        ValueError
-            If more than 3 solution branches (phases) are detected.
         """
-        #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
+        # Evaluate chempot on coarse grid
         rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
-        #compute the chemical potential on this rough grid
         rough_chempot_grid = self.compute_chempot(rho=rough_density_grid)
-        #determine in which interval in rough_chempot_grid the given chempots lies and
-        chempots = np.atleast_1d(chempots)
-        density_intervals = [None,]*len(chempots)
 
-        for i,mu in enumerate(chempots):
-            for j in range(1,n_rough_gridpoints):
-                mu_low = rough_chempot_grid[j-1]
-                mu_high = rough_chempot_grid[j]
-                if np.all((mu_low - mu) * (mu_high - mu) <= 0):
-                    interval = [rough_density_grid[j-1],rough_density_grid[j]]
-                    if density_intervals[i] is None:
-                        density_intervals[i] = [interval]
-                    else:
-                        density_intervals[i].append(interval)
-        #for each chemical potential, find a solution in each proposed interval using the brentq method
-        densities = np.zeros([len(chempots), 2])*np.nan
-        for i,mu in enumerate(chempots):
-            solutions = []
+        chempots = np.atleast_1d(chempots)
+
+        # Vectorised sign-change bracketing
+        density_intervals = []
+        for mu in chempots:
+            diff = rough_chempot_grid - mu
+            sign_changes = np.where(np.diff(np.sign(diff)))[0]
+            sign_changes = sign_changes[sign_changes < len(rough_density_grid) - 1]  # guard OOB
+            intervals = [[rough_density_grid[j], rough_density_grid[j + 1]] for j in sign_changes]
+            density_intervals.append(intervals)
+
+        # Refine each bracket with brentq
+        all_stable = []
+        max_branches = 2
+        for i, mu in enumerate(chempots):
             def fun(rho):
                 return self.compute_chempot(rho=rho) - mu
-            if density_intervals[i] is not None:
-                for interval in density_intervals[i]:
-                    sol = brentq(fun, interval[0], interval[1])
+
+            solutions = []
+            for interval in density_intervals[i]:
+                try:
+                    fa, fb = fun(interval[0]), fun(interval[1])
+                    if fa * fb > 0:
+                        continue  # not a true bracket, skip
+                    sol = brentq(fun, interval[0], interval[1], xtol=1e-12, rtol=1e-10)
                     solutions.append(sol)
-            # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
-            # densities[i,:len(solutions)] = np.array(solutions)
-            if len(solutions) > 0:
-                stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
-                densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
-                
+                except ValueError:
+                    continue
+
+            # Deduplicate solutions that landed on adjacent interval boundaries
+            if solutions:
+                solutions = np.unique(np.round(solutions, decimals=10)).tolist()
+                stable = self.filter_stable_phases(solutions, ensemble='grand')
+                max_branches = max(max_branches, len(stable))
+            else:
+                stable = []
+            all_stable.append(stable)
+
+        # Build output array with dynamic number of branches
+        densities = np.full([len(chempots), max_branches], np.nan)
+        for i, stable in enumerate(all_stable):
+            if stable:
+                densities[i, :len(stable)] = np.array(sorted(stable))
+
         return densities
 
     def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000, filter=True):
@@ -553,39 +562,47 @@ class EquationOfState(object):
         #compute the pressure on this rough grid
         rough_pressure_grid = self.compute_pressure(rho=rough_density_grid)
         pressures = np.atleast_1d(pressures)
-        #determine in which interval in rough_pressure_grid the given pressure lies 
-        density_intervals = [None,]*len(pressures)
-        for i,p in enumerate(pressures):
-            for j in range(1,n_rough_gridpoints):
-                p_low = rough_pressure_grid[j-1]
-                p_high = rough_pressure_grid[j]
-                if (p_low - p) * (p_high - p) <= 0:
-                    interval = [rough_density_grid[j-1],rough_density_grid[j]]
-                    if density_intervals[i] is None:
-                        density_intervals[i] = [interval]
-                    else:
-                        density_intervals[i].append(interval)
+
+        # Vectorised sign-change bracketing
+        density_intervals = []
+        for P in pressures:
+            diff = rough_pressure_grid - P
+            sign_changes = np.where(np.diff(np.sign(diff)))[0]
+            sign_changes = sign_changes[sign_changes < len(rough_density_grid) - 1]  # guard OOB
+            intervals = [[rough_density_grid[j], rough_density_grid[j + 1]] for j in sign_changes]
+            density_intervals.append(intervals)
                         
         #for each pressure, find a solution in each proposed interval using the brentq method
-        densities = np.zeros([len(pressures), 4])*np.nan
+        all_stable = []
+        max_branches = 3
         for i,p in enumerate(pressures):
             solutions = []
             def fun(rho):
                 return self.compute_pressure(rho=rho) - p
-            if density_intervals[i] is not None:
-                for interval in density_intervals[i]:
-                    sol = brentq(fun, interval[0], interval[1])
+            
+            for interval in density_intervals[i]:
+                try:
+                    fa, fb = fun(interval[0]), fun(interval[1])
+                    if fa * fb > 0:
+                        continue  # not a true bracket, skip
+                    sol = brentq(fun, interval[0], interval[1], xtol=1e-12, rtol=1e-10)
                     solutions.append(sol)
-            # densities[i,0] = np.nanmin(solutions)            
-            # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
-            if filter:
-                if len(solutions) > 0:
-                    stable_solutions = self.filter_stable_phases(solutions, ensemble='gibbs')
-                    densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
+                except ValueError:
+                    continue
+            if solutions:
+                solutions = np.unique(np.round(solutions, decimals=10)).tolist()
+                stable = self.filter_stable_phases(solutions, ensemble='gibbs')
+                max_branches = max(max_branches, len(stable))
             else:
-                index = min(4,len(solutions))
-                densities[i,:index] = np.array(sorted(solutions))
+                stable = []
+            all_stable.append(stable)            
                 
+        # Build output array with dynamic number of branches
+        densities = np.full([len(pressures), max_branches], np.nan)
+        for i, stable in enumerate(all_stable):
+            if stable:
+                densities[i, :len(stable)] = np.array(sorted(stable))
+
         return densities
     
     def filter_stable_phases(self, rho, ensemble, p_tolerance=1e-15):
@@ -872,13 +889,20 @@ class EOS_MIX(EquationOfState):
         if rho is not None:    
             a = self.excess_free_energy_particle(rho)
             da_drhoi = self.df_drhoi(rho)
-            rho_copy, rho_sum, x = self._get_fractional_coefficients(rho)
+            rho_arr, rho_sum, x = self._get_fractional_coefficients(rho)
             return (a + rho_sum*da_drhoi).T
         elif pressure is not None:
             rho = self.solve_densities_from_pressures(pressure)
             rho = np.nanmin(rho, axis=1)
             return self.compute_excess_chempot(rho=rho, temperature=self.temperature)
     
+    def derivative_excess_free_energy_volume(self, rho):
+        "Returns the density derivative of the excess free energy per volume"
+        rho_arr, rho_sum, x = self._get_fractional_coefficients(rho)
+        value  = rho_sum*self.df_drhoi(rho)
+        value += self.excess_free_energy_particle(rho)
+        return value
+
     def compute_pressure(self, rho=None, chempot=None, temperature=None):
         """
         Compute total pressure of the mixture, from densities of chemical potentials.
@@ -974,41 +998,81 @@ class EOS_MIX(EquationOfState):
         ValueError
             If more than 3 branches (phases) are found.
         """
-        #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
+        # #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
+        # rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
+        # rho, rho_sum, x = self._get_fractional_coefficients(rough_density_grid)
+        # #compute the chemical potential on this rough grid
+        # rough_chempot_grid = self.compute_chempot(rho=rho_sum)
+
+        # #determine in which interval in rough_chempot_grid the given chempots lies and
+        # chempots = np.atleast_1d(chempots)
+
+        # density_intervals = [None,]*len(chempots)
+        # for i, mu in enumerate(chempots):
+        #     for j in range(1,n_rough_gridpoints):
+        #         mu_low = rough_chempot_grid[j-1]
+        #         mu_high = rough_chempot_grid[j]
+        #         if np.all((mu_low - mu) * (mu_high - mu) <= 0):
+        #             interval = [rough_density_grid[j-1],rough_density_grid[j]]
+        #             if density_intervals[i] is None:
+        #                 density_intervals[i] = [interval]
+        #             else:
+        #                 density_intervals[i].append(interval)
+
+        # #for each chemical potential, find a solution in each proposed interval using the brentq method
+        # densities = np.zeros([len(chempots), 2])*np.nan
+        # for i,mu in enumerate(chempots):
+        #     solutions = []
+        #     def fun(rho):
+        #         return np.sum((self.compute_chempot(rho=rho) - mu))
+        #     if density_intervals[i] is not None:
+        #         for interval in density_intervals[i]:
+        #             sol = brentq(fun, interval[0], interval[1])
+        #             solutions.append(sol)
+        #     # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
+        #     if len(solutions) > 0:
+        #         stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
+        #         densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
+
+        # return densities
+
         rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
         rho, rho_sum, x = self._get_fractional_coefficients(rough_density_grid)
-        #compute the chemical potential on this rough grid
         rough_chempot_grid = self.compute_chempot(rho=rho_sum)
 
-        #determine in which interval in rough_chempot_grid the given chempots lies and
         chempots = np.atleast_1d(chempots)
 
-        density_intervals = [None,]*len(chempots)
-        for i, mu in enumerate(chempots):
-            for j in range(1,n_rough_gridpoints):
-                mu_low = rough_chempot_grid[j-1]
-                mu_high = rough_chempot_grid[j]
-                if np.all((mu_low - mu) * (mu_high - mu) <= 0):
-                    interval = [rough_density_grid[j-1],rough_density_grid[j]]
-                    if density_intervals[i] is None:
-                        density_intervals[i] = [interval]
-                    else:
-                        density_intervals[i].append(interval)
+        density_intervals = []
+        for mu in chempots:
+            diff = rough_chempot_grid - mu
+            sign_changes = np.where(np.diff(np.sign(diff)))[0]
+            sign_changes = sign_changes[sign_changes < len(rough_density_grid) - 1]  # guard OOB
+            intervals = [[rough_density_grid[j], rough_density_grid[j + 1]] for j in sign_changes]
+            density_intervals.append(intervals)
 
-        #for each chemical potential, find a solution in each proposed interval using the brentq method
-        densities = np.zeros([len(chempots), 2])*np.nan
-        for i,mu in enumerate(chempots):
-            solutions = []
+        max_branches = max((len(ivs) for ivs in density_intervals if ivs), default=2)
+        densities = np.full([len(chempots), max_branches], np.nan)
+
+        for i, mu in enumerate(chempots):
             def fun(rho):
-                return np.sum((self.compute_chempot(rho=rho) - mu))
-            if density_intervals[i] is not None:
-                for interval in density_intervals[i]:
-                    sol = brentq(fun, interval[0], interval[1])
+                return np.sum(self.compute_chempot(rho=rho) - mu)
+
+            solutions = []
+            for interval in density_intervals[i]:
+                try:
+                    fa, fb = fun(interval[0]), fun(interval[1])
+                    if fa * fb > 0:
+                        continue
+                    sol = brentq(fun, interval[0], interval[1], xtol=1e-12, rtol=1e-10)
                     solutions.append(sol)
-            # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
-            if len(solutions) > 0:
+                except ValueError:
+                    continue
+
+            # deduplicate solutions that landed on adjacent interval boundaries
+            if solutions:
+                solutions = np.unique(np.round(solutions, decimals=10)).tolist()
                 stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
-                densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
+                densities[i, :len(stable_solutions)] = np.array(sorted(stable_solutions))
 
         return densities
 
@@ -1108,29 +1172,49 @@ class SumOfEOS(EquationOfState):
         float or ndarray
             Sum of excess free energies per particle.
         """
-        result = rho*0.0
+        result = None
         for eos, factor in zip(self.list_eos, self.factors):
-            result += factor*eos.excess_free_energy_particle(rho)
+            if result is None:
+                result = factor*eos.excess_free_energy_particle(rho)
+            else:
+                result += factor*eos.excess_free_energy_particle(rho)
         return result
     
     def excess_free_energy_volume(self, rho):
-        result = rho*0.0
+        result = None
         for eos, factor in zip(self.list_eos, self.factors):
-            result += factor*eos.excess_free_energy_volume(rho)
+            if result is None:
+                result = factor*eos.excess_free_energy_volume(rho)
+            else:
+                result += factor*eos.excess_free_energy_volume(rho)
         return result
-
+    
     def derivative_excess_free_energy_particle(self, rho):
-        result = rho*0.0
+        result = None
         for eos, factor in zip(self.list_eos, self.factors):
-            result += factor*eos.derivative_excess_free_energy_particle(rho)
+            if result is None:
+                result = factor*eos.derivative_excess_free_energy_particle(rho)
+            else:
+                result += factor*eos.derivative_excess_free_energy_particle(rho)
         return result
 
     def derivative_excess_free_energy_volume(self, rho):
-        result = rho*0.0
+        result = None
         for eos, factor in zip(self.list_eos, self.factors):
-            result += factor*eos.derivative_excess_free_energy_volume(rho)
+            if result is None:
+                result = factor*eos.derivative_excess_free_energy_volume(rho)
+            else:
+                result += factor*eos.derivative_excess_free_energy_volume(rho)
         return result
-
+    
+    def df_drhoi(self, rho):
+        result = None
+        for eos, factor in zip(self.list_eos, self.factors):
+            if result is None:
+                result = factor*eos.df_drhoi(rho)
+            else:
+                result += factor*eos.df_drhoi(rho)
+        return result
 
 class VanderWaalsEOS(EquationOfState):
     """
@@ -1460,6 +1544,7 @@ class ModifiedBenedictWebbRubinMixEOS(ModifiedBenedictWebbRubinEOS, EOS_MIX):
         Binary epsilon mixing matrix, shape (ncomp, ncomp).
     """
 
+    name = 'MBWRMix'
     def __init__(self, mass, sigma, epsilon, homogeneous=True, x=None, logging = False):
         """
         Initialize MBWR mixture EOS.
@@ -1912,7 +1997,6 @@ class CarnahanStarlingMixEOS(EOS_MIX):
         epsilon = guest.epsilon
         m = getattr(guest, 'm', np.ones(len(sigma)))
         x = getattr(guest, 'fractions', None)
-        # print(guest.hs_def)
         hs_approx = []
         for guest_part in guest.guests:
             hs_approx.append(getattr(guest_part, 'hs_def', 'bh'))
@@ -3025,6 +3109,7 @@ class PCSAFTMixEOS(PCSAFTEOS, EOS_MIX):
 
     def df_drhoi(self, rho):
         """ df/drhoi"""
+        rho = np.atleast_1d(rho)
         kT = boltzmann*self.temperature
         zeta0, zeta1, zeta2, zeta3 = self._get_zeta(rho)
         eta = self._get_eta(rho)

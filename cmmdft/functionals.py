@@ -9,7 +9,7 @@ from .units_constants import kjmol, planck, boltzmann, angstrom
 
 from .log import log
 from .system import NanoporousHost, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
-from .external_potential.extpot_calculator import get_external_potential, interpolate_effective_potential, precalculate_effective_potential
+from .external_potential.extpot_calculator import get_external_potential, interpolate_effective_potential, precalculate_effective_potential, generate_sum_potential
 
 from numba import njit
 

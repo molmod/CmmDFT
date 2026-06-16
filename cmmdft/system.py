@@ -140,8 +140,8 @@ class NanoporousHost(Host):
             self.struct = struct
             self.par = par
             self.ffname = ffname
-            self.host_data, self.host_ff_dict, self.host_charge_dict = get_system_data(struct, par, 
-                                                                unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
+            self.host_SystemData = get_system_data(struct, par, 
+                                                    unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
 
     
 class EmptyHost(Host):
@@ -308,10 +308,9 @@ class NonSphericalGuest(Guest):
             self.natom = len(self.atoms.positions)
             self.struct = struct
             self.par = par
-            mass = None
             mass = np.sum(self.atoms.get_masses())
-            self.guest_data, self.guest_ff_dict, self.guest_charge_dict = get_system_data(struct, par, 
-                                                                unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
+            self.guest_SystemData = get_system_data(struct, par, 
+                                                    unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
             Guest.__init__(self, name, mass, ffname)
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
@@ -327,7 +326,7 @@ class DualModelGuest(SphericalLJGuest, NonSphericalGuest):
     def __init__(self, name, mass, sigma, epsilon, struct, par, ffname='', m=1, hs_def='bh'):
         NonSphericalGuest.__init__(self, name, struct, par, ffname)
         SphericalLJGuest.__init__(self, name, mass, sigma, epsilon, ffname, m=m, hs_def=hs_def)
-        self.natom = self.guest_data[-2]
+        self.natom = self.guest_SystemData.natom
 
     def _calculate_hardsphere_radius(self, temperature, **kwargs):
         """Use the spherical LJ hard-sphere definition for the dual model."""

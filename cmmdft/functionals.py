@@ -1454,23 +1454,21 @@ class ExternalPotential(Functional):
     def _generate_pot(self, host, real_guest, temperature):
         points = self.grid.points[...,:3]
         if real_guest.natom > 1:
-            guest_data = real_guest.guest_data
-            guest_ff_dict = real_guest.guest_ff_dict
-
+            guest_SystemData = real_guest.guest_SystemData
             if self.sum_potential:
-                potential = generate_sum_potential(points, host.host_data, host.host_ff_dict, guest_data, guest_ff_dict, cutoff=self.cutoff)
+                potential = generate_sum_potential(points, host.host_SystemData, guest_SystemData, cutoff=self.cutoff)
             elif self.interpolate:
-                potential = interpolate_effective_potential(1/temperature/boltzmann, points, host.host_data, host.host_ff_dict, guest_data, guest_ff_dict, self.epot_dr, 
+                potential = interpolate_effective_potential(1/temperature/boltzmann, points, host.host_SystemData, guest_SystemData, self.epot_dr, 
                                         tmp_spacing=0.15*angstrom, cutoff=self.cutoff,
                                         degree=self.degree, int_method='trilinear', remove_tmp=True)
             else:
-                potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host.host_data, host.host_ff_dict, guest_data, guest_ff_dict, degree=self.degree)
+                potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host.host_SystemData, guest_SystemData, degree=self.degree)
         else:
             if isinstance(real_guest, DualModelGuest):
                 sigma, epsilon = real_guest.guest_ff_dict[0]
-                potential = get_external_potential(points, host.host_data, host.host_ff_dict, sigma, epsilon, cutoff=self.cutoff)
+                potential = get_external_potential(points, host.host_SystemData, sigma, epsilon, cutoff=self.cutoff)
             else:    
-                potential = real_guest.m * get_external_potential(points, host.host_data, host.host_ff_dict, real_guest.sigma, real_guest.epsilon, cutoff=self.cutoff)
+                potential = real_guest.m * get_external_potential(points, host.host_SystemData, real_guest.sigma, real_guest.epsilon, cutoff=self.cutoff)
         return potential
 
     def generate_potential(self, temperature=None):

@@ -23,7 +23,7 @@
 #--
 
 import glob
-from distutils.core import setup
+from setuptools import setup
 
 setup(
     name='CmmDFT',
@@ -34,7 +34,7 @@ setup(
     package_dir = {'cmmdft': 'cmmdft'},
     packages=['cmmdft', 'cmmdft.external_potential', 'cmmdft.external_potential.rotations'],
     package_data={
-        'cmmdft': ['rotations/lebedev/*.npz'],
+        'cmmdft': ['external_potential/rotations/lebedev/*.npz'],
     },
     classifiers=[
         'Development Status :: 3 - Alpha',

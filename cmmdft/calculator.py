@@ -400,8 +400,8 @@ class Calculator(object):
         else:
             #Helium parameters from "The molecular theory of gases and liquids" by Joseph O. Hirschfelder, Charles F. Curtiss, and R. Byron Bird
             He_sigma, He_epsilon = 2.576*angstrom, 10.22*boltzmann
-            host_data, FF_dict = get_system_data(self.host.chk, self.host.par)
-            He_pot = get_external_potential(self.grid.points[...,:3], host_data, FF_dict, sigmaff=He_sigma, epsilonff=He_epsilon, cutoff=cutoff)
+            host_SystemData = get_system_data(self.host.chk, self.host.par)
+            He_pot = get_external_potential(self.grid.points[...,:3], host_SystemData, sigmaff=He_sigma, epsilonff=He_epsilon, cutoff=cutoff)
             np.save(He_pot_fn, He_pot)
         exp_He_pot = np.clip(np.exp(-He_pot/boltzmann/temperature), 0, 1)
         He_vol = self.grid.integrate(exp_He_pot).real

@@ -291,15 +291,6 @@ class AngularGrid(Grid):
                 f"Lebedev grid file not found: '{npz_file}'\n"
                 f"Expected degree={degree}, size={size}."
             )
-        # Anchor path relative to this source file, not the working directory
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        npz_file = os.path.join(base_dir, 'lebedev', filename)
-
-        if not os.path.exists(npz_file):
-            raise FileNotFoundError(
-                f"Lebedev grid file not found: '{npz_file}'\n"
-                f"Expected degree={degree}, size={size}."
-            )
 
         data = np.load(npz_file)
         return data["points"], data["weights"]

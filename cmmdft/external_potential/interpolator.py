@@ -1,6 +1,8 @@
 import numpy as np
 from functools import partial
 
+from cmmdft.units_constants import kjmol
+
 __all__ = ['Interpolator']
 
 coefficients = np.array([
@@ -156,7 +158,7 @@ class Interpolator:
         Corner offsets for unit cube, shape (8, 3).
     """
 
-    def __init__(self, grid_values, grid_origin, grid_spacing):
+    def __init__(self, grid_values, grid_origin, grid_spacing, charge=None, EsGrid=None, Esgrid_origin=None, Esgrid_spacing=None):
         """
         Initialize the interpolator.
 
@@ -170,8 +172,28 @@ class Interpolator:
             Grid spacing in x, y, z directions, shape (3,).
         """
         self.grid_values = grid_values  # (8, Nx, Ny, Nz) or (Nx, Ny, Nz)
+        self.grid_dims = np.array(self.grid_values.shape[-3:]) - 1
+        self.charge = charge
+        self.EsGrid = EsGrid
+
+        if self.EsGrid is not None and self.charge is None:
+            raise ValueError("charge must be provided when EsGrid is set")
+
         self.origin = np.array(grid_origin)
         self.spacing = np.array(grid_spacing)
+
+        if self.EsGrid is not None:
+            if Esgrid_spacing is None:
+                assert EsGrid.shape == self.grid_values.shape, "If no spacing is given for the Electrostatic grid, it must be the same shape as the LJ grid"
+                self.Esgrid_spacing = self.spacing
+            else:
+                self.Esgrid_spacing = np.array(Esgrid_spacing)
+
+            if Esgrid_origin is None:
+                self.Esgrid_origin = self.origin
+            else:
+                self.Esgrid_origin = np.array(Esgrid_origin)
+            self.Esgrid_dims = np.array(self.EsGrid.shape[1:]) - 1
 
         self.tricubic = self.tricubic_interpolation
         self.trilinear = self.trilinear_interpolation
@@ -183,25 +205,27 @@ class Interpolator:
             [0, 0, 1], [1, 0, 1],
             [0, 1, 1], [1, 1, 1]
         ])
+        self.block_threshold = 1000*kjmol
+        self.block_value = 10000*kjmol
 
     def _wrap_indices(self, idx, dim):
         """ Ensure indices wrap around for periodic boundary conditions. """
         return idx % dim
-    
-    def _get_fractional_indices(self, positions):
-        """ Convert Cartesian coordinates to fractional grid indices. """
-        s = (positions - self.origin) / self.spacing
+
+    def _get_fractional_indices(self, positions, spacing, grid_dims):
+        cell = spacing * grid_dims  # unit cell lengths
+        pos_wrapped = positions - cell * np.round(positions / cell)
+        pos_wrapped = np.where(pos_wrapped < 0, pos_wrapped + cell, pos_wrapped)
+        
+        s = pos_wrapped / spacing
         ix = np.floor(s).astype(int)
         rx = s - ix
         return ix, rx
     
-    def _get_corner_indices(self, ix, Nx, Ny, Nz):
+    def _get_corner_indices(self, ix, grid_dims):
         """ Get the corner indices for the cubic interpolation. """
-
-        # Wrap indices for periodic boundaries
-        ix0 = self._wrap_indices(ix[:, 0], Nx)
-        iy0 = self._wrap_indices(ix[:, 1], Ny)
-        iz0 = self._wrap_indices(ix[:, 2], Nz)
+        ix0, iy0, iz0 = ix.T
+        Nx, Ny, Nz = grid_dims
 
         corner_indices = []
         for dx, dy, dz in self.corner_offsets:
@@ -211,7 +235,7 @@ class Interpolator:
             corner_indices.append((xi, yi, zi))
         return corner_indices
     
-    def estimate_all_derivatives(self, V, dx, dy, dz):
+    def estimate_all_derivatives(self, V):
         """
         Estimate all derivatives of the potential function using finite differences in unit cube format.
         """
@@ -228,8 +252,19 @@ class Interpolator:
         Vxyz = (np.roll(Vxy, -1, axis=2) - np.roll(Vxy, 1, axis=2)) / (2)
 
         return np.stack([V, Vx, Vy, Vz, Vxy, Vxz, Vyz, Vxyz], axis=0)
-
     
+    def _interpolate_grid(self, values, rx, ry, rz, xyzi, N):
+        weights = np.array([
+            (1-rx)*(1-ry)*(1-rz), rx*(1-ry)*(1-rz),
+            (1-rx)*ry*(1-rz),     rx*ry*(1-rz),
+            (1-rx)*(1-ry)*rz,     rx*(1-ry)*rz,
+            (1-rx)*ry*rz,         rx*ry*rz
+        ]).T  # (N, 8)
+        V = np.zeros((N, 8))
+        for i, (xi, yi, zi) in enumerate(xyzi):
+            V[:, i] = values[xi, yi, zi]
+        return (V * weights).sum(axis=1)
+
     def trilinear_interpolation(self, positions):
         """
         Perform trilinear interpolation at given positions.
@@ -254,28 +289,54 @@ class Interpolator:
         N = positions.shape[0]
 
         # Compute fractional grid coordinates
-        ix, rdist = self._get_fractional_indices(positions)
+        ix, rdist = self._get_fractional_indices(positions, self.spacing, self.grid_dims)
         rx, ry, rz = rdist[:, 0], rdist[:, 1], rdist[:, 2]
 
         # Get corner indices
-        xyzi = self._get_corner_indices(ix, Nx, Ny, Nz)
+        xyzi = self._get_corner_indices(ix, self.grid_dims)
 
         # Gather all 8 corner values
-        V = np.zeros((N, 8)) 
-        for corner_idx, (xi, yi, zi) in enumerate(xyzi):
-            V[:, corner_idx] = values[xi, yi, zi]
+        V = self._interpolate_grid(values, rx, ry, rz, xyzi, N)
+            # Block points where VDW energy exceeds threshold
+        blocked = V > self.block_threshold
 
-        # Interpolate
-        V = np.sum(V * np.array([(1 - rx) * (1 - ry) * (1 - rz),
-                     rx * (1 - ry) * (1 - rz),
-                     (1 - rx) * ry * (1 - rz),
-                     rx * ry * (1 - rz),
-                     (1 - rx) * (1 - ry) * rz,
-                     rx * (1 - ry) * rz,
-                     (1 - rx) * ry * rz,
-                     rx * ry * rz]).T, axis=1)
-        
+        if self.EsGrid is not None:
+            if self.EsGrid.ndim == 4:
+                values = self.EsGrid[0]
+            else:
+                values = self.EsGrid
+            
+            ix, rdist = self._get_fractional_indices(positions, self.Esgrid_spacing, self.Esgrid_dims)
+            rx, ry, rz = rdist[:, 0], rdist[:, 1], rdist[:, 2]
+            xyzi = self._get_corner_indices(ix, self.Esgrid_dims)
+            # Gather all 8 corner values
+            V_ei = self.charge * self._interpolate_grid(values, rx, ry, rz, xyzi, N)
+            V_ei[blocked] = 0
+            V += V_ei
+
+        V[blocked] = self.block_value
         return V
+    
+    def _interpolate_grid_tricubic(self, values, rx, ry, rz, xyzi, N):
+        result = np.zeros(N)
+
+        X = np.zeros((N, 64))
+        for corner_idx, (xi, yi, zi) in enumerate(xyzi):
+            for deriv in range(8):
+                X[:, corner_idx + deriv * 8] = values[deriv, xi, yi, zi]      
+
+        # Compute interpolation coefficients (N, 64)
+        a = X @ coefficients.T
+        # Compute relative distances for polynomial powers
+        for i in range(4):
+            ui = rx ** i
+            for j in range(4):
+                vj = ry ** j
+                for k in range(4):
+                    wk = rz ** k
+                    idx = i + 4 * j + 16 * k
+                    result += a[:, idx] * ui * vj * wk
+        return result
 
     def tricubic_interpolation(self, positions, estimate_derivatives=False):
         """
@@ -293,45 +354,42 @@ class Interpolator:
         ndarray
             Interpolated values, shape (N,).
         """
-        positions = np.atleast_2d(positions)
+        # positions = np.atleast_2d(positions)
         if self.grid_values.ndim == 3:
-            values = self.estimate_all_derivatives(self.grid_values, *self.spacing)
+            values = self.estimate_all_derivatives(self.grid_values)
         elif self.grid_values.ndim == 4 and estimate_derivatives:
-            values = self.estimate_all_derivatives(self.grid_values[0], *self.spacing)
+            values = self.estimate_all_derivatives(self.grid_values[0])
         else:
             values = self.grid_values
-        Nx, Ny, Nz = values.shape[1:]
+
+        if self.EsGrid is not None:
+            if self.EsGrid.ndim == 3:
+                Es_values = self.estimate_all_derivatives(self.EsGrid)
+            elif self.EsGrid.ndim == 4 and estimate_derivatives:
+                Es_values = self.estimate_all_derivatives(self.EsGrid[0])
+            else:
+                Es_values = self.EsGrid
+        positions = np.atleast_2d(positions)
         N = positions.shape[0]
 
         # Compute fractional grid coordinates
-        ix, rdist = self._get_fractional_indices(positions)
+        ix, rdist = self._get_fractional_indices(positions, self.spacing, self.grid_dims)
         rx, ry, rz = rdist[:, 0], rdist[:, 1], rdist[:, 2]
         
         # Get corner indices
-        xyzi = self._get_corner_indices(ix, Nx, Ny, Nz)
+        xyzi = self._get_corner_indices(ix, self.grid_dims)
+        result = self._interpolate_grid_tricubic(values, rx, ry, rz, xyzi, N)
 
-        # Prepare X: (N, 64)
-        X = np.zeros((N, 64))
-        for corner_idx, (xi, yi, zi) in enumerate(xyzi):
-            for deriv in range(8):
-                X[:, corner_idx + deriv * 8] = values[deriv, xi, yi, zi]
-        
-        # Cap extreme values to avoid overflow
-        result = np.zeros(N)
+        # Block points where VDW energy exceeds threshold
+        blocked = result > self.block_threshold
 
-        # Compute interpolation coefficients (N, 64)
-        a = X @ coefficients.T
-        # Compute relative distances for polynomial powers
-        for i in range(4):
-            ui = rx ** i
-            for j in range(4):
-                vj = ry ** j
-                for k in range(4):
-                    wk = rz ** k
-                    idx = i + 4 * j + 16 * k
-                    result += a[:, idx] * ui * vj * wk
+        if self.EsGrid is not None:
+            ix, rdist = self._get_fractional_indices(positions, self.Esgrid_spacing, self.Esgrid_dims)
+            rx, ry, rz = rdist[:, 0], rdist[:, 1], rdist[:, 2]
+            xyzi = self._get_corner_indices(ix, self.Esgrid_dims)
+            result_ei = self.charge * self._interpolate_grid_tricubic(Es_values, rx, ry, rz, xyzi, N)
+            result_ei[blocked] = 0.0  # no Coulomb contribution for blocked points
+            result += result_ei
+        # result[blocked] = self.block_value  # cap VDW at threshold
+        return result
 
-        if result.shape[0] > 1:
-            return result
-        else:
-            return result[0]

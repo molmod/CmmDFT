@@ -2,6 +2,8 @@ from ase import Atoms
 import numpy as np
 from pathlib import Path
 
+from dataclasses import dataclass, field
+from typing import Optional
 
 import xml.etree.ElementTree as ET
 from ase.io import read
@@ -15,7 +17,8 @@ from .parameters import Parameters
 __all__ = [
     'atoms_from_chk', 'load_chk', 'read_pars_file_dict', 
     'get_system_data', '_get_system_data_chk', '_get_system_data_from_pdb_xml',
-    'generate_rotation_matrix'
+    'generate_rotation_matrix',
+    'SystemData'
     ]
 
 def atoms_from_chk(chk_file):
@@ -137,35 +140,41 @@ def read_pars_file_dict(pars_file):
     return FF_dict
 
 def get_system_data(struct_fn, pars_fn,
-                    unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au'):
+                    unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au') -> SystemData:
+    """
+    Extract system data and force field from a structure and force field file, supports .chk+.txt (YAFF compatible) and .pdb+.xml
+
+    Parameters
+    ----------
+    struct_fn : str
+        Path to system structure.
+    pars_fn : str
+        Path to force field parameters file.
+
+    Returns
+    -------
+    dataclass
+        SystemData class
+    """
     struct_fn = Path(struct_fn)
     pars_fn = Path(pars_fn)
     if struct_fn.suffix == '.chk' and pars_fn.suffix=='.txt':
-        return _get_system_data_chk(str(struct_fn), str(pars_fn))
+        return _get_system_data_chk(str(struct_fn), str(pars_fn),
+                                     unit_energy=unit_energy, unit_sigma=unit_sigma, unit_distance=unit_distance, unit_charge=unit_charge, unit_mass=unit_mass)
     elif struct_fn.suffix=='.pdb' and pars_fn.suffix=='.xml':
         return _get_system_data_from_pdb_xml(struct_fn, pars_fn, 
                                              unit_energy=unit_energy, unit_sigma=unit_sigma, unit_distance=unit_distance, unit_charge=unit_charge, unit_mass=unit_mass)
     else:
         raise ValueError("Structure and forcefield files must be either \'.chk\' and \'.txt\' (compatible with YAFF) or \'.pdb\' and \'.xml\' compatible with openMM")
 
-def _get_system_data_chk(chk_fn, pars_file):
-    """
-    Extract system data and force field parameters from checkpoint (.chk) and pars files.
+def _get_system_data_chk(chk_fn, pars_file,
+                          unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au'):
+    energy_unit = parse_unit(unit_energy)
+    sigma_unit = parse_unit(unit_sigma)
+    distance_unit = parse_unit(unit_distance)
+    charge_unit = parse_unit(unit_charge)
+    mass_unit = parse_unit(unit_mass)
 
-    Parameters
-    ----------
-    chk_fn : str
-        Path to system checkpoint file.
-    pars_file : str
-        Path to force field parameters file.
-
-    Returns
-    -------
-    tuple
-        System data tuple: (pos, masses, ffatypes, ffatype_ids, natom, rvecs).
-    ndarray
-        Force field parameters array, shape (natom_types, 2) with [sigma, epsilon].
-    """
     kwargs = load_chk(chk_fn)
     pos = kwargs['pos']
     masses_ids = kwargs['masses']
@@ -188,7 +197,7 @@ def _get_system_data_chk(chk_fn, pars_file):
     """ Read parameters from a pars file """
     LJpar = Parameters.from_file(str(pars_file)).sections['LJ']
     units = [parse_unit(unit[1].split()[1]) for unit in LJpar.definitions['UNIT'].lines]
-    FF_dict = np.empty((len(LJpar.definitions['PARS'].lines),2))
+    ff_params = np.empty((len(LJpar.definitions['PARS'].lines),2))
 
     for par in LJpar.definitions['PARS'].lines:
         pp = par[1].split()
@@ -199,9 +208,11 @@ def _get_system_data_chk(chk_fn, pars_file):
         index = ffatypes.index(atom)
         sigma = float(pp[1]) * units[0]
         epsilon = float(pp[2]) * units[1]
-        FF_dict[index] = np.array([sigma, epsilon])
+        ff_params[index] = np.array([sigma*sigma_unit, epsilon*energy_unit])
 
     charge_dict = None
+    charges = None
+
     try:
         EIpar = Parameters.from_file(str(pars_file)).sections['FIXQ']
         units = [parse_unit(unit[1].split()[1]) for unit in EIpar.definitions['UNIT'].lines]
@@ -216,14 +227,23 @@ def _get_system_data_chk(chk_fn, pars_file):
             index = ffatypes.index(atom)
             charge = float(pp[1]) * units[0]
             radius = float(pp[2]) * units[1]
-            charge_dict[index] = np.array([charge, radius])      
+            charge_dict[index] = np.array([charge*charge_unit, radius])      
+        charges = np.array([charge_dict[ff_id] for ff_id in ffatype_ids])
     
     except KeyError:
         pass
         # print('No charges present in parameters')
 
-    return (pos, masses, ffatypes, ffatype_ids, natom, rvecs), FF_dict, charge_dict
-
+    # return (pos, masses, ffatypes, ffatype_ids, natom, rvecs), FF_dict, charge_dict
+    return SystemData(
+        pos=pos*distance_unit,
+        masses=masses*mass_unit,
+        ffatypes=ffatypes,
+        ffatype_ids=np.asarray(ffatype_ids),
+        rvecs=rvecs*distance_unit,
+        ff_params=ff_params,
+        charges=charges,
+    )
 
 def _get_system_data_from_pdb_xml(pdb_fn, xml_fn, 
                                   unit_energy='au', unit_sigma='au', unit_distance='au', unit_charge='au', unit_mass='au'):
@@ -371,7 +391,7 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn,
     
     # Create ffatypes list with meaningful names (e.g., 'H1', 'C1', 'N2')
     ffatypes = []
-    FF_dict = np.empty((len(unique_params), 2))
+    ff_params = np.empty((len(unique_params), 2))
     charge_dict = np.empty((len(unique_params), 2))
     for type_idx in sorted(unique_params.keys()):
         param_info = unique_params[type_idx]
@@ -379,12 +399,20 @@ def _get_system_data_from_pdb_xml(pdb_fn, xml_fn,
         count = param_info['count']
         ffatype_name = f"{element}{count}"
         ffatypes.append(ffatype_name)
-        FF_dict[type_idx] = np.array([param_info['sigma'], param_info['epsilon']])
+        ff_params[type_idx] = np.array([param_info['sigma'], param_info['epsilon']])
         charge_dict[type_idx] = np.array([param_info['charge'], 0])
+    charges = np.array([charge_dict[ff_id] for ff_id in ffatype_ids])
 
-
-    return (pos*distance_unit, masses*mass_unit, ffatypes, ffatype_ids, natom, rvecs*distance_unit), FF_dict, charge_dict
-
+    # return (pos*distance_unit, masses*mass_unit, ffatypes, ffatype_ids, natom, rvecs*distance_unit), FF_dict, charge_dict
+    return SystemData(
+        pos=pos*distance_unit,
+        masses=masses*mass_unit,
+        ffatypes=ffatypes,
+        ffatype_ids=np.asarray(ffatype_ids),
+        rvecs=rvecs*distance_unit,
+        ff_params=ff_params,
+        charges=charges,
+    )
 
 
 def generate_rotation_matrix(degree, dimension):
@@ -437,74 +465,101 @@ def generate_rotation_matrix(degree, dimension):
     else:
         print('Must provide an integer with a valid dimension, choices are 2 or 3')
 
-def generate_smooth_so3_angles(N_beta):
+@dataclass
+class SystemData:
     """
-    Generates efficiently sampled Euler angles (alpha, beta, gamma) 
-    for high-accuracy orientational averaging of smooth functions.
-    
+    Unified representation of a host or guest system.
+
+    For guest molecules, `rvecs` is None. Charges and force field parameters
+    are optional; when absent the relevant methods fall back to pure LJ.
+
     Parameters
     ----------
-    N_beta : int
-        Number of sampling points for the beta (tilt) angle. 
-        Controls the overall density of the grid.
-        
-    Returns
-    -------
-    rotations : ndarray
-        Rotation matrices, shape (total_rotations, 3, 3).
-    weights : ndarray
-        Quadrature weights summing to 1.0, shape (total_rotations,).
+    pos : ndarray
+        Atomic positions, shape (natom, 3).
+    masses : ndarray
+        Atomic masses, shape (natom,).
+    ffatypes : list[str]
+        Atom type labels, one per unique type (length = n_unique_types).
+    ffatype_ids : ndarray of int
+        Index into `ffatypes` for each atom, shape (natom,).
+    rvecs : ndarray or None
+        Unit cell vectors, shape (3, 3). None for guest molecules.
+    ff_params : list[tuple[float, float]] or None
+        Force field (sigma, epsilon) per unique atom type, same length as
+        `ffatypes`. None if not yet assigned.
+    charges : ndarray or None
+        Partial charges per atom, shape (natom,). None if not yet assigned.
     """
-    angles = []
-    raw_weights = []
-    
-    # 1. Sample beta using a mid-point rule to avoid exact poles (Gimbal lock)
-    beta_grid = np.linspace(0.5 / N_beta, 1.0 - 0.5 / N_beta, N_beta) * np.pi
-    
-    for beta in beta_grid:
-        # Scale the number of alpha and gamma samples based on sin(beta)
-        # This prevents over-sampling and wasting evaluations near the poles.
-        sin_beta = np.sin(beta)
-        N_alpha = max(1, int(np.round(2 * N_beta * sin_beta)))
-        N_gamma = max(1, int(np.round(2 * N_beta * sin_beta)))
-        
-        alpha_grid = np.linspace(0, 2 * np.pi, N_alpha, endpoint=False)
-        gamma_grid = np.linspace(0, 2 * np.pi, N_gamma, endpoint=False)
-        
-        # Calculate the quadrature weight for this specific latitudinal ring
-        # Weight is proportional to the surface area element sin(beta)d_beta
-        ring_weight = sin_beta / (N_alpha * N_gamma)
-        
-        for alpha in alpha_grid:
-            for gamma in gamma_grid:
-                angles.append((alpha, beta, gamma))
-                raw_weights.append(ring_weight)
-                
-    # Convert lists to arrays
-    angles = np.array(angles)
-    weights = np.array(raw_weights)
-    weights /= np.sum(weights)  # Normalize weights to sum to 1.0
-    
-    # 2. Convert Euler angles (ZYZ convention) to Rotation Matrices
-    alpha, beta, gamma = angles[:, 0], angles[:, 1], angles[:, 2]
-    
-    ca, sa = np.cos(alpha), np.sin(alpha)
-    cb, sb = np.cos(beta), np.sin(beta)
-    cg, sg = np.cos(gamma), np.sin(gamma)
-    
-    rotations = np.zeros((len(angles), 3, 3))
-    
-    # Standard ZYZ Matrix Construction
-    rotations[:, 0, 0] =  ca * cb * cg - sa * sg
-    rotations[:, 0, 1] = -ca * cb * sg - sa * cg
-    rotations[:, 0, 2] =  ca * sb
-    
-    rotations[:, 1, 0] =  sa * cb * cg + ca * sg
-    rotations[:, 1, 1] = -sa * cb * sg + ca * cg
-    rotations[:, 1, 2] =  sa * sb
-    
-    rotations[:, 2, 0] = -sb * cg
-    rotations[:, 2, 1] =  sb * sg
-    rotations[:, 2, 2] =  cb
-    
-    return rotations, weights
+
+    pos:         np.ndarray
+    masses:      np.ndarray
+    ffatypes:    list
+    ffatype_ids: np.ndarray
+    rvecs:       Optional[np.ndarray]       = None
+    ff_params:   Optional[list]             = None   # [(sigma, epsilon), ...] per unique type
+    charges:     Optional[np.ndarray]       = None   # per atom
+
+    # ------------------------------------------------------------------
+    # Derived properties
+    # ------------------------------------------------------------------
+
+    @property
+    def natom(self) -> int:
+        return len(self.pos)
+
+    @property
+    def is_periodic(self) -> bool:
+        return self.rvecs is not None
+
+    @property
+    def com(self) -> np.ndarray:
+        """Centre of mass, shape (3,)."""
+        return np.sum(self.pos * self.masses[:, None], axis=0) / np.sum(self.masses)
+
+    # ------------------------------------------------------------------
+    # FF parameter access (keyed by ffatype_id, matching old dict API)
+    # ------------------------------------------------------------------
+
+    def get_ff_params(self, ffatype_id: int) -> tuple:
+        """Return (sigma, epsilon) for a given unique atom type index."""
+        if self.ff_params is None:
+            raise ValueError("ff_params not set on this System.")
+        return self.ff_params[ffatype_id]
+
+    def get_sigma_epsilon_arrays(self):
+        """
+        Return per-atom sigma and epsilon arrays, shape (natom,) each.
+        Convenience for kernels that need one value per atom.
+        """
+        if self.ff_params is None:
+            raise ValueError("ff_params not set on this System.")
+        sigmas   = np.array([self.ff_params[i][0] for i in self.ffatype_ids])
+        epsilons = np.array([self.ff_params[i][1] for i in self.ffatype_ids])
+        return sigmas, epsilons
+
+    # ------------------------------------------------------------------
+    # Cell helpers (host only)
+    # ------------------------------------------------------------------
+
+    @property
+    def cell_matrix(self) -> np.ndarray:
+        if self.rvecs is None:
+            raise AttributeError("System has no unit cell (guest molecule).")
+        return self.rvecs.astype(np.float64)
+
+    @property
+    def cell_inv(self) -> np.ndarray:
+        return np.linalg.inv(self.cell_matrix)
+
+    @property
+    def volume(self) -> float:
+        return float(np.abs(np.linalg.det(self.cell_matrix)))
+
+    # ------------------------------------------------------------------
+    # Backward-compatible tuple unpacking
+    # ------------------------------------------------------------------
+
+    def as_tuple(self):
+        """Return the old (pos, masses, ffatypes, ffatype_ids, natom, rvecs) tuple."""
+        return (self.pos, self.masses, self.ffatypes, self.ffatype_ids, self.natom, self.rvecs)

@@ -3,8 +3,6 @@
 Main file for calculating external potentials
 '''
 
-from __future__ import division
-
 import os
 import numpy as np
 from functools import partial
@@ -19,8 +17,8 @@ from .interpolator import Interpolator
 
 __all__ = ['_effective_potential', 
            'generate_effective_potential', 'precalculate_effective_potential', 'interpolate_effective_potential',
-           'get_external_potential', 'get_external_potential_derivatives', 
-            'get_interpolator_dict', 'get_external_potential_dict']
+           'get_external_potential', 'get_external_potential_LJ_Coulomb', 'generate_sum_potential',
+           'get_external_potential_derivatives', 'get_interpolator_dict', 'get_external_potential_dict']
 
 def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):    
     """
@@ -77,36 +75,17 @@ def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
         return V, dV, ddV, dddV
     else:
         return V
-    
-@njit
-def _lj_batched(R, sigma, epsilon, cutoff):
-    R_shape = R.shape
-    R = R.ravel()
-    R_n = len(R)
-    out = np.empty(R_n, dtype=np.float64)
 
-    rc6 = (sigma / cutoff) ** 6
-    V_shift = 4.0 * epsilon * (rc6 * rc6 - rc6)
-    for i in prange(R_n):
-        r = R[i]
-        if r >= cutoff:
-            out[i] = 0.0
-            continue
-        r6 = (sigma / r) ** 6
-        r12 = r6 * r6
-        out[i] = 4.0 * epsilon * (r12 - r6) - V_shift
-    return out.reshape(R_shape)
-
-@njit
+@njit(parallel=True)
 def _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
                   cell_matrix, cell_inv, cutoff):
     N = points.shape[0]
     M = host_pos.shape[0]
     Vext = np.zeros(N, dtype=np.float64)
 
-    for j in range(N):  # parallel over grid points
+    for j in prange(N):  # parallel over grid points
         v = 0.0
-        for i in range(M):
+        for i in prange(M):
             dx = points[j, 0] - host_pos[i, 0]
             dy = points[j, 1] - host_pos[i, 1]
             dz = points[j, 2] - host_pos[i, 2]
@@ -131,57 +110,84 @@ def _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
                 v += 4.0 * epsilons_mixed[i] * (r6*r6 - r6) - v_shifts[i]
         Vext[j] = v
     return Vext
-    
-@njit(cache=True)
-def _coulomb_batched(R, q_host, q_guest, alpha, rvecs, epsilon_r=1.0, ke=1.0):
+
+@njit(parallel=True, cache=True)
+def _compute_coulomb_real(points, host_pos, host_charges, guest_charge,
+                          alpha, cell_matrix, cell_inv, epsilon_r=1.0, ke=1.0):
     """
-    Batched Coulomb potential using Ewald summation for a single host atom (real-space part).
-    
-    Loop structure matches _lj_batched() - one host atom at a time.
-    
+    Real-space Ewald contribution for all host atoms and all grid points.
+
+    Mirrors the structure of _compute_vext: one kernel, MIC via fractional
+    coordinates, parallel over grid points.
+
     Parameters
     ----------
-    R : ndarray
-        Distance array from one host atom to all grid points, shape (N,).
-    q_host : float
-        Charge of the host atom.
-    q_guest : float
-        Charge of the guest atom.
+    points : ndarray
+        Grid points, shape (N, 3).
+    host_pos : ndarray
+        Host atom positions, shape (M, 3).
+    host_charges : ndarray
+        Host atom charges, shape (M,).
+    guest_charge : float
+        Guest atom charge.
     alpha : float
         Ewald damping parameter.
-    rvecs : ndarray
+    cell_matrix : ndarray
         Cell vectors, shape (3, 3).
+    cell_inv : ndarray
+        Inverse cell vectors, shape (3, 3).
     epsilon_r : float, optional
         Relative permittivity, default 1.0.
     ke : float, optional
-        Coulomb constant in atomic units, 1.0
-    
+        Coulomb constant, default 1.0 (atomic units).
+
     Returns
     -------
-    V : ndarray
-        Coulomb potential contribution at each grid point (real-space), shape (N,).
+    Vcoul : ndarray
+        Real-space Coulomb potential at each grid point, shape (N,).
     """
-    
-    
-    R_shape = R.shape
-    R_flat = R.ravel()
-    N = len(R_flat)
-    V = np.zeros(N, dtype=np.float64)
-    
+    N = points.shape[0]
+    M = host_pos.shape[0]
     cutoff_real = 6.0 / alpha
-    q_prod = ke * q_host * q_guest / epsilon_r
-    
-    # Real-space contribution
-    mask = (R_flat < cutoff_real) & (R_flat > 1e-16)
-    r = R_flat[mask]
-    
-    erfc_val = erfc(alpha * r)
-    V[mask] = q_prod * erfc_val / r
-    
-    return V.reshape(R_shape)
+    prefactor = ke * guest_charge / epsilon_r
+
+    Vcoul = np.zeros(N, dtype=np.float64)
+
+    for j in prange(N):
+        v = 0.0
+        for i in range(M):
+            if host_charges[i] == 0.0:
+                continue
+
+            dx = points[j, 0] - host_pos[i, 0]
+            dy = points[j, 1] - host_pos[i, 1]
+            dz = points[j, 2] - host_pos[i, 2]
+
+            # MIC via fractional coordinates
+            fx = cell_inv[0, 0]*dx + cell_inv[0, 1]*dy + cell_inv[0, 2]*dz
+            fy = cell_inv[1, 0]*dx + cell_inv[1, 1]*dy + cell_inv[1, 2]*dz
+            fz = cell_inv[2, 0]*dx + cell_inv[2, 1]*dy + cell_inv[2, 2]*dz
+
+            fx -= round(fx)
+            fy -= round(fy)
+            fz -= round(fz)
+
+            dx = cell_matrix[0, 0]*fx + cell_matrix[0, 1]*fy + cell_matrix[0, 2]*fz
+            dy = cell_matrix[1, 0]*fx + cell_matrix[1, 1]*fy + cell_matrix[1, 2]*fz
+            dz = cell_matrix[2, 0]*fx + cell_matrix[2, 1]*fy + cell_matrix[2, 2]*fz
+
+            r = (dx*dx + dy*dy + dz*dz) ** 0.5
+            if r < 1e-12 or r >= cutoff_real:
+                continue
+
+            v += host_charges[i] * erfc(alpha * r) / r
+
+        Vcoul[j] = prefactor * v
+
+    return Vcoul
 
 @njit(cache=True)
-def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, rvecs, epsilon_r=1.0, ke=1):
+def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, epsilon_r=1.0, ke=1):
     """
     Batched Coulomb potential and derivatives using Ewald summation (real-space part).
     
@@ -261,7 +267,7 @@ def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, rvecs, epsilon_r
     
     return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alpha, kmax, rvecs, inv_rvecs, epsilon_r=1.0, ke=1.0, derivatives=False):
     """
     Reciprocal-space Ewald contribution (computed once for all grid points).
@@ -312,9 +318,9 @@ def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alph
     alpha2 = alpha * alpha
     inv_volume = 1.0 / volume
     
-    for n1 in range(-kmax, kmax + 1):
-        for n2 in range(-kmax, kmax + 1):
-            for n3 in range(-kmax, kmax + 1):
+    for n1 in prange(-kmax, kmax + 1):
+        for n2 in prange(-kmax, kmax + 1):
+            for n3 in prange(-kmax, kmax + 1):
                 if n1 == 0 and n2 == 0 and n3 == 0:
                     continue
                 
@@ -328,7 +334,7 @@ def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alph
                 # Structure factor: sum over host atoms
                 rho_k_real = 0.0
                 rho_k_imag = 0.0
-                for i in range(natoms):
+                for i in prange(natoms):
                     phase = kvec[0] * host_pos[i, 0] + kvec[1] * host_pos[i, 1] + kvec[2] * host_pos[i, 2]
                     rho_k_real += host_charges[i] * np.cos(phase)
                     rho_k_imag += host_charges[i] * np.sin(phase)
@@ -338,7 +344,7 @@ def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alph
                 k_factor = 4.0 * np.pi * exp_factor / (k2 * volume)
                 
                 # Phase at all evaluation points
-                phase_guest = points @ kvec  # (npoints,)
+                phase_guest = np.dot(points, kvec)  # (npoints,)
                 cos_phase = np.cos(phase_guest)
                 sin_phase = np.sin(phase_guest)
                 
@@ -391,13 +397,43 @@ def compute_ewald_parameters(rvecs, eta=5.0):
     kmax = max(3, int(np.ceil(2.0 * alpha * L / np.pi)))
     return alpha, kmax
 
-def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=12*angstrom):
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
+def get_external_potential(points, host_SystemData, sigmaff, epsilonff, cutoff=12*angstrom):
+    """
+    Compute the Lennard-Jones external potential of a host on given points.
+
+    This evaluates the pairwise Lennard-Jones potential between a guest atom
+    (with parameters `sigmaff`, `epsilonff`) and all atoms in the host
+    described by `host_SystemData`. Periodic boundary conditions are handled
+    via the minimum-image convention using the host cell vectors.
+
+    Parameters
+    ----------
+    points : ndarray
+        Array of points where the potential is evaluated. Shape (..., 3).
+    host_SystemData : object
+        Host system dataclass.
+    sigmaff : float
+        Guest Lennard-Jones sigma parameter
+    epsilonff : float
+        Guest Lennard-Jones epsilon parameter
+    cutoff : float, optional
+        Cutoff distance for the LJ interaction, default 12 angstrom.
+
+    Returns
+    -------
+    ndarray
+        External potential evaluated at `points`, shaped like `points[...,0]`.
+    """
+    host_pos = host_SystemData.pos
+    ffatype_ids = host_SystemData.ffatype_ids
+    rvecs = host_SystemData.rvecs
+    host_ff_params = host_SystemData.ff_params
+
     orig_shape = points.shape
     points_flat = points.reshape(-1,3)
 
-    sigmas_mixed   = np.array([0.5*(host_ff_dict[aid][0] + sigmaff) for aid in ffatype_ids])
-    epsilons_mixed = np.array([np.sqrt(host_ff_dict[aid][1] * epsilonff) for aid in ffatype_ids])
+    sigmas_mixed   = np.array([0.5*(host_ff_params[aid][0] + sigmaff) for aid in ffatype_ids])
+    epsilons_mixed = np.array([np.sqrt(host_ff_params[aid][1] * epsilonff) for aid in ffatype_ids])
     rc6     = (sigmas_mixed / cutoff) ** 6
     v_shifts = 4 * epsilons_mixed * (rc6**2 - rc6)
 
@@ -408,7 +444,7 @@ def get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, 
                          cell_matrix, cell_inv, cutoff).reshape(orig_shape[:-1])
 
 
-def get_external_potential_LJ_Coulomb(points, host_data, host_ff_dict, host_charge_dict, sigmaff, epsilonff, guest_charge=0.0, cutoff=12*angstrom, use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
+def get_external_potential_LJ_Coulomb(points, host_SystemData, sigmaff, epsilonff, guest_charge=0.0, cutoff=12*angstrom, use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
     """
     Calculate the external potential using Lennard-Jones and optionally Coulomb interactions.
 
@@ -421,13 +457,13 @@ def get_external_potential_LJ_Coulomb(points, host_data, host_ff_dict, host_char
     host_ff_dict : dict
         Dictionary mapping atom types to (sigma, epsilon) force field parameters.
     sigmaff : float
-        Sigma parameter for the guest atom in Angstrom.
+        Sigma parameter for the guest atom.
     epsilonff : float
         Epsilon parameter for the guest atom in energy units.
     guest_charge : float, optional
         Guest atom charge in elementary charges, default 0.0.
     cutoff : float, optional
-        Cutoff distance for Lennard-Jones interactions, default 12*angstrom.
+        Cutoff distance for Lennard-Jones interactions, default 12 Angstrom.
     use_coulomb : bool, optional
         If True, include Coulomb interactions with Ewald summation, default False.
     coulomb_alpha : float, optional
@@ -442,9 +478,11 @@ def get_external_potential_LJ_Coulomb(points, host_data, host_ff_dict, host_char
     Vext : ndarray
         External potential at each grid point, shape (N,).
     """
-
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
-    charges = np.array([host_charge_dict[id] for id in ffatype_ids])
+    host_pos = host_SystemData.pos
+    ffatype_ids = host_SystemData.ffatype_ids
+    rvecs = host_SystemData.rvecs
+    host_ff_params = host_SystemData.ff_params
+    charges = host_SystemData.charges
 
     cell = Cell(rvecs)
     inv_rvecs = np.linalg.inv(rvecs)
@@ -452,54 +490,44 @@ def get_external_potential_LJ_Coulomb(points, host_data, host_ff_dict, host_char
     points = points.reshape(-1, 3)
 
     Vext = np.zeros(points.shape[:-1])
-    
-    # Lennard-Jones contribution
-    for i, atom_id in enumerate(ffatype_ids):
-        sigma, epsilon = host_ff_dict[atom_id]    
 
-        sigma_mixed = 0.5*(sigma + sigmaff)
-        epsilon_mixed = np.sqrt(epsilon * epsilonff)
+    sigmas_mixed   = np.array([0.5*(host_ff_params[aid][0] + sigmaff) for aid in ffatype_ids])
+    epsilons_mixed = np.array([np.sqrt(host_ff_params[aid][1] * epsilonff) for aid in ffatype_ids])
+    rc6     = (sigmas_mixed / cutoff) ** 6
+    v_shifts = 4 * epsilons_mixed * (rc6**2 - rc6)
 
-        host_position = host_pos[i]
+    cell_matrix = rvecs.astype(np.float64)
+    cell_inv    = np.linalg.inv(cell_matrix)
 
-        dr = points - host_position
-        dr = cell.mic(dr)
-        R = np.sqrt(np.sum(dr*dr, axis=-1)) + 1e-12
+    Vext += _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
+                         cell_matrix, cell_inv, cutoff).reshape(orig_shape[:-1])
 
-        Vext += _lj_batched(R, sigma_mixed, epsilon_mixed, cutoff=cutoff)
-
-    # Coulomb contribution (if requested)
     if use_coulomb and guest_charge != 0.0 and np.any(charges != 0.0):
         if coulomb_alpha is None or coulomb_kmax is None:
             coulomb_alpha, coulomb_kmax = compute_ewald_parameters(rvecs)
-        
-        # Real-space: loop over host atoms
-        for i, atom_id in enumerate(ffatype_ids):
-            if charges[i] == 0.0:
-                continue
-            
-            host_position = host_pos[i]
-            dr = points - host_position
-            dr = cell.mic(dr)
-            R = np.sqrt(np.sum(dr*dr, axis=-1)) + 1e-12
-            
-            V_coul = _coulomb_batched(R, charges[i], guest_charge, coulomb_alpha, rvecs, coulomb_epsilon_r)
-            Vext += V_coul
-        
-        # Reciprocal-space: computed once
+
+        cell_matrix = rvecs.astype(np.float64)
+        cell_inv = np.linalg.inv(cell_matrix)
+
+        V_real = _compute_coulomb_real(
+            points, host_pos, charges, guest_charge,
+            coulomb_alpha, cell_matrix, cell_inv, coulomb_epsilon_r
+        )
+        Vext += V_real
+
         V_recip = _coulomb_reciprocal_space(
-            points, host_pos, charges, guest_charge, coulomb_alpha, coulomb_kmax, 
+            points, host_pos, charges, guest_charge, coulomb_alpha, coulomb_kmax,
             rvecs, inv_rvecs, coulomb_epsilon_r, derivatives=False
         )
         Vext += V_recip
-        
+
         V_self = -(coulomb_alpha / np.sqrt(np.pi)) * np.sum(charges)
-        Vext += (guest_charge / coulomb_epsilon_r) * V_self 
+        Vext += (guest_charge / coulomb_epsilon_r) * V_self
 
     return Vext.reshape(orig_shape)
     
 
-def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
+def get_external_potential_derivatives(points, host_SystemData, sigmaff, epsilonff, spacings, cutoff=12*angstrom):
     """
     Calculate external potential and all derivatives at grid points.
 
@@ -507,10 +535,8 @@ def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff,
     ----------
     points : ndarray
         Grid points at which to evaluate, shape (N, 3).
-    host_data : tuple
-        Host system data containing positions and cell vectors.
-    FF_dict : dict
-        Dictionary mapping atom types to (sigma, epsilon) parameters.
+    host_SystemData : object
+        Host system dataclass.
     sigmaff : float
         Sigma parameter for guest atom in bohr.
     epsilonff : float
@@ -526,8 +552,10 @@ def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff,
         Array of shape (8, N) containing [V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz]
         in unit cube format.
     """
-    (host_pos, masses, ffatypes, ffatype_ids, natom, rvecs) = host_data
-
+    host_pos = host_SystemData.pos
+    ffatype_ids = host_SystemData.ffatype_ids
+    rvecs = host_SystemData.rvecs
+    host_ff_params = host_SystemData.ff_params
     cell = Cell(rvecs)
 
     Vext = np.zeros(len(points))
@@ -544,7 +572,7 @@ def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff,
     L = np.linalg.norm(rvecs, axis=1)
     
     for i, atom_id in enumerate(ffatype_ids):
-        sigma, epsilon = host_ff_dict[atom_id]
+        sigma, epsilon = host_ff_params[atom_id]
         sigma_mixed = 0.5*(sigma + sigmaff)
         epsilon_mixed = np.sqrt(epsilon * epsilonff)
 
@@ -589,9 +617,7 @@ def get_external_potential_derivatives(points, host_data, host_ff_dict, sigmaff,
 
     return np.array([Vext, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz])
 
-
-
-def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict, rotations, weights, limit_potential=1e+4*kjmol):
+def _effective_potential(position_shifts, beta, guest_SystemData, epot_generator_dict, rotations, weights, limit_potential=1e+4*kjmol):
     """
     Memory-efficient vectorized effective potential computation.
 
@@ -601,18 +627,18 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
     ----------
     position_shifts : ndarray
         Position displacements, shape (m, 3).
-    guest_data : tuple
-        Guest molecule data (pos, masses, ffatypes, ffatype_ids, natom).
-    epot_generator_dict : dict
-        Dictionary mapping atom types to potential generator functions.
     beta : float
         Inverse temperature.
+    guest_SystemData : object
+        Guest system dataclass.
+    epot_generator_dict : dict
+        Dictionary mapping atom types to potential generator functions.
     rotations : ndarray
         Rotation matrices, shape (nrot, 3, 3).
     weights : ndarray
         Rotational quadrature weights, shape (nrot,).
     limit_potential : float, optional
-        Maximum potential value, default 1e+4*kjmol.
+        Maximum potential value, default 1e+4 kjmol.
 
     Returns
     -------
@@ -620,18 +646,17 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
         Effective potentials, shape (m,).
     """    
     
-    position_shifts = position_shifts#.astype(np.float32)  # (m, 3)
-    #beta = np.float32(beta)
+    position_shifts = position_shifts  # (m, 3)
 
     m = position_shifts.shape[0]
     nrot = rotations.shape[0] 
 
-    pos = guest_data[0] #.astype(np.float32)                # (natom, 3)
-    natom = guest_data[4]
-    masses = guest_data[1].reshape(natom, 1)#.astype(np.float32)
+    pos = guest_SystemData.pos          # (natom, 3)
+    natom = guest_SystemData.natom
+    masses = guest_SystemData.masses.reshape(natom, 1)
     total_mass = np.sum(masses)
-    ffatypes = guest_data[2]
-    ffatype_ids = guest_data[3]
+    ffatypes = guest_SystemData.ffatypes
+    ffatype_ids = guest_SystemData.ffatype_ids
 
     pos -= np.sum(pos * masses, axis=0) / total_mass
 
@@ -678,7 +703,7 @@ def _effective_potential(position_shifts, beta, guest_data, epot_generator_dict,
     return result  # shape: (m,)
 
 
-def generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=11, max_size=5e+6, max_pot=200*kjmol):
+def generate_effective_potential(points, beta, guest_SystemData, epot_generator_dict, degree=11, max_size=5e+6, max_pot=200*kjmol):
     """
     Generate effective potential on a grid with automatic batching.
 
@@ -688,8 +713,8 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
         Grid points, shape (Nx, Ny, Nz, 3) or similar.
     beta : float
         Inverse temperature.
-    guest_data : tuple
-        Guest molecule data.
+    guest_SystemData : object
+        Guest system dataclass.
     epot_generator_dict : dict
         Dictionary of potential generators for each atom type.
     degree : int, optional
@@ -709,7 +734,6 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
     R1, weights1 = generate_rotation_matrix(degree, 3)
     R2, weights2 = generate_rotation_matrix(degree, 2)
 
-    # combined_rot = np.einsum('aij,bij->abij', R1, R2).reshape(-1, 3, 3).astype(np.float32)  # (nrot, 3, 3)
     combined_rot = np.einsum('aik,bkj->abij', R1, R2).reshape(-1, 3, 3).astype(np.float32)  # (nrot, 3, 3)
     expanded_weights = np.repeat(weights1*weights2, len(R2)).astype(np.float32)   # (nrot,)
     
@@ -719,13 +743,13 @@ def generate_effective_potential(points, beta, guest_data, epot_generator_dict, 
     else:
         position_shift_split = [position_shift]
     for part_positions in position_shift_split:
-        potentials_flat.append(_effective_potential(part_positions, beta, guest_data, epot_generator_dict, combined_rot, expanded_weights))
+        potentials_flat.append(_effective_potential(part_positions, beta, guest_SystemData, epot_generator_dict, combined_rot, expanded_weights))
 
     potentials_flat = np.concatenate(potentials_flat)
     potential = potentials_flat.reshape(points.shape[:-1])
     return potential
 
-def precalculate_effective_potential(points, beta, host_data, host_ff_dict, guest_data, guest_ff_dict, 
+def precalculate_effective_potential(points, beta, host_SystemData, guest_SystemData, 
                                      cutoff=12*angstrom, degree=11, max_size=1e+6, max_pot=200*kjmol):
     """
     Precalculate effective potential with adaptive refinement.
@@ -740,10 +764,12 @@ def precalculate_effective_potential(points, beta, host_data, host_ff_dict, gues
         Grid points for evaluation.
     beta : float
         Inverse temperature.
-    guest_data : tuple
-        Guest molecule data.
-    epot_generator_dict : dict
-        Dictionary of potential generators.
+    host_SystemData : object
+        Host system dataclass.
+    guest_SystemData : object
+        Guest system dataclass.
+    cutoff : float, optional
+        LJ cutoff passed to `get_external_potential` (default 12*angstrom).
     degree : int, optional
         Final quadrature degree, default 11.
     max_size : float, optional
@@ -757,63 +783,136 @@ def precalculate_effective_potential(points, beta, host_data, host_ff_dict, gues
         Refined effective potential field.
     """    
     
-    epot_generator_dict = get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_dict, cutoff=cutoff)
+    epot_generator_dict = get_external_potential_dict(host_SystemData, guest_SystemData, cutoff=cutoff)
 
-    potential = generate_effective_potential(points, beta, guest_data, epot_generator_dict, degree=3, max_size=max_size)
+    potential = generate_effective_potential(points, beta, guest_SystemData, epot_generator_dict, degree=3, max_size=max_size)
     potential_mask = potential <  max_pot
     redo_positions = points[potential_mask]
     
-    redo_potential = generate_effective_potential(redo_positions, beta, guest_data, epot_generator_dict, degree=degree, max_size=max_size)
+    redo_potential = generate_effective_potential(redo_positions, beta, guest_SystemData, epot_generator_dict, degree=degree, max_size=max_size)
     potential[potential_mask] = redo_potential
     return potential
 
-def generate_sum_potential(points, host_data, host_ff_dict, guest_data, guest_ff_dict, 
+def generate_sum_potential(points, host_SystemData, guest_SystemData, 
                                      cutoff=12*angstrom, max_pot=200*kjmol):
-    potential = np.zeros(points.shape[:-1])
-    ffatypes = guest_data[2]
-    ffatypes_id = guest_data[3]
-    for i in ffatypes_id:
-        sigmaff, epsilonff = guest_ff_dict[i]
+    """
+    Sum Lennard-Jones external potentials for all guest atom types.
 
-        potential += get_external_potential(points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=cutoff)
+    For each guest atom type defined in `guest_SystemData`, this constructs the
+    mixed Lennard-Jones interaction with the host and accumulates the external
+    potential evaluated at `points` by calling `get_external_potential`.
+
+    Parameters
+    ----------
+    points : ndarray
+        Coordinates where the potential is evaluated, shape (..., 3).
+    host_SystemData : object
+        Host system data container used by `get_external_potential`.
+    guest_SystemData : object
+        Guest system data exposing `.ffatype_ids` and `.ff_params`.
+    cutoff : float, optional
+        LJ cutoff passed to `get_external_potential` (default 12*angstrom).
+    max_pot : float, optional
+        Maximum potential used elsewhere to decide refinement (not used
+        directly in this helper), default 200*kjmol.
+
+    Returns
+    -------
+    ndarray
+        Total external potential at `points`, shaped like `points[...,0]`.
+    """
+    potential = np.zeros(points.shape[:-1])
+    ffatypes_id = guest_SystemData.ffatype_ids
+    guest_ff_params = guest_SystemData.ff_params
+    for i in ffatypes_id:
+        sigmaff, epsilonff = guest_ff_params[i]
+
+        potential += get_external_potential(points, host_SystemData, sigmaff, epsilonff, cutoff=cutoff)
     
     return potential
 
-def interpolate_effective_potential(beta, points, host_data, host_ff_dict, guest_data, guest_ff_dict, tmp_epot_dr, 
+
+def interpolate_effective_potential(beta, points, host_SystemData, guest_SystemData, tmp_epot_dr, 
                                     tmp_spacing=0.15*angstrom, cutoff=12*angstrom, max_size=5e+6, max_pot=200*kjmol, 
                                     degree=11, int_method='trilinear', remove_tmp=True):
+    """
+    Build and interpolate per-atom external potentials to generate an effective field.
+
+    This function creates (and caches) per-guest-atom external potential grids
+    on a temporary coarse grid rooted at `tmp_epot_dr`, constructs interpolator
+    functions from those grids, and then uses the interpolators to compute the
+    effective potential for the full guest molecule via rotational quadrature.
+    Low-degree quadrature is used first to identify regions that require
+    refinement; those positions are re-evaluated with higher-degree quadrature.
+
+    Parameters
+    ----------
+    beta : float
+        Inverse temperature (1/(k_B T)) used by the effective potential generator.
+    points : ndarray
+        Target points where the effective potential should be evaluated, shape (..., 3).
+    host_SystemData : object
+        Host system data providing positions, force-field parameters and cell.
+    guest_SystemData : object
+        Guest system data providing ff parameters and atom type names.
+    tmp_epot_dr : str
+        Directory path used to store per-atom temporary grid files.
+    tmp_spacing : float, optional
+        Spacing for the temporary coarse grid (default 0.15*angstrom).
+    cutoff : float, optional
+        Lennard-Jones cutoff passed to `get_external_potential` (default 12*angstrom).
+    max_size : int, optional
+        Maximum batch size for `generate_effective_potential` calls (default 5e+6).
+    max_pot : float, optional
+        Potential threshold used to select points for refinement (default 200*kjmol).
+    degree : int, optional
+        Final rotational quadrature degree used for refined evaluations (default 11).
+    int_method : str, optional
+        Interpolation method name to fetch from `Interpolator` (e.g. 'trilinear').
+    remove_tmp : bool, optional
+        If True, delete temporary per-atom files after interpolation (default True).
+
+    Returns
+    -------
+    ndarray
+        Effective potential evaluated at `points`, shaped like `points[...,0]`.
+    """
+    rvecs = host_SystemData.rvecs
+    cell = Cell(rvecs)
+    epot_grid = Grid(cell, spacing=tmp_spacing)
+    tmp_points = epot_grid.points[...,:3].reshape(-1,3)
+
+    guest_ff_params = guest_SystemData.ff_params
+    guest_ffatypes = guest_SystemData.ffatypes
+
+    epot_fn_dict = {}
+    for atom in range(len(guest_ff_params)):
+        part_epot_fn = os.path.join(tmp_epot_dr, f'eff_pot_{atom}_ZIF8_derivs.npy')
+        atom_name = guest_ffatypes[atom]
         
-        cell = Cell(host_data[-1])
-        epot_grid = Grid(cell, spacing=tmp_spacing)
-        tmp_points = epot_grid.points[...,:3].reshape(-1,3)
+        if not os.path.isfile(part_epot_fn):
+            sigmaff, epsilonff = guest_ff_params[atom]
+            epot = get_external_potential(tmp_points, host_SystemData, sigmaff, epsilonff, cutoff=cutoff).reshape(epot_grid.npoints)
+            np.save(part_epot_fn, epot)
 
-        epot_fn_dict = {}
-        for atom in range(len(guest_ff_dict)):
-            part_epot_fn = os.path.join(tmp_epot_dr, f'eff_pot_{atom}_ZIF8_derivs.npy')
-            atom_name = guest_data[2][atom]
-            
-            if not os.path.isfile(part_epot_fn):
-                sigmaff, epsilonff = guest_ff_dict[atom]
-                epot = get_external_potential(tmp_points, host_data, host_ff_dict, sigmaff, epsilonff, cutoff=cutoff).reshape(epot_grid.npoints)
-                # epot = get_external_potential_derivatives(tmp_points, host_data, host_ff_dict, sigmaff, epsilonff, epot_grid.spacings, cutoff=cutoff).reshape((8, )+ tuple(epot_grid.npoints))
-                np.save(part_epot_fn, epot)
-            epot_fn_dict[atom_name] = part_epot_fn
-        int_dict = get_interpolator_dict(epot_fn_dict, tmp_points[0], epot_grid.spacings, int_method=int_method)
-        potential = generate_effective_potential(points, beta, guest_data, int_dict, degree=3, max_size=max_size)
-        potential_mask = potential <  max_pot
-        redo_positions = points[potential_mask]
+        epot_fn_dict[atom_name] = part_epot_fn
 
-        redo_potential = generate_effective_potential(redo_positions, beta, guest_data, int_dict, degree=degree, max_size=max_size)
-        potential[potential_mask] = redo_potential
+    int_dict = get_interpolator_dict(epot_fn_dict, tmp_points[0], epot_grid.spacings, int_method=int_method)
+    potential = generate_effective_potential(points, beta, guest_SystemData, int_dict, degree=3, max_size=max_size)
+    potential_mask = potential <  max_pot
+    redo_positions = points[potential_mask]
 
-        if remove_tmp:
-            for atom in range(len(guest_ff_dict)):
-                atom_name = guest_data[2][atom]
-                part_epot_fn = epot_fn_dict[atom_name]
-                if os.path.exists(part_epot_fn):
-                    os.remove(part_epot_fn)
-            
-        return potential
+    redo_potential = generate_effective_potential(redo_positions, beta, guest_SystemData, int_dict, degree=degree, max_size=max_size)
+    potential[potential_mask] = redo_potential
+
+    if remove_tmp:
+        for atom in range(len(guest_ffatypes)):
+            atom_name = guest_ffatypes[atom]
+            part_epot_fn = epot_fn_dict[atom_name]
+            if os.path.exists(part_epot_fn):
+                os.remove(part_epot_fn)
+        
+    return potential
 
 def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_method='tricubic', charge_dict=None, Electrostatic_Grid=None):
     """
@@ -849,23 +948,17 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
     return interpolator_dict
     
 
-def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_dict, host_charge_dict=None, guest_charge_dict=None, mic=True, cutoff=12*angstrom):
+def get_external_potential_dict(host_SystemData, guest_SystemData, cutoff=12*angstrom):
     """
     Create dictionary of external potential generators for guest atom types, for
     generation of effective external potentials.
 
     Parameters
     ----------
-    pars_file_host : str
-        Path to host force field parameters file.
-    pars_file_guest : str
-        Path to guest force field parameters file.
-    chk_host : str
-        Path to host checkpoint file.
-    chk_guest : str
-        Path to guest checkpoint file.
-    mic : bool, optional
-        If True, use minimum image convention, default True.
+    host_SystemData : object
+        Host system data providing positions, force-field parameters and cell.
+    guest_SystemData : object
+        Guest system data providing ff parameters and atom type names.
     cutoff : float, optional
         Lennard-Jones cutoff distance, default 12*angstrom.
 
@@ -880,17 +973,21 @@ def get_external_potential_dict(host_data, host_ff_dict, guest_data, guest_ff_di
         If mic=False (non-MIC potentials not implemented).
     """
     
-    guest_ffatypes = guest_data[2]
+    guest_ffatypes = guest_SystemData.ffatypes
+    guest_ff_params = guest_SystemData.ff_params
+    guest_charges = guest_SystemData.charges
+
+    host_charges = host_SystemData.charges
 
     external_potential_dict = {}
-    for i in range(len(guest_ff_dict)):
-        sigmaff, epsilonff = guest_ff_dict[i]
+    for i in range(len(guest_ff_params)):
+        sigmaff, epsilonff = guest_ff_params[i]
         key = guest_ffatypes[i]
-        if host_charge_dict is None or guest_charge_dict is None:
-            external_potential_dict[key] = partial(get_external_potential, host_data=host_data, host_ff_dict=host_ff_dict, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
+        if host_charges is None or guest_charges is None:
+            external_potential_dict[key] = partial(get_external_potential, host_SystemData=host_SystemData, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
         else:
-            guest_charge = guest_charge_dict[i]
-            external_potential_dict[key] = partial(get_external_potential_LJ_Coulomb, host_data=host_data, host_ff_dict=host_ff_dict, host_charge_dict=host_charge_dict, 
+            guest_charge = guest_charges[i]
+            external_potential_dict[key] = partial(get_external_potential_LJ_Coulomb, host_SystemData=host_SystemData, 
                                                    sigmaff=sigmaff, epsilonff=epsilonff, guest_charge=guest_charge, cutoff=cutoff)
 
 

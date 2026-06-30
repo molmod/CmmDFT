@@ -1,0 +1,13 @@
+bonds                                     kind=intar 1,2 
+                     1                      0                      
+ffatype_ids                               kind=intar 2
+                     0                      0                      
+ffatypes                                  kind=strar 1
+                 ET_CH3                  
+masses                                    kind=fltar 2
+ 2.740625552572e+04  2.740625552572e+04
+numbers                                   kind=intar 2
+                     0                      0                      
+pos                                       kind=fltar 2,3
+ 0.000000000000000e+00 0.000000000000000e+00 1.455089123e+00 0.000000000000000e+00
+ 0.000000000000000e+00 -1.455089123e+00  

@@ -1,0 +1,19 @@
+# van der Waals
+#==============
+
+LJ:UNIT SIGMA angstrom
+LJ:UNIT EPSILON kcalmol
+LJ:SCALE 1 0.0
+LJ:SCALE 2 0.0
+LJ:SCALE 3 1.0
+
+# ---------------------------------
+# KEY      ffatype  SIGMA  EPSILON
+# ---------------------------------
+LJ:PARS       Zn  2.462   0.124000
+LJ:PARS     O_ca  3.118   0.060000
+LJ:PARS     O_ce  3.118   0.060000
+LJ:PARS     C_ph  3.431   0.105000
+LJ:PARS     C_pc  3.431   0.105000
+LJ:PARS     C_ca  3.431   0.105000
+LJ:PARS     H_ph  2.571   0.044000

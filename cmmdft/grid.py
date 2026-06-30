@@ -24,7 +24,10 @@ class Grid(object):
     
     Discretizes the simulation domain into real-space and reciprocal-space grids
     for efficient computation of functionals and Fourier transforms. Provides
-    integration and FFT operations on fields defined on the grid.
+    integration and FFT operations on fields defined on the grid. 
+
+    Note: Be aware that FFT efficiency depends heavily on the number of points, 
+    preferably choose powers of 2.
     
     Attributes
     ----------

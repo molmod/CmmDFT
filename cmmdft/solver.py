@@ -79,7 +79,6 @@ class Solver(object):
         self.nsteps = nsteps
         self.nspecies = self.fener.system.guest.nspecies
         self.rho_shape = [self.nspecies] + list(self.grid.npoints)
-
         if isinstance(criterion, list):
             for crit in criterion:
                 assert crit.lower() in ['riue', 'res', 'der'], 'Criterion must be either RIUE (relative integrated unsigned error), RES (Residual error) or DER (Derivative error)'
@@ -95,7 +94,6 @@ class Solver(object):
                 threshold = 1
             self.criterion = [criterion]
             self.threshold = [threshold]
-
 
         self.mask = np.ones(self.rho_shape, dtype=bool)
         for part in self.fener.parts:
@@ -409,7 +407,6 @@ class Solver(object):
                     self.DER = np.linalg.norm((np.abs(rho_new)*beta*self._get_dOmega(rho_new, C1_new)/(self.a_tol + self.r_tol*np.abs(rho_new)))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
                     crit = self.DER
                     log.dump("             *  Norm of derivative                  = %11.4e" %self.DER)
-
                 CRIT_PASS *= (crit < thresh)
 
             if self.track_history:
@@ -837,7 +834,6 @@ class Anderson(Picard):
         **kwargs
             Additional arguments passed to parent Picard class
         """
-        
         super().__init__(program, nsteps, method=method, **kwargs)
         self.Anderson_method = method
         self.m = m

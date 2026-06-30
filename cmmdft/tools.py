@@ -67,10 +67,10 @@ def get_chempot_key(chempot):
     if hasattr(chempot, '__iter__'):
         chempot_key = ''
         for mu in chempot:
-            chempot_key += f'{mu:#0.8f}_'
+            chempot_key += f'{mu/kjmol:#0.5f}_'
         chempot_key = chempot_key[:-1]
     else:
-        chempot_key = f'{chempot:#0.8f}'
+        chempot_key = f'{chempot/kjmol:#0.5f}'
     return chempot_key
 
 def potential_from_mfa(points, potential):

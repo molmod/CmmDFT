@@ -479,7 +479,7 @@ class FreeEnergy(object):
             HardSphere = HardSphereFunctional(self.grid, self.system.guest.Rhs, m=np.atleast_1d(m), version=version)
             self.add_part(HardSphere)
     
-    def add_mean_field(self, tailcorrections=False, cutoff=None, **kwargs):
+    def add_mean_field(self, tailcorrections=True, cutoff=12*angstrom, **kwargs):
         """
         Add mean-field approximation (MFA) functional for attractive interactions.
         

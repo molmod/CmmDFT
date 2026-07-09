@@ -31,5 +31,5 @@ As [molmod](https://molmod.github.io/molmod/) and [yaff](https://github.com/molm
 
 CmmDFT is developed by Vic De Ridder at the Center for Molecular Modeling under supervision of prof. Louis Vanduyfhuys.
 
-Copyright (C) 2019 - 2024 Louis Vanduyfhuys <Louis.Vanduyfhuys@UGent.be>
+Copyright (C) 2019 - 2026 Louis Vanduyfhuys <Louis.Vanduyfhuys@UGent.be>
 Center for Molecular Modeling (CMM), Ghent University, Ghent, Belgium; all rights reserved unless otherwise stated.

@@ -22,32 +22,40 @@
 #
 #--
 
+import glob
 from setuptools import setup
 
 setup(
-        name='CmmDFT',
-        version='1.0',
-        description='Python library to perform adsorption calculations using classical DFT.',
-        author='Louis Vanduyfhuys',
-        author_email='Louis.Vanduyfhuys@UGent.be',
-        package_dir = {'cmmdft': 'cmmdft'},
-        packages=['cmmdft', 'cmmdft.rotations', 'cmmdft.rotations.helpers'],
-        classifiers=[
-            'Development Status :: 3 - Alpha',
-            'Environment :: Console',
-            'Intended Audience :: Science/Research',
-            'License :: OSI Approved :: GNU General Public License (GPL)',
-            'Operating System :: POSIX :: Linux',
-            'Programming Language :: Python',
-            'Topic :: Science/Engineering :: Molecular Science'
-        ],
-        install_requires=['cython>=0.29.23',
-                      'numpy>=1.0',
-                      'scipy',
-                      'matplotlib',
-                      'molmod',
-                      'h5py',
-                      'yaff'
-        ]
+    name='CmmDFT',
+    version='1.0',
+    description='Python library to perform adsorption calculations using classical DFT.',
+    author='Louis Vanduyfhuys',
+    author_email='Louis.Vanduyfhuys@UGent.be',
+    package_dir = {'cmmdft': 'cmmdft'},
+    packages=['cmmdft', 'cmmdft.external_potential', 'cmmdft.external_potential.rotations'],
+    package_data={
+        'cmmdft': ['external_potential/rotations/lebedev/*.npz'],
+    },
+    classifiers=[
+        'Development Status :: 3 - Alpha',
+        'Environment :: Console',
+        'Intended Audience :: Science/Research',
+        'License :: OSI Approved :: GNU General Public License (GPL)',
+        'Operating System :: POSIX :: Linux',
+        'Programming Language :: Python',
+        'Topic :: Science/Engineering :: Molecular Science'
+    ],
+    install_requires=['numpy>=1.23.0',
+                      'scipy>=1.9.0',
+                      'matplotlib>=3.7.0',
+                      'ase>=3.23.0',
+                      'numba>=0.60.0',
+                      'h5py>=3.0.0',
+                      ],
+    extras_require={
+        'docs': ['sphinx>=7.0',
+                 'sphinx-rtd-theme>=1.3.0',
+                 'sphinxcontrib-bibtex>=2.0.0'],
+    },
 
 )

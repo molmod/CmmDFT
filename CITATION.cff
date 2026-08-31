@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: "CmmDFT: A Classical Density Functional Theory Package for Nanoporous Materials"
+version: 0.1.0
+date-released: 2026-08-25
+authors:
+  - family-names: "De Ridder"
+    given-names: "Vic"
+    affiliation: "Ghent University"
+    orcid: "https://orcid.org/0000-0000-0000-0000"   # if you have one
+  - family-names: "Vanduyfhuys"
+    given-names: "Louis"
+    affiliation: "Ghent University"
+    orcid: "https://orcid.org/0000-0000-0000-0000"   # if you have one
+repository-code: "https://github.com/molmod/CmmDFT"
+url: "https://cmmdft.readthedocs.io"    # or GitHub Pages URL, once live
+abstract: >
+  CmmDFT is a Python package implementing classical density functional
+  theory (cDFT) for modeling gas adsorption and diffusion in nanoporous
+  materials such as metal-organic frameworks (MOFs).
+keywords:
+  - classical density functional theory
+  - metal-organic frameworks
+  - adsorption
+  - diffusion
+  - molecular simulation
+license: GPL 3   # or whatever license you're actually using
+preferred-citation:
+  type: article
+  title: "Application of classical Density Functional theory for diffusion of gases confined in nanoporous materials."
+  authors:
+    - family-names: "De Ridder"
+      given-names: "Vic"
+    - family-names: "Vanduyfhuys"
+      given-names: "Louis"
+  journal: "Fluid Phase Equilibria"
+  volume: 611
+  start: 114796
+  year: 2027
+  doi: "10.1016/j.fluid.2026.114796"

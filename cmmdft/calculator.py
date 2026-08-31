@@ -1,79 +1,237 @@
 #!/usr/bin/env python
 
-import os, sys, numpy as np, matplotlib.pyplot as plt, copy, re
+import os, sys, matplotlib.pyplot as plt, copy, re
+import numpy as np
 from pathlib import Path
 import scipy.optimize as opt
 from scipy.special import logsumexp
 import getpass, datetime
+import json, zipfile, itertools
+import h5py
 
-from molmod.units import kjmol, bar, kelvin, joule, mol, angstrom, amu
-from molmod.constants import boltzmann, avogadro
+from .units_constants import avogadro, planck, boltzmann, kjmol, bar, kelvin, joule, mol, angstrom, amu, convert_units
 
-from .system import System, Grid, NanoporousHost, SphericalLJGuest
-from .program import Program
-from .functionals import WDAVFunctional, ExternalPotential, FreeEnergy
-from .eos import VanderWaalsEOS, EquationOfState
-from .log import log, version
-from .tools import selection_sort, bisect_left, make_supercell, convert_units, get_file_suffix, Document
-from .extpot_calculator import get_external_potential, read_pars_file
+from .system import NanoporousHost, System, GuestMixture, Guest
+from .functionals import WDAVFunctional, ExternalPotential
+from .eos import *
+from .log import log
+from .tools import selection_sort, bisect_left, make_supercell, get_file_suffix, Document, get_chempot_key
+from .external_potential.extpot_calculator import get_external_potential
+from .external_potential.utils import get_system_data
+from .integrate_flexibility import integrate_flexibility, integrate_flexibility_adsorption
+#log.set_level('silent')
 
 
 
 class Calculator(object):
     """
-        Class to extract all information from a program instance required to compute properties derivable
-        from the density (such as the loading and contributions to the free energy).
-    """
-    def __init__(self, program, label=None):
-        self.program = program
-        self.name_dict = program.name_dict
-        self.workdir = program.workdir
-        self.grid = program.grid.copy()
-        self.fener = program.fener.copy(self.grid)
-        self.host = program.system.host
-        self.guest = program.system.guest
-        self.label = label
+    Class to extract all information from a program instance required to compute properties derivable
+    from the density (such as the loading and contributions to the free energy).
 
-    def density_statistics(self, temp, chempot, mask=None):
+    Attributes
+    ----------
+    program : Program
+        The program instance containing simulation data.
+    name_dict : dict
+        Dictionary of naming conventions from the program.
+    workdir : Path
+        Working directory for output files.
+    grid : :class:`cmmdft.grid.Grid`
+        The computational grid.
+    fener : FreeEnergy
+        Free energy functional.
+    host : NanoporousHost or similar
+        The host material.
+    guest : SphericalLJGuest or similar
+        The guest species.
+    ncomp : int
+        Number of guest components.
+    label : str or None
+        Optional label for the calculator.
+    """
+    def __init__ (self, program, label=None):
         """
-        Computes and returns average, min, max, std of the density over the grid 
+        Initialize the Calculator with a program instance.
 
         Parameters
         ----------
-        temp : temperature
-        chempot : chemical potential in atomic units (Hartree)
-        mask : A mask in the shape of the grid, optional
-            Will set dednsity outside of mask to 0 and integrate. Providing the loading within the mask region. The default is None.
+        program : Program
+            The program instance to extract data from.
+        label : str, optional
+            Optional label for identification.
+        """
+        self.name_dict = program.name_dict
+        if hasattr(program, 'eos'):
+            self.eos = program.eos
+        self.workdir = program.workdir
+        self.grid = program.grid
+        self.fener = program.fener
+        self.host = program.system.host
+        self.guest = program.system.guest
+        self.ncomp = program.system.guest.nspecies
+        self.label = label
+
+    def set_eos(self, eosname='PCSAFT', eos=None):
+        """
+        Configure the equation of state (EOS) used for bulk thermodynamic
+        calculations.  Either an existing EOS object may be supplied via
+        ``eos`` or a new instance is created based on ``eosname`` and the
+        current guest information.
+
+        Supported EOS names: ``'MBWR'``, ``'CS'``, ``'MFA'`` and ``'PCSAFT'``.
+        For multi-component guests the corresponding mixture EOS class is
+        selected automatically.
+
+        Parameters
+        ----------
+        eosname : str, optional
+            Name of the EOS to instantiate when ``eos`` is not provided.
+            Defaults to ``'PCSAFT'``.
+        eos : EquationOfState, optional
+            Pre-built EOS object.  Must be an instance of
+            ``EquationOfState``.
+        """
+        with log.section('PROGRAM', 1, timer='Initializing'):
+            if eos is not None:
+                assert isinstance(eos, EquationOfState)
+                self.eos = eos
+            else:
+                assert self.guest is not None, "Host and guest must be set using set_system"
+                assert isinstance(self.system.guest, Guest), "Guest attribute must be Guest class"
+                assert eosname in ['MBWR', 'CS', 'MFA', 'PCSAFT']
+                guest = self.guest
+                if eosname == 'MBWR':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = ModifiedBenedictWebbRubinMixEOS.from_guest(guest)
+                    else:
+                        self.eos = ModifiedBenedictWebbRubinEOS.from_guest(guest)
+                elif eosname == 'CS':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = CarnahanStarlingMixEOS.from_guest(guest)
+                    else:
+                        self.eos = CarnahanStarlingEOS.from_guest(guest)
+                elif eosname == 'MFA':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = MFAMixEOS.from_guest(guest)
+                    else:
+                        self.eos = MFAEOS.from_guest(guest)
+                elif eosname == 'PCSAFT':
+                    if isinstance(guest, GuestMixture):
+                        self.eos = PCSAFTMixEOS.from_guest(guest)
+                    else:
+                        self.eos = PCSAFTEOS.from_guest(guest)
+                else:
+                    raise ValueError('Unable to set eos')
+                log.dump(f'eos set to {eosname}')
+    
+    def get_chempot_from_pressures(self, temp, chempot=None, pressure=None):
+        """
+        Return chemical potential(s) corresponding to the supplied temperature
+        and either a chemical potential or a pressure.
+
+        If ``pressure`` is provided and this calculator has an ``eos`` attribute
+        the chemical potential is computed using
+        ``self.eos.compute_chempot``.  If ``chempot`` is given it is returned
+        unchanged.  When both arguments are ``None`` the available chemical
+        potentials for the given ``temp`` are queried from the density files
+        on disk (via :meth:`get_chemical_potential`).
+
+        Parameters
+        ----------
+        temp : float
+            Temperature in Kelvin for any EOS evaluation.
+        chempot : float or array-like, optional
+            Directly specified chemical potential(s) in atomic units.
+        pressure : float or array-like, optional
+            Pressure(s) in the units understood by :attr:`eos`.
 
         Returns
         -------
-        average, min, max, std
+        float or ndarray
+            Chemical potential(s) in atomic units.
 
+        Raises
+        ------
+        ValueError
+            If ``pressure`` is supplied but no EOS has been initialized.
         """
+        if chempot is None and pressure is not None:
+            if hasattr(self, 'eos'):
+                mus = self.eos.compute_chempot(temperature=temp, pressure=pressure)
+            else:
+                raise ValueError('If eos object is not initialized, chemical potential must be provided')
+        elif chempot is not None:
+            mus = chempot
+        else:
+            mus = self.get_chemical_potential(temp)
+        try:
+            if len(mus) == 1:
+                mus = mus[0]
+        except TypeError:
+            pass
+        return mus
+    
+    def density_statistics(self, temp, chempot=None, pressure=None):
+        """
+        Compute and return average, minimum, maximum, and standard deviation of the density over the grid.
+
+        Chemical potential(s) may be supplied directly via ``chempot`` or, if
+        ``pressure`` is provided and an EOS has been configured, the chemical
+        potential will be computed from the pressure.
+
+        Parameters
+        ----------
+        temp : float
+            Temperature in Kelvin.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree). For multicomponent, an array.
+        pressure : float or array-like, optional
+            Pressure(s) used to derive chemical potentials when ``chempot`` is
+            not given.
+
+        Returns
+        -------
+        tuple of float
+            (average, min, max, std) of the density.
+
+        Raises
+        ------
+        AssertionError
+            If the density file is not found.
+        """
+        chempot = self.get_chempot_from_pressures(temp, chempot, pressure)
         file_suff = get_file_suffix(chempot, temp)
         fn = self.workdir / f'rho_{file_suff}.npy'
         assert fn.is_file(), f'No file found at {fn}'
 
-        rho = np.load(fn)
+        rho = np.load(fn, dtype=np.float32)
         return rho.mean(), rho.min(), rho.max(), rho.std()
 
-    def loading(self, temp, chempot, mask=None):
+
+    def loading(self, temp, chempot=None, pressure=None, mask=None):
         """
-        Integrates the density of the particles over the volume to determine the number of guest particles present. 
-        Provide temperature and chemical potential to find the right density file
+        Integrate the density of the particles over the volume to determine the number of guest particles present.
+        The correct density file is selected by temperature and chemical
+        potential; the latter may either be provided directly or obtained from a
+        supplied ``pressure`` if an EOS object is available.
 
         Parameters
         ----------
-        temp : temperature
-        chempot : chemical potential in atomic units (Hartree)
-        mask : A mask in the shape of the grid, optional
-            Will set dednsity outside of mask to 0 and integrate. Providing the loading within the mask region. The default is None.
+        temp : float
+            Temperature in Kelvin.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree). For multicomponent, an array.
+        pressure : float or array-like, optional
+            Pressure(s) used to derive chemical potentials when ``chempot`` is not given.
+        mask : ndarray, optional
+            A mask in the shape of the grid to set density outside to 0 and integrate within the mask region.
 
         Returns
         -------
-        Loading
-
+        float or ndarray
+            Loading (number of particles). For multicomponent, an array.
         """
+        chempot = self.get_chempot_from_pressures(temp, chempot, pressure)
         file_suff = get_file_suffix(chempot, temp)
         fn = self.workdir / f'rho_{file_suff}.npy'
         assert fn.is_file(), f'No file found at {fn}'
@@ -81,20 +239,47 @@ class Calculator(object):
         rho = np.load(fn)
            
         if mask is None:
-            return self.grid.integrate(rho).real
+            return self.grid.integrate_n(rho).real
         else:
+            if rho.shape != mask.shape:
+                if mask.shape == tuple(self.grid.npoints):
+                    mask = np.full((self.ncomp, *mask.shape), mask)
+                else:
+                    raise ValueError(f'The shape of the mask {mask.shape} does not match the shape of the density {rho.shape} or the grid {self.grid.npoints}')
             rho_mask = np.copy(rho)
             rho_mask[~mask] = 0
-            return self.grid.integrate(rho_mask).real
+            return self.grid.integrate_n(rho_mask).real
     
-    def loading_MWBR_unreliable(self, temp, chempot, mwbr):
+    def loading_MWBR_unreliable(self, temp, mbwr, chempot=None, pressure=None):
         """
         Compute the loading corresponding to that part of the grid for which the weighted density in WDA is higher than 1.2/sigma**3. This last value is an upper value
-        for the density at which the MWBR (used in the correlation WDA funcitonal) is a reliable EOS for a LJ liquid. In other words, when the loading (number of guests)
-        returned by this routine is higher than zero and the WDA correlation functional was used, then MWBR was applied outside of its reliable region.
+        for the density at which the MBWR (used in the correlation WDA funcitonal) is a reliable EOS for a LJ liquid. In other words, when the loading (number of guests)
+        returned by this routine is higher than zero and the WDA correlation functional was used, then MBWR was applied outside of its reliable region.
         
-        The argument mwbr should be an instance of the ModifiedBenedictWebbRubinEOS class used in the WDA correlation functional.
+        The argument mbwr should be an instance of the ModifiedBenedictWebbRubinEOS class used in the WDA correlation functional.
+
+        Parameters
+        ----------
+        temp : float
+            Temperature in Kelvin
+        chempot : float or array-like, optional
+            chemical potential in atomic units (Hartree)
+        pressure : float or array-like, optional
+            Pressure(s) that will be converted to chemical potentials if
+            ``chempot`` is omitted and an EOS is available.
+        mbwr: Instance of ModifiedBenedictWebbRubinEOS
+
+        Returns
+        -------
+        float
+            Loading (number of particles) in the unreliable region.
+
+        Raises
+        ------
+        AssertionError
+            If the density file is not found.
         """
+        chempot = self.get_chempot_from_pressures(temp, chempot, pressure)
         file_suff = get_file_suffix(chempot, temp)
         fn = self.workdir / f'rho_{file_suff}.npy'
         assert fn.is_file(), f'No file found at {fn}'
@@ -102,20 +287,44 @@ class Calculator(object):
         rho = np.load(fn)
         self.guest.compute_hardsphere_radius(temp)
         Rhs = self.guest.Rhs
-        WDA = WDAVFunctional(Rhs, self.grid, mwbr)
-        wrho = WDA._get_weighted_density(self.grid.fft(rho))
-        mask_MBWR = (wrho*mwbr.sigma**3)>1.2
+        WDA = WDAVFunctional(Rhs, self.grid, mbwr)
+        wrho = WDA._get_weighted_density(self.grid.fftn(rho))
+        mask_MBWR = (wrho*mbwr.sigma**3)>1.2
 
         rho_MBWR = np.copy(rho)
         rho_MBWR[~mask_MBWR] = 0
 
-        return self.grid.integrate(rho_MBWR).real     
+        return self.grid.integrate_n(rho_MBWR).real     
 
-    def return_loading(self, temp, chempots, excess=False, eos=None, He_frac=None):
+    def return_loading(self, temp, chempots=None, pressures=None, excess=False, eos=None, He_frac=None):
         """
         Returns an array of loadings for a list of chemical potentials.
+
+        Parameters
+        ----------
+        temp : float
+            Temperature in Kelvin.
+        chempots : array-like
+            List or array of chemical potentials in atomic units (Hartree).
+        excess : bool, optional
+            If True, the excess loading is returned (requires eos and He_frac).
+        eos : EquationOfState, optional
+            EOS object for excess calculation.
+        He_frac : float, optional
+            Helium void fraction; calculated automatically if not provided.
+
+        Returns
+        -------
+        ndarray
+            Loading at given parameters (excess or absolute).
+
+        Raises
+        ------
+        AssertionError
+            If eos is required but not provided for excess loading.
         """
-        loading_list = np.zeros(len(chempots))
+        chempots = self.get_chempot_from_pressures(temp, chempots, pressures)
+        loading_list = np.zeros((len(chempots), self.ncomp))
         for i,mu in enumerate(chempots):
             try:
                 loading_list[i] = self.loading(temp, mu)
@@ -130,46 +339,98 @@ class Calculator(object):
             if isinstance(eos, EquationOfState):
                 eos.set_temperature(temp)
                 dens_bulk = eos.solve_densities_from_chempots(chempots)
-                final_dens_bulk = np.nanmin(dens_bulk, axis=1)
+                dens_bulk = np.nanmin(dens_bulk, axis=1) #take the minimum equilibrium density
+                if self.ncomp > 1:
+                    # calculate component bulk densities
+                    dens_bulk = np.einsum('i,j->ij', dens_bulk, self.guest.fractions)
             else:
-                final_dens_bulk = np.array([eos.calculate_rho(temp, mu) for mu in chempots])
-            loading_list -= final_dens_bulk*He_frac*self.host.cell.volume
+                dens_bulk = np.array([eos.calculate_rho(temp, mu) for mu in chempots])
+            loading_list -= dens_bulk*He_frac*self.host.cell.volume
 
         return loading_list
 
     def get_chemical_potential(self, temperature):
         """
-        Returns an array of chemical potentials for a given temperature, for which densities have been calculated.
+        Return an array containing all the chemical potentials for which the density is calculated at a given temperature.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        ndarray
+            Array of chemical potentials in kJ/mol.
         """
 
-        numeric_const_pattern = '[-+]? (?: (?: \d* \. \d+ ) | (?: \d+ \.? ) )(?: [Ee] [+-]? \d+ ) ?'
+        numeric_const_pattern = r"([-+]?\d*\.?\d+)(?=kJmol)"
         rx = re.compile(numeric_const_pattern, re.VERBOSE)
 
         dens_list = [f.name for f in self.workdir.iterdir() if f.name.startswith('rho') and f.name.endswith(f'{temperature:#7.5f}K.npy')]
-        chempots = np.array([float(rx.findall(f)[0]) for f in dens_list])*kjmol
-        return selection_sort(chempots)
+        chempots = np.array([np.array(rx.findall(f), dtype=float) for f in dens_list])*kjmol
+        if hasattr(self, 'eos'):
+            # sort the chempots to rising pressure
+            pressures = self.eos.compute_pressure(temperature=temperature, chempot=chempots)
+            idx = np.argsort(pressures)
 
-    def get_helium_fraction(self, temperature):
+            chempots_sorted = chempots[idx]
+        else:
+            chempots_sorted = np.sort(chempots, axis=0)
+        return chempots_sorted
+
+    def get_helium_fraction(self, temperature, cutoff=12*angstrom):
         """
-        Returns an approximation for the helium void fraction for a given temperature
+        Return an approximation for the helium void fraction for a given temperature.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+        cutoff : float, optional
+            Cutoff distance for potential calculation, default 12 Angstrom.
+
+        Returns
+        -------
+        float
+            Helium fraction (dimensionless).
         """
-        He_pot_fn = self.workdir/'ExtPots/He_potential.npy'
+        if not (self.workdir/'ExtPots').is_dir():
+            He_pot_fn = self.workdir/'He_potential.npy'
+        else:
+            He_pot_fn = self.workdir/'ExtPots/He_potential.npy'
+
         if He_pot_fn.is_file():
             He_pot = np.load(He_pot_fn)
+
         else:
             #Helium parameters from "The molecular theory of gases and liquids" by Joseph O. Hirschfelder, Charles F. Curtiss, and R. Byron Bird
             He_sigma, He_epsilon = 2.576*angstrom, 10.22*boltzmann
-            FF_dict = read_pars_file(self.host.chk, self.host.par)
-            He_pot = get_external_potential(self.grid.points[...,:3], FF_dict, sigmaff=He_sigma, epsilonff=He_epsilon, host_syst=self.host.mol, cutoff=12*angstrom)
-            np.save(He_pot_fn, He_pot)            
+            host_SystemData = get_system_data(self.host.chk, self.host.par)
+            He_pot = get_external_potential(self.grid.points[...,:3], host_SystemData, sigmaff=He_sigma, epsilonff=He_epsilon, cutoff=cutoff)
+            np.save(He_pot_fn, He_pot)
         exp_He_pot = np.clip(np.exp(-He_pot/boltzmann/temperature), 0, 1)
         He_vol = self.grid.integrate(exp_He_pot).real
         return He_vol/self.host.cell.volume
     
     def get_Henry_Coefficient(self, temperature):
         """
-        Returns the Henry coefficient for a given temperature, estimated from the external potential.
-        Requires that an ExternalPotential part is present in the functional.
+        Return the Henry coefficient for a given temperature, by integrating the external potential with Boltzmann weights.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+
+        Returns
+        -------
+        float
+            Henry coefficient in atomic units.
+
+        Raises
+        ------
+        ValueError
+            If no external potential is found in the functional.
         """
         potential = None
         for name in self.fener.part_names:
@@ -181,73 +442,150 @@ class Calculator(object):
     
         epot_int = self.grid.integrate(np.exp(-potential/temperature/boltzmann))
         return 1/avogadro/boltzmann/temperature/self.host.cell.volume*epot_int
+    
+    def get_selectivity(self, temperature, chempots=None, pressures=None):
+        """
+        Return the selectivity between multiple components at given temperature and chemical potentials.
 
-
-    def save_loadings(self, temperature, chempots=None, pressure=False, excess=False, eos=None, fn=None):
-        '''This function saves the loadings of all the calculated densities at the specified temperatures in a csv
-        file vs the chemical potential or pressure.
-        
         Parameters
         ----------
-        temperature
-            The temperature in kelvin
-        chempots
-            An array of the chemical potentials which will be outputted in the csv file
-        pressure, optional
-            A boolean indicating whether to save the loadings vs pressure instead of chemical potential. If
-        True, an equation of state object must be provided as well.
-        excess, optional
-            A boolean indicating whether to save the excess loadings. If True, the function will calculate the
-        excess loadings in the framework
-        eos
-            `eos` stands for equation of state object. It is an object that contains information about the
-        thermodynamic properties of a substance, such as its pressure, volume, and temperature. The
-        `save_loadings` function uses the `eos` object to calculate the pessure at a given
-        temperature and chemical potential
-        fn
-            The filename where the loadings will be saved. If None, a default filename will be generated         
-        '''
-         
-        if chempots is None:
-            chempots = self.get_chemical_potential(temperature)
+        temperature : float
+            Temperature in Kelvin.
+        chempot : array-like
+            Chemical potentials in atomic units (Hartree).
+
+        Returns
+        -------
+        ndarray
+            Selectivity matrix (ncomp x ncomp).
+
+        Raises
+        ------
+        AssertionError
+            If the system is not multicomponent.
+        ValueError
+            If mole fractions are zero.
+        """
+        assert self.ncomp > 1, 'Selectivity can only be calculated for multicomponent systems'
         
-        data = np.zeros((2, len(chempots)))
+        chempots = self.get_chempot_from_pressures(temperature, chempots, pressures)
+        chempots = np.atleast_2d(chempots)
+        loadings = self.return_loading(temperature, chempots)
+        mole_fractions = np.array(self.guest.fractions)
+        selectivities = np.zeros((len(chempots), self.ncomp, self.ncomp))
+
+        for i in range(self.ncomp):
+            for j in range(self.ncomp):
+                xi = mole_fractions[i]
+                xj = mole_fractions[j]
+                if xi == 0 or xj == 0:
+                    raise ValueError(f'Mole fraction of component {i} or {j} is zero, cannot compute selectivity')
+                
+                selectivities[:, i, j] += (loadings[:, i]/loadings[:, j])/(mole_fractions[i]/mole_fractions[j])
+        return selectivities
+
+
+    def save_loadings(self, temperature, chempots=None, pressures=None, pressure=False, excess=False, He_frac=None, eos=None, fn=None):
+        """
+        Save the loadings of all the calculated densities at the specified temperature in a CSV file vs chemical potential or pressure.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+        chempots : array-like, optional
+            Array of chemical potentials in atomic units (Hartree); auto-detected if None.
+        pressure : bool, optional
+            If True, save vs pressure (requires eos).
+        excess : bool, optional
+            If True, save excess loadings (requires eos and He_frac).
+        He_frac : float, optional
+            Helium fraction for excess calculation.
+        eos : EquationOfState, optional
+            EOS object for pressure or excess calculations.
+        fn : str or Path, optional
+            Output filename; auto-generated if None.
+        """
+         
+        chempots = self.get_chempot_from_pressures(temperature, chempots, pressures)
+
+        loadings = self.return_loading(temperature, chempots, excess=excess, eos=eos, He_frac=He_frac)
+        
+        # prepare data if saving vs pressure
         if pressure:
-            header = 'pressures [au], loadings [molecules/uc]'
-            data[0] = np.array([eos.calculate_pressure(temperature, chem) for chem in chempots])
+            header = 'pressures [au]'
+            if pressures is None:
+                data0 = np.atleast_2d(eos.compute_pressure(temperature=temperature, chempot=chempots)).T
+            else:
+                data0 = np.atleast_2d(pressures).T
+            if self.ncomp > 1:
+                for i in range(self.ncomp):
+                    header += f',loading_comp{i+1} [molecules/uc]'
+            else:
+                header += ',loading [molecules/uc]'
+        # prepare data if saving vs chemical potential
         else:
-            header = 'chempot [au], loadings [molecules/uc]'
-            data[0] = chempots
-        data[1] = self.return_loading(temperature, chempots, excess=excess, eos=eos)
+            if self.ncomp > 1:
+                header = '' 
+                for i in range(self.ncomp):
+                    header += f'chempot_comp{i+1} [Eh],'
+                for i in range(self.ncomp):
+                    header += f'loading_comp{i+1} [molecules/uc],'
+                header = header[:-1]
+                data0 = np.atleast_2d(chempots)
+            else:
+                header = 'chempot [Eh],loading [molecules/uc]'
+                data0 = np.atleast_2d(chempots).T
+
+        data = np.hstack((data0, loadings))
         if fn is None:
             suffix = '_vs_P' if pressure else ''
             prefix = 'excess_' if excess else ''
-            fn = self.workdir / f'{prefix}loads_{temperature:#3.0f}K{suffix}.csv'
+            fn = self.workdir / f'{prefix}loading_{temperature:#0.5f}K{suffix}.csv'
         else:
             fn = Path(fn)
-        np.savetxt(fn, data.T, delimiter=',', header=header, comments='')
+        np.savetxt(fn, data, delimiter=',', header=header, comments='')
         
-    def save_loadings_AIF(self, temp, chempots=None, pressures=None, eos=None, 
-                          input_fn=None, user=None, excess=False, loading_unit='au/uc', fn=None, He_frac=None):
+    def save_loadings_AIF(self, temperature, chempots=None, pressures=None, eos=None, 
+                          input_fn=None, input_zip=True, user=None, excess=False, selectivity=False,
+                            loading_unit='au/uc', fn=None, He_frac=None):
         """
         Save the adsorption loadings to an AIF (Adsorption Information File) format.
-        Parameters:
-        -----------
-        temp : float
-            Temperature at which the adsorption is measured, in Kelvin.
-        chempots : array-like
-            Array of chemical potentials.
-        eos : object
-            Equation of state object used to calculate pressures.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+        chempots : array-like, optional
+            Array of chemical potentials in atomic units (Hartree).
+        pressures : array-like, optional
+            Array of pressures in bar.
+        eos : EquationOfState, optional
+            EOS object for pressure/fugacity calculations.
+        input_fn : str or Path, optional
+            Input file path.
+        input_zip : bool, optional
+            If True, zip input files.
+        user : str, optional
+            Operator name; defaults to system user.
         excess : bool, optional
-            If True, save excess adsorption loadings. Default is False.
+            If True, save excess loadings.
+        selectivity : bool, optional
+            If True, include selectivity (multicomponent only).
         loading_unit : str, optional
-            Unit for the adsorption loading. Default is 'au/uc' (molecules per unit cell).
+            Unit for loading, default 'au/uc'.
         fn : str or Path, optional
-            Filename to save the AIF file. If None, a default filename is generated.
+            Output filename; auto-generated if None.
         He_frac : float, optional
-            Helium fraction used in the calculation of excess adsorption, if not provided the Helium void fraction is calculated with the function get_Helium_fraction.
+            Helium fraction for excess calculation.
+
+        Raises
+        ------
+        AssertionError
+            If required parameters (e.g., eos, chempots/pressures) are missing.
         """
+        if selectivity:
+            assert self.ncomp > 1, 'Selectivity can only be calculated for multicomponent systems'
 
         d = Document()
         d.add_new_block('CmmDFT2aif')
@@ -258,21 +596,26 @@ class Calculator(object):
         if user is None:
             user = getpass.getuser()
         block.set_pair('_exptl_operator',  user)
-
-        block.set_pair('_adsnt_material_id', self.host.name)
-        block.set_pair('_exptl_adsorptive', self.guest.name)
-        block.set_pair('_exptl_temperature', f'{temp:0.3f}K')
         block.set_pair('_exptl_method', 'simulation')
         adsorption_type = 'excess' if excess else 'absolute'
         block.set_pair('_exptl_isotherm_type', adsorption_type)
+        block.set_pair('_exptl_temperature', f'{temperature:0.3f}')
+        if self.ncomp > 1:
+            for i in range(self.ncomp):
+                block.set_pair(f'_exptl_adsorptive{i+1}', self.guest.names[i])
+        else:
+            block.set_pair('_exptl_adsorptive', self.guest.name)
+
+        block.set_pair('_adsnt_material_id', self.host.name)
 
         # simulation metadata
-        block.set_pair('_simltn_date', datetime.datetime.now().strftime('%Y-%m-%d'))
-        block.set_pair('_simltn_code', f'CmmDFT-{version}')
-        # block.set_pair('_simltn_code', f'custom')
-
+        # block.set_pair('_simltn_code', f'CmmDFT-{self.program.version}')
+        block.set_pair('_simltn_date', datetime.datetime.now().isoformat())
+        block.set_pair('_simltn_code', f'custom')
         block.set_pair('_simltn_sampling', 'cDFT')
+        
         input_file_list = []
+        zip_file_fn = self.workdir / 'simulation_input_files.zip'
         if input_fn is not None:
             input_file_list.append(str(input_fn))
         if hasattr(self.host, 'chk') and self.host.chk is not None:
@@ -283,15 +626,24 @@ class Calculator(object):
             input_file_list.append(str(self.guest.chk))
         if hasattr(self.guest, 'par') and self.guest.par is not None:
             input_file_list.append(str(self.guest.par))
-        block.set_pair('_simltn_input_files', input_file_list)
 
+        with zipfile.ZipFile(zip_file_fn, 'w') as zipf:
+            for file_path in input_file_list:
+                zipf.write(file_path, arcname=os.path.basename(file_path))
+        block.set_pair('_simltn_input_files_archive', str(zip_file_fn))
+
+        # get force field information from ff_suffix
+        # set host force field info if present
         if isinstance(self.host, NanoporousHost):
-            ffs = self.program.name_dict['ff_suffix'].split('_')
-            block.set_pair('_simltn_forcefield_adsorptive', ffs[0])
-            block.set_pair('_simltn_forcefield_adsorbent', ffs[1])
+            block.set_pair('_simltn_forcefield_adsorbent', self.host.ffname)
+        
+        # set guest force field info
+        if self.ncomp > 1:
+            # if multiple guest ffs are provided, assume each component has its own ff
+            for i in range(self.ncomp):
+                block.set_pair(f'_simltn_forcefield_adsorptive{i+1}', self.guest.guests[i].ffname)
         else:
-            block.set_pair('_simltn_forcefield_adsorbent', self.program.name_dict['ff_suffix'])
-
+            block.set_pair('_simltn_forcefield_adsorptive', self.guest.ffname)
 
         # record mass to infer simulation size
         block.set_pair('_units_temperature', 'K')
@@ -304,79 +656,147 @@ class Calculator(object):
         if pressures is None:
             assert eos is not None, 'Must provide an equation of state object (with the function calculate_pressure), when calculating pressures from chemical potentials'
             assert chempots is not None, 'Must provide chemical potentials when calculating pressures'
-            pressures = np.array([eos.calculate_pressure(temp, chem) for chem in chempots])
+            pressures = eos.compute_pressure(temperature=temperature, chempot=chempots)
         if chempots is None:
             assert pressures is not None, 'Must provide chemical potentials or pressures'
             assert eos is not None, 'Must provide an equation of state object (with the function calculate_mu), when calculating chemical potentials from pressures'
-            chempots = np.array([eos.calculate_mu(temp, pres) for pres in pressures])
-        
-        fugacities = np.exp(self.fener.beta*chempots)/self.fener.beta/self.fener.wavelength**3
-        uptake_absolute = self.return_loading(temp, chempots, excess=False)
+            chempots = eos.compute_chempot(temperature=temperature, pressure=pressures)
+        fugacities = eos.compute_fugacity(temperature=temperature, chempot=chempots)
+        uptake_absolute = self.return_loading(temperature, chempots, excess=False)
+        if excess:
+            uptake_excess = self.return_loading(temperature, chempots, excess=True, eos=eos, He_frac=He_frac)
+        else:
+            uptake_excess = None
 
         #get the uptake and convert to the desired units
-        cv_units = convert_units(self.guest.mass, np.sum(self.host.mol.masses), self.host.cell.volume)
-        factor = cv_units.conversion_factor('au/uc', loading_unit)
-        uptake_absolute *= factor
-        if excess:
-            uptake_excess = self.return_loading(temp, chempots, excess=True, eos=eos, He_frac=He_frac)
-            uptake_excess *= factor
+        if self.ncomp > 1:
+            for i in range(self.ncomp):
+                mass = np.sum(self.host.atoms.get_masses()) * amu
+                cv_units = convert_units(self.guest.mass[i], mass, self.host.cell.volume)
+                factor = cv_units.conversion_factor('au/uc', loading_unit)
+                uptake_absolute[:,i] *= factor
+                if excess:
+                    uptake_excess[:,i] *= factor
+        else:
+            mass = np.sum(self.host.atoms.get_masses()) * amu
+            cv_units = convert_units(self.guest.mass, mass, self.host.cell.volume)
+            factor = cv_units.conversion_factor('au/uc', loading_unit)
+            uptake_absolute *= factor
+            if excess:
+                uptake_excess *= factor
 
         #format adsorption
         pressures_bar = pressures/bar
         fugacities_bar = fugacities/bar
         mus_kjmol = chempots/kjmol
-        loop_ads = block.init_loop('_adsorp_', ['pressure', 'fugacity', 'chemicalpotential', 'amount_absolute'])
-        loop_ads.set_all_values([
+        if self.ncomp > 1:
+            mole_fraction = np.full((len(chempots), self.ncomp), self.guest.fractions)
+        else:
+            mole_fraction = None
+        
+        if selectivity:
+            selectivities = self.get_selectivity(temperature, chempots)
+        else:
+            selectivities = None
+
+        value_dict = {'pressure': pressures_bar,
+                      'molefraction': mole_fraction,
+                      'fugacity': fugacities_bar,
+                      'chemicalpotential': mus_kjmol,
+                      'amount_absolute': uptake_absolute,
+                      'amount_excess': uptake_excess,
+                      'selectivity': selectivities}
+        
+        included_valuenames = ['pressure', 'fugacity', 'chemicalpotential', 'amount_absolute']
+        if self.ncomp > 1:
+            included_valuenames.insert(1, 'molefraction')
+        if excess:
+            included_valuenames.append('amount_excess')
+        if selectivity:
+            included_valuenames.append('selectivity')
+ 
+        valuename_list = []
+        values = []       
+        if self.ncomp > 1:
+            valuename_list.append('pressure')
+            values.append(['%.5E' % item for item in pressures_bar])
+            for name in included_valuenames[1:]:
+                if name == 'selectivity':
+                    for i in range(self.ncomp):
+                        for j in range(self.ncomp):
+                            if i != j:
+                                valuename_list.append(f'selectivity{i+1}{j+1}')
+                                values.append(['%.5E' % item for item in value_dict[name][:,i,j]])
+                else:
+                    for i in range(self.ncomp):
+                        valuename_list.append(f'{name}_comp{i+1}')
+                        values.append(['%.5E' % item for item in value_dict[name][:,i]])
+        else:
+            valuename_list = ['pressure', 'fugacity', 'chemicalpotential', 'amount_absolute']
+            values = [
             ['%.5E' % item for item in pressures_bar],
             ['%.5E' % item for item in fugacities_bar],
             ['%.5E' % item for item in mus_kjmol],
             ['%.5E' % item for item in uptake_absolute]
-        ])
+            ]
+            if excess:
+                valuename_list.append('amount_excess')
+                values.append(['%.5E' % item for item in uptake_excess])
+
+        
+        loop_ads = block.init_loop('_adsorp_', valuename_list)
+        loop_ads.set_all_values(values)
 
         if fn is None:
-            fn = self.workdir / f'adsorption_{temp:0.2f}K.aif'
+            fn = self.workdir / f'adsorption_{temperature:0.2f}K.aif'
         else: 
             fn = Path(fn)
         d.write_file(str(fn))
 
 
-    def free_energy_contrib(self, temp, chempot, partname, over_loading=False, local=False, fn=None, rho=None):
-        '''This function calculates the free energy contribution of a given functional at a specified
-        temperature and chemical potential.
-        
+    def free_energy_contrib(self, temperature, chempot=None, pressure=None, partname='', over_loading=False, local=False, fn=None, rho=None):
+        """
+        Calculate the free energy contribution of a given functional at a specified temperature and chemical potential.
+
+        Chemical potential can be supplied directly or implicitly via ``pressure``
+        (converted when an EOS is available).
+
         Parameters
         ----------
-        temp
-            temperature in Kelvin
-        chempot
-            The chemical potential in atomic units.
-        partname
-            The name of the energy contribution being calculated.
-        over_loading, optional
-            A boolean parameter that determines whether the free energy contribution should be calculated per
-        particle or per unit volume. If set to True, the contribution will be divided by the total number of
-        particles in the system, defaults to False (optional)
-        local, optional
-            A boolean parameter that determines whether the free energy contribution should be calculated
-        locally (True) or globally (False). If local is True, the contribution is calculated for each point
-        in the density grid and returned as an array. If local is False, the contribution is integrated over
-        the entire density grid and returned
-        fn
-            `fn` is a string variable that represents the file path to the density file. It is used to load the
-        density data from the file. If `fn` is not provided, it is set to a default value based on the
-        temperature and chemical potential.
-        
+        temperature : float
+            Temperature in Kelvin.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) used to derive chemical potentials if ``chempot`` is
+            omitted.
+        partname : str
+            Name of the energy contribution (e.g., 'fid', 'ExtPot').
+        over_loading : bool, optional
+            If True, contribution per particle; else per volume.
+        local : bool, optional
+            If True, return local grid values; else integrated scalar.
+        fn : str or Path, optional
+            Density file path; auto-generated if None.
+        rho : ndarray, optional
+            Density array; loaded from file if None.
+
         Returns
         -------
-            a free energy contribution based on the input parameters. The specific value returned depends on
-        the value of the input parameters `partname`, `over_loading`, `local`, and `fn`. The returned value
-        could be a scalar or an array depending on the shape of the input `rho` and the value of
-        `over_loading`.
-        
-        '''        
+        float or ndarray
+            Free energy contribution (scalar if local=False, grid array if local=True).
+
+        Raises
+        ------
+        AssertionError
+            If density file or partname is not found.
+        ValueError
+            If rho is not an ndarray.
+        """      
+        chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
         if rho is None:
             if fn is None:
-                file_suff = get_file_suffix(chempot, temp)
+                file_suff = get_file_suffix(chempot, temperature)
                 fn = self.workdir / f'rho_{file_suff}.npy'
                 assert fn.is_file(), f'No density found for {fn}' 
             rho = np.load(fn)
@@ -384,12 +804,14 @@ class Calculator(object):
             assert isinstance(rho, np.ndarray), 'The density must be a numpy array'
 
         if over_loading: N = self.grid.integrate(rho)
-        krho = self.grid.fft(rho)
+        krho = self.grid.fftn(rho)
+        if self.fener.temperature != temperature:
+            self.fener.set_temperature(temperature)
         if partname.lower() in ["fid", "fideal"]:
-            prefactor = boltzmann*temp
+            prefactor = boltzmann*temperature
             rho_reg = rho.copy()
             rho_reg = np.clip(rho_reg, 1e-20, None)  # avoid log(0)
-            integrandum = rho_reg*(np.log(rho_reg*self.fener.wavelength**3)-1)
+            integrandum = rho_reg*(np.log(rho_reg*(self.fener.wavelength**3)[:,None,None,None])-1)
             if local:
                 if over_loading: return prefactor*integrandum/N
                 else: return prefactor*integrandum                
@@ -400,291 +822,401 @@ class Calculator(object):
             assert partname in self.fener.part_names, f'{partname} not found in {self.fener.part_names}. The provided partname must be present in the fener object, or the ideal gas contribution ("fid" or "fideal")'
             for part in self.fener.parts:
                 if part.name == partname:
-                    if partname in ['MFMT', 'FMT', 'WDA-V', 'WDA-N', 'CORR']:
-                        if self.fener.temperature != temp: self.fener.set_temperature(temp)
-                    if over_loading: return part.value(krho, local)/N
-                    else: return part.value(krho, local)
+                    if over_loading: return part.value(rho, krho)/N
+                    else: return part.value(rho, krho)
 
-    def free_energy(self, temp, chempot, local=False):
-        '''This function calculates the total free energy of a system at a given temperature and chemical
-        potential.
-        
+    def free_energy(self, temperature, chempot=None, pressure=None, local=False):
+        """
+        Calculate the total free energy of the system at a given temperature and chemical potential.
+
+        The chemical potential may be supplied explicitly or determined from
+        ``pressure`` when an EOS is set.
+
         Parameters
         ----------
-        temp
-            temperature at which the free energy is being calculated
-        chempot
-            Chemical potential at which the free energy is calculated
-        local, optional
-            `local` is a boolean parameter that determines whether to return local contributions to the free
-        energy calculation or only the global free energy. 
-        
+        temperature : float
+            Temperature in Kelvin.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) used to derive chemical potentials if ``chempot`` is
+            omitted.
+        local : bool, optional
+            If True, return local grid values; else integrated scalar.
+
         Returns
         -------
-            The function `free_energy` returns the total free energy of the system. It is a scalar value if 
-            `local` is set to False and is a matrix of the shape of the grid if `local`is set to True
-        
-        '''
-        value = self.free_energy_contrib(temp, chempot, 'fid')
+        float or ndarray
+            Total free energy (scalar if local=False, grid array if local=True).
+        """
+        chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
+        value = self.free_energy_contrib(temperature, chempot, partname='fid')
         for part in self.fener.parts:
-            value += self.free_energy_contrib(temp, chempot, part.name, local=local)
+            value += self.free_energy_contrib(temperature, chempot, partname=part.name, local=local)
         return value
     
-    def excess_free_energy(self, temp, chempot, local=False, fn=None):
-        '''This function calculates the excess free energy of a system at a given temperature and chemical
-        potential.
-        
+    def excess_free_energy(self, temperature, chempot=None, pressure=None, local=False, fn=None):
+        """
+        Calculate the excess free energy of the system at a given temperature and chemical potential.
+
+        The chemical potential may be provided directly or obtained from
+        ``pressure`` if available.
+
         Parameters
         ----------
-        temp
-            The temperature at which the excess free energy is being calculated.
-        chempot
-            The chemical potential at which te excess free energy is being calculated.
-        local, optional
-            `local` is a boolean parameter that determines whether to return local contributions to the free
-        energy calculation or only the global free energy. 
-        fn
-            The "fn" parameter is an optional argument which can be used to specify a certain density file
-        
+        temperature : float
+            Temperature in Kelvin.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) used to derive chemical potentials when ``chempot`` is
+            not supplied.
+        local : bool, optional
+            If True, return local grid values; else integrated scalar.
+        fn : str or Path, optional
+            Density file path; auto-generated if None.
+
         Returns
         -------
-            The function `excess_free_energy` returns the total excess free energy of the system. It is a scalar value if 
-            `local` is set to False and is a matrix of the shape of the grid if `local`is set to True
-
-        '''
+        float or ndarray
+            Excess free energy (scalar if local=False, grid array if local=True).
+        """
+        chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
         value = 0
         for part in self.fener.parts:
             if part.name in self.fener.excess_table:
-                value += self.free_energy_contrib(temp, chempot, part.name, local=local, fn=fn)
+                value += self.free_energy_contrib(temperature, chempot, partname=part.name, local=local, fn=fn)
             else:
                 continue
         return value
 
-    def grand_potential(self, temp, chempot, local=False):
-        '''This function calculates the grand potential of a system at a given temperature and chemical
-        potential, with an option to include local density information.
-        
+    def grand_potential(self, temperature, chempot=None, pressure=None, local=False):
+        """
+        Calculate the grand potential of the system at a given temperature and chemical potential.
+
+        Chemical potential can be supplied directly or derived from ``pressure``.
+
         Parameters
         ----------
-        temp
-            The temperature at which the grand potential is being calculated
-        chempot
-            the chemical potential at which the grand potential is being calculated
-        local, optional
-            `local` is a boolean parameter that determines whether to return local contributions to the free
-        energy calculation or only the global free energy. 
-        fn
-            The "fn" parameter is an optional argument which can be used to specify a certain density file
-        
+        temperature : float
+            Temperature in Kelvin.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) converted to chemical potential if ``chempot`` is absent.
+        local : bool, optional
+            If True, return local grid values; else integrated scalar.
+
         Returns
         -------
-            The function `grand_potential` returns the grand potential of the system, which is calculated based
-        on the free energy, temperature, and chemical potential.  It is a scalar value if 
-        `local` is set to False and is a matrix of the shape of the grid if `local`is set to True 
-        '''
-        value = self.free_energy(temp, chempot, local=local)
+        float or ndarray
+            Grand potential (scalar if local=False, grid array if local=True).
+        """
+        chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
+        value = self.free_energy(temperature, chempot, local=local)
         if local:
-            fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp:#7.5f}K.npy'
+            fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temperature:#7.5f}K.npy'
             rho = np.load(fn)
             value-= chempot*rho
         else:
-            value -= chempot*self.loading(temp, chempot)
+            value -= chempot*self.loading(temperature, chempot)
+            if self.ncomp != 1:
+                value = np.sum(value)
         return value
     
-    def collective_variable(self, diffusion_path=None, ring_indices=None, dist_from_axis=None,
-                             supercell=False, step_dist=0.5*angstrom, cvs_limits=None):
-        '''The function `collective_variable` calculates collective variables for a given diffusion path or
-        ring indices, and returns the collective variables, their values, and a distance mask.
-        
+    def collective_variable(self, diffusion_path=None, ring_indices=None,
+                                    dist_from_axis=None, supercell=False,
+                                    step_dist=0.5*angstrom, cvs_limits=None,
+                                    batch_size=16):
+        """
+        Compute a one-dimensional collective variable (CV) field over the grid by
+        projecting atomic positions along a specified diffusion path.
+
+        The projection axis may be given explicitly as a pair of points
+        ``(start, end)`` or inferred from a set of atom indices describing a ring
+        of atoms; in the latter case the principal axis of the ring is used.
+        A mask can be generated to include only points within a given
+        perpendicular distance from the axis.  Optionally the grid may be
+        replicated to form a 3×3×3 supercell before the calculation.
+
         Parameters
         ----------
-        diffusion_path
-            2D array defining the diffusion path. Should be of shape (2, 3), where the first row is the zero
-        point of the path and the second row is a point defining the direction of the path.
-        ring_indices
-            The `ring_indices` parameter is a list of indices of the atoms that form the ring through which the
-        diffusion takes place.
-        dist_from_axis, float, optional
-            The `dist_from_axis` parameter is used to filter out points that are too far from the diffusion
-        axis. It specifies the maximum distance from the diffusion axis that a point can have in order to be
-        included in the calculation of collective variables. If not specified, all points will be included.
-        supercell, optional
-            The `supercell` parameter is a boolean flag that determines whether to create a supercell of the
-        density points in the grid.
-        step_dist
-            The `step_dist` parameter is the distance between consecutive points on the collective variable
-        (CV) grid. It determines the resolution of the CV values. Importanttly, it should be set such that a
-        uniform number of points fit in each bin.
-        cvs_limits
-            The `cvs_limits` parameter is a tuple of two numbers that constrain the collective variable (CV)
-        values for which the free energy is calculated. The CV values outside this range will be excluded
-        from the calculation.
-        
+        diffusion_path : array-like, shape (2,3), optional
+            Start and end coordinates defining the projection axis.
+        ring_indices : sequence of int, optional
+            Atom indices used to infer ``diffusion_path`` when the path itself
+            is not supplied.
+        dist_from_axis : float, optional
+            Maximum perpendicular distance from the axis; points farther
+            away are marked False in the returned mask.
+        supercell : bool, optional
+            If True build and operate on a 3x3x3 supercell of the original
+            grid.  Default is False.
+        step_dist : float, optional
+            Spacing used to construct the discrete CV axis.
+        cvs_limits : tuple of two floats, optional
+            Lower and upper bounds to truncate the CV axis after construction.
+        batch_size : int, optional
+            Number of z‑slices processed in each loop iteration when streaming
+            through the grid.  Larger values use more memory but reduce
+            overhead.
+
         Returns
         -------
-            three values: `cvs`, `cvs_mat`, and `dist_mask`.
-        
-        '''
-        
-        assert diffusion_path is not None or ring_indices is not None, "Must provide a diffusion path (diffusion_path) or indices of the atom which form the ring through which the diffusion takes place (ring_indices)"
+        tuple
+            ``(cvs, cvs_mat, dist_mask)`` where:
 
+            * ``cvs`` - 1-D array of CV bin edges.
+            * ``cvs_mat`` - 3-D array giving the CV value at every grid point.
+            * ``dist_mask`` - boolean mask indicating points within
+              ``dist_from_axis`` (all True if ``dist_from_axis`` is None).
+
+        Raises
+        ------
+        AssertionError
+            If neither ``diffusion_path`` nor ``ring_indices`` is supplied.
+        """
+
+        assert diffusion_path is not None or ring_indices is not None, \
+            "Must provide diffusion_path or ring_indices"
+
+        # ---------- Infer diffusion path ----------
         if ring_indices is not None and diffusion_path is None:
-            #calculate the distance from the ring through which the diffusion  takes place
-            diffusion_path = np.empty((2,3))
-            center = np.mean(self.host.mol.pos[ring_indices], axis=0)
-            points = self.host.mol.pos[ring_indices] - center
-            u, s, vh = np.linalg.svd(points)            
+            diffusion_path = np.empty((2, 3))
+            center = np.mean(self.host.atoms.positions[ring_indices], axis=0)
+            pts = self.host.atoms.positions[ring_indices] - center
+            _, _, vh = np.linalg.svd(pts)
             diffusion_path[0] = center
-            diffusion_path[1] = (vh[-1,:] + center)/np.linalg.norm(vh[-1,:] + center)
-        
-        # Calculate the collective variables of the points in the grid and list them in ascending order
-        points = self.grid.points[:,:,:,:-1]
+            diffusion_path[1] = vh[-1] + center
 
-        unit_vector = (diffusion_path[1] - diffusion_path[0])/np.linalg.norm(diffusion_path[1] - diffusion_path[0])
-        shifted_points = points - diffusion_path[0]
-        cvs_mat = shifted_points@unit_vector
-        
+        unit_vector = diffusion_path[1] - diffusion_path[0]
+        unit_vector /= np.linalg.norm(unit_vector)
+
+        base_points = self.grid.points[:, :, :, :-1]
+        base_shape = base_points.shape[:3]
+
+        # ---------- Supercell layout ----------
         if supercell:
-            points = make_supercell(points, grid_spacings=self.grid.spacings, repetitions=[3,3,3], periodic=False)
-            cvs_mat = (points - diffusion_path[0])@unit_vector
-        cvs_pos = np.arange(0, np.max(cvs_mat) + step_dist, step_dist)
-        cvs_neg = np.arange(0, np.min(cvs_mat) - step_dist, -step_dist)[::-1]
+            reps = (3, 3, 3)
+            grid_spacings = np.array(self.grid.spacings)
+            offsets = list(itertools.product(range(3), repeat=3))
+            out_shape = tuple(base_shape[d] * reps[d] for d in range(3))
+        else:
+            offsets = [(0, 0, 0)]
+            grid_spacings = np.zeros(3)
+            out_shape = base_shape
+
+        # ---------- Allocate outputs ----------
+        cvs_mat = np.empty(out_shape, dtype=np.float32)
+        dist_mask = np.ones(out_shape, dtype=bool)
+
+        # ---------- Streaming min/max ----------
+        cv_min = np.inf
+        cv_max = -np.inf
+
+        # ---------- SINGLE PASS ----------
+        for ox, oy, oz in offsets:
+            offset_vec = np.array([ox, oy, oz]) * grid_spacings * base_shape
+
+            x0 = ox * base_shape[0]
+            x1 = x0 + base_shape[0]
+
+            y0 = oy * base_shape[1]
+            y1 = y0 + base_shape[1]
+
+            z_base = oz * base_shape[2]
+
+            for z0 in range(0, base_shape[2], batch_size):
+                z1 = min(z0 + batch_size, base_shape[2])
+
+                chunk = base_points[:, :, z0:z1] + offset_vec
+                shifted = chunk - diffusion_path[0]
+
+                cvs_chunk = shifted @ unit_vector
+
+                # write CVs
+                out_z0 = z_base + z0
+                out_z1 = z_base + z1
+                cvs_mat[x0:x1, y0:y1, out_z0:out_z1] = cvs_chunk
+
+                # update min/max
+                cv_min = min(cv_min, cvs_chunk.min())
+                cv_max = max(cv_max, cvs_chunk.max())
+
+                # distance mask if requested
+                if dist_from_axis is not None:
+                    cross = np.cross(chunk - diffusion_path[0], unit_vector)
+                    distances = np.linalg.norm(cross, axis=-1)
+                    dist_mask[x0:x1, y0:y1, out_z0:out_z1] = distances < dist_from_axis
+
+        # ---------- Build CV axis AFTER streaming ----------
+        cvs_pos = np.arange(0, cv_max + step_dist, step_dist)
+        cvs_neg = np.arange(0, cv_min - step_dist, -step_dist)[::-1]
         cvs = np.concatenate((cvs_neg, cvs_pos[1:]))
 
+        # ---------- Apply CV limits ----------
         if cvs_limits is not None:
-            assert len(cvs_limits) == 2, 'cvs_limits must be a tuple of two numbers constraining the cvs values for which the free energy is calculated'
-            small_limit = np.min(np.array(cvs_limits))
-            large_limit = np.max(np.array(cvs_limits))
-            left_index = bisect_left(cvs, small_limit)
-            right_index = bisect_left(cvs, large_limit)
-            cvs = cvs[left_index: right_index]
+            small, large = sorted(cvs_limits)
+            left = bisect_left(cvs, small)
+            right = bisect_left(cvs, large)
+            cvs = cvs[left:right]
 
-        #construct a mask to filter out points which are too far from the diffusion axis
-        dist_mask = np.ones_like(cvs_mat)
-        if dist_from_axis is not None:
-            distances = np.linalg.norm(np.cross(points-diffusion_path[0], unit_vector),axis=-1) #calculate the distance to the axis
-            dist_mask = distances < dist_from_axis
+        return cvs, cvs_mat, dist_mask    
 
-        return cvs, cvs_mat, dist_mask
+    def project_density(self, cvs, cvs_mat, dist_mask, temperature, chempot=None, pressure=None, rewrite=False, supercell=True, normalize=False, save=True):
+        """
+        Calculate and return the projected density at a given temperature and chemical potential.
 
-    def project_density(self, temp, chempot, cvs, cvs_mat, dist_mask, rewrite=False, supercell=True):
-        '''The function `project_density` calculates and returns the projected density at a given temperature
-        and chemical potential.
-        
+        The chemical potential may be provided directly or obtained from
+        ``pressure`` when available.
+
         Parameters
         ----------
-        temp
-            The `temp` parameter represents the temperature in Kelvin.
-        chempot
-            The parameter `chempot` represents the chemical potential in atomic units.
-        cvs
-            The parameter "cvs" represents the collective variables. It is a numpy array that contains the selected
-        values of the collective variables.
-        cvs_mat
-            The variable `cvs_mat` is a matrix that represents the values of the collective variables (cvs) for
-        each point in the system.
-        dist_mask
-            The `dist_mask` parameter is a boolean mask that is used to select specific regions in the
-        `cvs_mat` array. It is used to filter out certain values in `cvs_mat` based on some condition. The
-        resulting mask is then used to calculate the projected density.
-        rewrite, optional
-            A boolean parameter that determines whether to recalculate the projected density
-        supercell, optional
-            The `supercell` parameter is a boolean flag that determines whether the density calculation should
-        be performed on a supercell. If `supercell` is set to `True`, the density calculation will be
-        performed on a supercell, otherwise it will be performed on the original cell.
-        
+        temperature : float
+            Temperature in Kelvin.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) converted to chemical potential if ``chempot`` is
+            omitted.
+        cvs : array-like
+            Collective variables array.
+        cvs_mat : ndarray
+            CV values matrix for each grid point.
+        dist_mask : ndarray
+            Boolean mask for distance filtering.
+        rewrite : bool, optional
+            If True, recalculate even if file exists.
+        supercell : bool, optional
+            If True, use supercell.
+        normalize : bool, optional
+            If True, normalize by step distance.
+        save : bool, optional
+            If True, save results to file.
+
         Returns
         -------
-            two arrays: q_list and n_list.
-        
-        '''
+        tuple
+            (q_list, n_list): Collective variable positions and densities.
+
+        Raises
+        ------
+        AssertionError
+            If density file is not found.
+        """
         with log.section('CALCULATOR', 2, timer='projecting density'):
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)        
+            chempot_name = get_chempot_key(chempot)
+            temperature_name = f'{temperature:0.5f}'
 
-            file_suff = get_file_suffix(chempot, temp)
-            fn = self.workdir / f'projected_density_{file_suff}.csv'
+            fn = self.workdir / f'projected_density_energy.hdf5'
+            hdf5_path = f"T_{temperature_name}/mu_{chempot_name}"
+            file_suff = get_file_suffix(chempot, temperature)
+
             if fn.is_file() and not rewrite:
-                data = np.loadtxt(fn, delimiter=',', skiprows=1).T
-                q_list = data[0]
-                n_list = data[1]
-                log.dump(f'Loaded the projected density at {temp}K and {chempot/kjmol:#7.5f}kJ/mol from {fn}')
-                return q_list, n_list
+                with h5py.File(fn, 'r') as f:
+                    if hdf5_path in f:
+                        # Check if the group and its vital datasets are present
+                        if hdf5_path in f and "q" in f[hdf5_path] and "n" in f[hdf5_path]:
+                            q_list = f[f"{hdf5_path}/q"][:]
+                            n_list = f[f"{hdf5_path}/n"][:]
+                            
+                            log.dump(f'Loaded the projected density at {temperature}K and {chempot_name} from HDF5 groups.')
+                            return q_list, n_list
 
-            else:
+            npy_fn = self.workdir / f'rho_{file_suff}.npy'
+            assert os.path.isfile(npy_fn), f'No density found for {npy_fn}'
+            rho = np.load(npy_fn).real
 
-                n_list = np.empty(cvs.shape[0]-1)
+            n_list = np.empty((cvs.shape[0]-1, rho.shape[0]))
+            q_list = (cvs[1:] + cvs[:-1]) / 2
+            step_dists = np.diff(cvs)
 
-                fn = self.workdir / f'rho_{file_suff}.npy'
-                assert os.path.isfile(fn), f'No density found for {fn}'
-                rho = np.load(fn).real
+            for i, rho_part in enumerate(rho):
                 if supercell:
-                    rho = make_supercell(rho, repetitions=[3,3,3], periodic=True)
+                    rho_part = make_supercell(rho_part, repetitions=[3, 3, 3], periodic=True)
 
-                for e in range(len(cvs)-1):  # now calculating n and p for the different input collective variables
-                    q_min = cvs[e]
-                    q_max = cvs[e+1]
-                    step_dist = q_max - q_min
-                    mask = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
-                    n_list[e] =  self.grid.integrate(mask*rho)
-                        
-                q_list = (cvs[1:]+cvs[:-1])/2
+                # Assign each grid point to a bin once — shape (*grid_shape,)
+                bin_indices = np.digitize(cvs_mat, cvs) - 1  # 0-indexed, -1 and n_bins are out of range
+                valid = dist_mask & (bin_indices >= 0) & (bin_indices < len(q_list))
 
-                data = np.array((q_list, n_list)).T
-                save_fn = self.workdir / f'projected_density_{file_suff}.csv'
+                for e in range(len(q_list)):
+                    mask = valid & (bin_indices == e)
+                    n_list[e, i] = self.grid.integrate(mask * rho_part)
 
-                np.savetxt(save_fn, data, delimiter=',', header = 'cv, density')
-                log.dump(f'Calculated the projected density at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {save_fn}')
-                return q_list, n_list
+                if normalize:
+                    n_list[:, i] /= step_dists       
+
+            if save:
+                with h5py.File(fn, 'a') as f:
+                    # Handle overwrite condition if rewrite=True
+                    if hdf5_path in f:
+                        del f[hdf5_path]
+                    g = f.require_group(hdf5_path)
+                
+                    # Create the individual datasets inside this specific group
+                    g.create_dataset("q", data=q_list, compression="gzip", compression_opts=4)
+                    g.create_dataset("n", data=n_list, compression="gzip", compression_opts=4)
+                    
+                    # Attach metadata to the group itself
+                    g.attrs['temperature_K'] = temperature
+                    g.attrs['chempot_str'] = chempot_name
+                
+            log.dump(f'Calculated and saved individual datasets to {fn}[{hdf5_path}]')
+            
+        return q_list, n_list
         
-    def project_contributions(self, temp, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, fn=None, rewrite=False):
-        '''The function `project_contributions` calculates and returns the projected density of a specific
-        contribution to the free energy at a given temperature and chemical potential.
-        
+    def project_contributions(self, contrib_names, cvs, cvs_mat, dist_mask, temperature, chempot=None, pressure=None, supercell=True, fn=None, rewrite=False):
+        """
+        Calculate and return the projected density of a specific contribution to the free energy.
+
+        Chemical potential may be supplied directly or via ``pressure``.
+
         Parameters
         ----------
-        temp
-            The `temp` parameter represents the temperature in Kelvin.
-        chempot
-            The parameter `chempot` represents the chemical potential in atomic units.
-        contrib_name
-            The `contrib_name` parameter represents the name of the contribution to the free energy. It must
-        be one of the contributions in the `fener` object.
-        cvs
-            The parameter "cvs" represents the collective variables. It is a numpy array that contains the selected
-        values of the collective variables.
-        cvs_mat
-            The variable `cvs_mat` is a matrix that represents the values of the collective variables (cvs) for
-        each point in the system.
-        dist_mask
-            The `dist_mask` parameter is a boolean mask that is used to select specific regions in the
-        `cvs_mat` array. It is used to filter out certain values in `cvs_mat` based on some condition. The
-        resulting mask is then used to calculate the projected density.
-        supercell, optional
-            The `supercell` parameter is a boolean flag that determines whether the density calculation should
-        be performed on a supercell. If `supercell` is set to `True`, the density calculation will be
-        performed on a supercell, otherwise it will be performed on the original cell.
-        fn
-            The "fn" parameter is an optional argument which can be used to specify a certain density file
-        
-        Returns
-        -------
-            two arrays: q_list and n_list.
-        
-        '''
+        temperature : float
+            Temperature in Kelvin.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) converted to chemical potential if ``chempot`` not
+            provided.
+        contrib_names : list of str
+            List of contribution names (e.g., 'fid', 'ExtPot').
+        cvs : array-like
+            Collective variables array.
+        cvs_mat : ndarray
+            CV values matrix for each grid point.
+        dist_mask : ndarray
+            Boolean mask for distance filtering.
+        supercell : bool, optional
+            If True, use supercell.
+        fn : str or Path, optional
+            Output filename; auto-generated if None.
+        rewrite : bool, optional
+            If True, recalculate even if file exists.
+
+        Raises
+        ------
+        IOError
+            If external potential is not present.
+        """
+        raise NotImplementedError
         with log.section('CALCULATOR', 2, timer='projecting contributions'):
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)     
             if not isinstance(contrib_names, list):
                 contrib_names = [contrib_names]
             contrib_names = [name.lower() for name in contrib_names]
             header = 'cv, density'
             q_list = (cvs[1:]+cvs[:-1])/2
             q_len = q_list.shape[0]
-            qq, density = self.project_density(temp, chempot, cvs, cvs_mat, dist_mask, rewrite=rewrite, supercell=supercell)
+            qq, density = self.project_density(temperature, chempot, cvs, cvs_mat, dist_mask, rewrite=rewrite, supercell=supercell)
             
             result_data = np.empty((2+len(contrib_names), q_len))
             result_data[0] = q_list
             result_data[1] = density
 
-            rho_fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temp/kelvin:#7.5f}K.npy'
+            rho_fn = self.workdir / f'rho_{chempot/kjmol:#7.5f}kJmol_{temperature/kelvin:#7.5f}K.npy'
             assert rho_fn.is_file(), f'No density found for {rho_fn}'
             rho = np.load(rho_fn).real
 
@@ -710,7 +1242,7 @@ class Calculator(object):
                 if 'pure_extpot' in contrib_name.lower():
                     data = self.fener.parts[index].potential
                 else:
-                    data = self.free_energy_contrib(temp, chempot, contrib_name, local=True, rho=rho) 
+                    data = self.free_energy_contrib(temperature, chempot, contrib_name, local=True, rho=rho) 
                 if supercell:
                     data = make_supercell(data, repetitions=[3,3,3], periodic=True)       
                                 
@@ -729,269 +1261,482 @@ class Calculator(object):
                 result_data[ee+2] = contrib_list
 
             if fn is None:
-                file_suff = get_file_suffix(chempot, temp)
+                file_suff = get_file_suffix(chempot, temperature)
                 fn = self.workdir / f'projected_contributions_{file_suff}.csv'
             np.savetxt(fn, result_data.T, delimiter=',', header = header)
-            log.dump(f'Calculated the projected contributions at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')
-
+            log.dump(f'Calculated the projected contributions at {temperature}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')
             
-    def save_loading_and_grand_potential(self, temp, chempot):
-        '''The function `save_density_and_grand_potential` calculates and saves the projected density and the
-        grand potential at a given temperature and chemical potential.
-        
+    def save_loading_and_grand_potential(self, temperature, chempot=None, pressure=None, fn=None):
+        """
+        Calculate and save the projected density and grand potential at a given temperature and chemical potential.
+
+        Chemical potential may be specified directly or deduced from
+        ``pressure`` using the configured EOS.
+
         Parameters
         ----------
-        temp
-            The `temp` parameter represents the temperature in Kelvin.
-        chempot
-            The parameter `chempot` represents the chemical potential in atomic units.
-        fn
-            The "fn" parameter is an optional argument which can be used to specify a certain density file
-        
-        
-        '''
+        temperature : float
+            Temperature in Kelvin.
+        chempot : float or array-like, optional
+            Chemical potential in atomic units (Hartree).
+        pressure : float or array-like, optional
+            Pressure(s) used to compute chemical potential when ``chempot`` is
+            missing.
+        fn : str or Path, optional
+            Output filename; auto-generated if None.
+
+        Returns
+        -------
+        tuple
+            (q_list, n_list): Collective variable positions and densities.
+        """
         with log.section('CALCULATOR', 2, timer=None):
-            n = self.loading(temp, chempot)
-            omega = self.grand_potential(temp, chempot)
-            chempot_key = f'{chempot:#0.8f}'
-            fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.csv'
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)     
+            n = self.loading(temperature, chempot)
+            omega = self.grand_potential(temperature, chempot)
+            chempot_key = get_chempot_key(chempot)
+
+            if fn is None:
+                fn = self.workdir / f'loading_grand_potential_{temperature:7.5f}K.npz'
+
             if os.path.isfile(fn):
-                data = np.loadtxt(fn, delimiter=',', skiprows=1)
-                data = np.atleast_2d(data).T
-                keys = [f'{key:#0.8f}' for key in data[0]]
-                
+                data = np.load(fn)
+                chempots = data['mu']
+                loadings = data['loading']
+                omegas = data['omega']
+                keys = [get_chempot_key(chempot_data) for chempot_data in chempots]
                 if chempot_key in keys:  
                     index = keys.index(chempot_key)
-                    data[1][index] = n
-                    data[2][index] = omega.real
+                    loadings[index] = n
+                    omegas[index] = omega.real
                 else: 
-                    mu_sorted = selection_sort(np.array(data[0]))
-                    if chempot > mu_sorted[-1]:
-                        new_col = np.array([[chempot], [n], [omega.real]])
-                        data = np.hstack((data, new_col))
+                    if len(chempots) > 1:
+                        mu_sorted = np.sort(chempots, axis=0)
+                    else:
+                        mu_sorted = chempots
+                    if (chempot > mu_sorted[-1]).all():
+                        chempots = np.vstack((chempots, chempot))
+                        loadings = np.vstack((loadings, n))
+                        omegas = np.vstack((omegas, omega))
+                    elif np.isclose(chempot, mu_sorted[-1]).all():
+                        index = len(chempots) -1
+                        chempots[index] = chempot
+                        loadings[index] = n
+                        omegas[index] = omega.real
+                    elif (chempot < mu_sorted[0]).all():
+                        chempots = np.vstack((chempot, chempots))
+                        loadings = np.vstack((n, loadings))
+                        omegas =   np.vstack((omega.real, omegas))
+
                     else:
                         index = bisect_left(mu_sorted, chempot)
-                        new_col = np.array([[chempot], [n], [omega.real]])
-                        data = np.hstack((
-                            data[:, :index],
-                            new_col,
-                            data[:, index:]
-                        ))
-
+                        if self.ncomp != 1:
+                            chempots = np.vstack([chempots[:index], chempot, chempots[index:]])
+                            loadings = np.vstack([loadings[:index], n, loadings[index:]])
+                            omegas =   np.vstack([omegas[:index], omega.real, omegas[index:]])
+                        else:
+                            chempots = np.vstack([chempots[:index], chempot, chempots[index:]])
+                            loadings = np.vstack([loadings[:index], n, loadings[index:]])
+                            omegas =   np.vstack([omegas[:index], omega.real, omegas[index:]])
             else:
-                data = np.array([[chempot], [n], [omega.real]])
-
-            np.savetxt(fn, data.T, delimiter=',', header='chempot [kJ/mol], loading [molecules/uc], grand potential [au]', comments='')
+                chempots = np.array([chempot])
+                loadings = np.array([n])
+                omegas = np.array([omega.real])
+            np.savez(fn, mu=chempots, loading=loadings, omega=omegas)
     
-    def free_energy_path(self, temp, chempot, chempots=None, fn=None, max_n_chems=0, dens_omega_fn=None, fn_suffix=''):
+    def free_energy_path(self, temperature, chempot=None, pressure=None, list_chems=None, list_pressures=None, fn=None, max_n_chems=0, dens_omega_fn=None, sum=False):
         """
-        Compute and save the free-energy profile (as a function of a collective variable) at a given
-        temperature and chemical potential by integrating projected densities over a range of
-        chemical potentials.
+        Calculate the free energy profile along a predefined collective variable (CV), which is the projection of the position of a molecule on a diffusion path.
 
-        The routine collects previously computed projected densities (projected_density_*.csv)
-        for chemical potentials up to `chempot` and uses the stored loadings/grand potentials
-        (loading_grand_potential_*.csv) to perform a numerically stable integration with
+        Chemical potential may be supplied directly or obtained from ``pressure``.
 
-        The functions: project_density and save_loading_and_grand_potential should be run first 
-        to generate the required files.
+        First, two properties are calculated: n(q) (number of molecules with CV q) and p(q) (probability of finding a molecule at CV q).
 
         Parameters
         ----------
-        temp : float
+        temperature : float
             Temperature in Kelvin.
-        chempot : float
-            Target chemical potential (atomic units). The computation integrates over chemical
-            potentials lower than or equal to this value.
+        chempot : float or array-like
+            Chemical potential in atomic units (Hartree).
         chempots : array-like, optional
-            Optional list/array of chemical potentials to use instead of scanning available files.
-            If provided, only chemical potentials <= `chempot` are used.
-        fn : str or pathlib.Path, optional
-            Filename to save the free energy profile. If None, a default filename is generated
-            in the workdir.
+            List of chemical potentials for integration.
+        fn : str or Path, optional
+            Output filename; auto-generated if None.
         max_n_chems : int, optional
-            If > 0, limits the number of chemical potentials sampled by subsampling the list,
-            to speed up the integration. Default is 0 (use all available chemical potentials).
-        dens_omega_fn : str or pathlib.Path, optional
-            Path to a precomputed loading/grand-potential file. If None, the function looks for the
-            default loading_grand_potential_{temp} file in `self.workdir`.
-        fn_suffix : str, optional
-            Additional suffix appended to projected density filenames when reading them.
-            (Used for testing purposes.)
+            Maximum number of chemical potentials to use.
+        dens_omega_fn : str or Path, optional
+            Filename for density and grand potential data.
 
         Returns
         -------
         None
-            The computed profile is written to `fn`.
+            Saves results to file.
 
         Raises
         ------
         AssertionError
-            If required projected density or loading/grand potential files are missing, or if
-            provided chemical potentials do not satisfy the requirements (e.g. list must include `chempot`).
+            If chemical potentials are invalid or files missing.
         """
         with log.section('CALCULATOR', 2, timer='Diffusion path calculation'):
-            beta = 1/temp/boltzmann            
+            
+            h5_fn = self.workdir / 'projected_density_energy.hdf5'
+            assert h5_fn.is_file(), f"Centralized HDF5 storage not found at {h5_fn}. Run project_density first."
 
-            # A list is created of chemical potentials lower than the input, over this list the later integration of n is carried out     
-            if chempots is None:
-                list_chems = self.get_chemical_potential(temp)
-                ind = list_chems.index(float("%4.5f"%(chempot/kjmol))) + 1
-                chems = np.array(list_chems[:ind])*kjmol
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)     
+            if sum:
+                assert self.ncomp > 1, "Sum of densities only supported for multi-component"
+                ncomp_tmp = 1
             else:
-                int_chems = selection_sort(np.array(chempots))
-                i = bisect_left(int_chems, chempot)
-                chems = int_chems[:i+1]
+                ncomp_tmp = self.ncomp
+            
+            # String identifiers for the final target state
+            temperature_name = f'{temperature:0.5f}'            
+            target_chempot_name = get_chempot_key(chempot)
+            target_group_path = f"T_{temperature_name}/mu_{target_chempot_name}"
+
+            beta = 1 / temperature / boltzmann            
+            if list_chems is None and list_pressures is None:
+                # A list is created of chemical potentials lower than the input, over this list the later integration of n is carried out     
+                list_chems = self.get_chemical_potential(temperature)
+            elif list_pressures is not None:
+                list_chems = self.eos.compute_chempot(pressure=list_pressures, temperature=temperature)
+                
+            if list_chems.ndim == 1:
+                matches = np.where(np.isclose(list_chems, chempot, atol=1e-8))[0]
+            else:
+                matches = np.where(np.all(np.isclose(list_chems, chempot, atol=1e-8), axis=1))[0]
+                
+            if matches.size == 0:
+                raise ValueError("Target chemical potential not found.")
+            ind = matches[0] + 1
+            chems = list_chems[:ind]
+
             assert chems.shape[0] > 0, f'No chemical potentials lower than {chempot/kjmol}kJ/mol found, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
-            assert np.isclose(chems[-1], chempot), f'The last chemical potential in the list must be equal to the input chemical potential, {chempot/kjmol}kJ/mol, but the last chemical potential in the list is {chems[-1]/kjmol}kJ/mol, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
-            assert (chems <= chempot).all(), f'All chemical potentials in the list must be lower than the input chemical potential, {chempot/kjmol}kJ/mol, but the last chemical potential in the list is {chems[-1]/kjmol}kJ/mol, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
+            assert np.isclose(chems[-1], chempot).all(), f'The last chemical potential in the list must be equal to the input chemical potential, {chempot/kjmol}kJ/mol, but the last chemical potential in the list is {chems[-1]/kjmol}kJ/mol, please provide a list of chemical potentials lower than the input chemical potential or run the get_chemical_potential function first'
             
             #if the provided list is too long, it is shortened to the maximum number of chemical potentials
             if len(chems)>max_n_chems and max_n_chems != 0:
                 max_n_chems = int(max_n_chems)
                 indices = np.rint(np.linspace(0,len(chems)-1,max_n_chems)).astype(int)
                 it_chems = chems[indices]
-                it_chems = np.concatenate((it_chems, chempot))
+                it_chems = np.concatenate((it_chems, np.atleast_2d(chempot)))
             else:
                 it_chems = chems
             # it_chems is a list of chemical potentials which are lower than the input chemical potential, and the input chemical potential itself
+
             # collect the projected densities for the different chemical potentials
+            # Extract previous projected profiles directly from centralized groups
             n_proj_prev_mu_list = []
-            for mu in it_chems:
-                file_suff = get_file_suffix(mu, temp)
-                proj_fn = self.workdir / f'projected_density_{file_suff}{fn_suffix}.csv'
-                q_list, n_proj = np.loadtxt(proj_fn, delimiter=',', skiprows=1).T
-                n_proj_prev_mu_list.append(n_proj)
+            q_list = None
+
+            with h5py.File(h5_fn, 'r') as f:
+                for mu in it_chems:
+                    mu_name = get_chempot_key(mu)
+                    
+                    source_path = f"T_{temperature_name}/mu_{mu_name}"
+                    assert source_path in f, f"Required profile data missing in HDF5 at path: {source_path}"
+                    
+                    # Capture coordinate system axes check once
+                    if q_list is None:
+                        q_list = f[f"{source_path}/q"][:]
+                    
+                    n_proj = f[f"{source_path}/n"][:]
+                    if sum:
+                        n_proj = np.atleast_2d(np.sum(n_proj, axis=1))
+                    n_proj_prev_mu_list.append(n_proj)
+
             n_proj_prev_mu_list = np.array(n_proj_prev_mu_list)
             q_len = q_list.shape[0]
-            omega_list =  np.empty(q_len, dtype=np.float64)
-            free_list =  np.empty(q_len, dtype=np.float64)
+            omega_list =  np.empty((q_len, ncomp_tmp), dtype=np.float64)
+            free_list =  np.empty((q_len, ncomp_tmp), dtype=np.float64)
 
             #collect the previous projected densities and grand potentials
-            dens_omega_fn = self.workdir / f'loading_grand_potential_{temp:#7.5f}K.csv'
-            assert dens_omega_fn.is_file(), f'No loading and grand potential found for {temp}K and {chempot/kjmol}kJ/mol, please run the save_loading_and_grand_potential function first'
-            dens_omega_list = np.atleast_2d(np.loadtxt(dens_omega_fn, delimiter=',', skiprows=1))
-
-            #check if the chemical potentials are present in the previous densities and grand potentials file, then collect those densities and grand potentials
-            real_dens_omega_list = np.zeros((len(it_chems), 2))
-            list_mu_keys = [f'{key/kjmol:#0.8f}' for key in dens_omega_list[:, 0]]
+            dens_omega_fn = self.workdir / f'loading_grand_potential_{temperature:#7.5f}K.npz'
+            assert dens_omega_fn.is_file(), f'No loading and grand potential found for {temperature}K and {chempot/kjmol}kJ/mol, please run the save_loading_and_grand_potential function first'
+            dens_omega_list = np.load(dens_omega_fn)
+            
+            mu_list = dens_omega_list['mu']
+            prev_loadings = dens_omega_list['loading']
+            prev_omegas = dens_omega_list['omega']
+            selected_loading_list = np.zeros((len(it_chems), prev_loadings.shape[1]))
+            selected_omega_list = np.zeros(len(it_chems))
+            # check if the chemical potentials are present in the previous densities and grand potentials file, then collect those densities and grand potentials
             for i, it_mu in enumerate(it_chems):
-                it_key = f'{it_mu/kjmol:#0.8f}'
-                assert it_key in list_mu_keys, f'No loading and grand potential found for {temp}K and {it_mu/kjmol}kJ/mol, please run the save_loading_and_grand_potential function first'
-                index = list_mu_keys.index(it_key)
-                real_dens_omega_list[i] = dens_omega_list[index, 1:]
+                diff = mu_list - it_mu
+                index = np.where(np.isclose(diff,0))
+                selected_loading_list[i] = prev_loadings[index]
+                selected_omega_list[i] = prev_omegas[index[0][0]]
 
             # integrate over the chemical potentials
-            grand_potential_list = -beta * real_dens_omega_list[:, 1]
+            grand_potential_list = -beta * selected_omega_list
             for e in range(q_len):
-                n_list_per_mu = n_proj_prev_mu_list[:, e]
-                omega_list[e] = -(logsumexp(grand_potential_list, b=n_list_per_mu, axis=0) + np.log(beta))/beta
-                free_list[e] = omega_list[e] + real_dens_omega_list[-1, 0]*chempot
+                n_list_per_mu = n_proj_prev_mu_list[:,e,:]
+                omega_list[e] = -(logsumexp(grand_potential_list[:,None], b=n_list_per_mu, axis=0) + np.log(beta))/beta
+                if sum:
+                    free_list[e] = omega_list[e] + np.sum(selected_loading_list[-1]*chempot)
+                else:
+                    free_list[e] = omega_list[e] + selected_loading_list[-1]*chempot
 
-            data = np.empty((4,q_len))
-            data[:] = q_list, n_proj_prev_mu_list[-1], omega_list, free_list
-            if fn is None:
-                fn = self.workdir / f'free_energy_profile_{chempot/kjmol:#0.8f}kjmol_{temp:#0.3f}K.csv'
-            else: 
-                fn = self.workdir / fn
+            with h5py.File(h5_fn, 'a') as f:
+                # Target group is guaranteed to exist due to project_density, but safely retrieve it
+                g = f.require_group(target_group_path)
+                
+                # Selectively clean out only the final integration targets if they exist
+                for dataset_key in ["grand_potential", "free_energy"]:
+                    if dataset_key in g:
+                        del g[dataset_key]
+                
+                # Store computed properties cleanly as independent arrays
+                g.create_dataset("grand_potential", data=omega_list, compression="gzip", compression_opts=4)
+                g.create_dataset("free_energy", data=free_list, compression="gzip", compression_opts=4)
+                
+                # Update dynamic calculation flags
+                g.attrs['sum_mode_active'] = sum
+                g.attrs['last_integrated_at'] = f"T_{temperature_name}"
 
-            log.dump(f'Calculated the free energy profile at {temp}K and {chempot/kjmol:#0.3f}kJ/mol save at {fn}')
-            np.savetxt(fn, data.T, delimiter=',', header = 'cv,density,grand canonical potential,free energy')        
-        
-    def diffusion_coefficient(self, temp, chempot, mass, fn=None):
-        '''This function calculates the diffusion coefficient of a system at a given temperature and chemical
-        potential.
-        
+            log.dump(f'Calculated the free energy profiles. Saved to {h5_fn}[{target_group_path}]')
+
+    def find_subdirectories(self):
+        """
+        Find and list subdirectories in the parent work directory that are numeric.
+
+        Returns
+        -------
+        None
+            Sets self.dir_list.
+        """
+        base_dir = self.workdir.parent
+        subdirs = [d for d in base_dir.iterdir() if d.is_dir()]
+        self.dir_list = [d for d in subdirs if str(d.name).isnumeric()]
+
+    def average_rho(self, temperature, chempots=None, pressures=None, *args, **kwargs):
+        """
+        Average density files across subdirectories for given chemical potentials and temperatures.
+
         Parameters
         ----------
-        temp
-            The `temp` parameter represents the temperature in Kelvin.
-        chempot
-            The parameter `chempot` represents the chemical potential in atomic units.
-        mass
-            The `mass` parameter represents the mass of the diffusing particle in atomic units.
-        fn
-            The "fn" parameter is an optional argument which can be used to specify a certain density file
-            to be used for the calculation.
-        '''
-        raise NotImplementedError("This method is deprecated. Will be removed and replaced with Thermolib's kinetics module in future releases.")
-        with log.section('CALCULATOR', 2, timer='diffusion coefficient calculation'):
-            beta = 1/temp/boltzmann            
+        chempots : float or array-like
+            Chemical potentials in atomic units (Hartree).
+        temperature : float or array-like
+            Temperatures in Kelvin.
+        *args, **kwargs
+            Additional arguments (unused).
 
-            file_suff = get_file_suffix(chempot, temp)
-            fn = self.workdir / f'free_energy_profile_{file_suff}.csv'
-            assert fn.is_file(), f'No free energy profile found for {temp}K and {chempot/kjmol:#7.5f}kJ/mol at {fn}'
-            data = np.loadtxt(fn, delimiter=',', skiprows=1).T
-            cvs = data[0]
-            free_energy = data[3]
-
-
-            #calculate the prefactor
-            prefactor = np.sqrt(boltzmann*temp/2/np.pi/mass)
-
-            # determine transition state and minimums
-            max_index = np.argmax(free_energy)
-            min_index = np.argmin(free_energy[:max_index])
-
-            #calculate the diffusion coefficient using the free energy profile
-            integrand = np.exp(-beta*free_energy)
-            denom = np.trapz(integrand[min_index:max_index], cvs[min_index:max_index])
-
-            hopping_rate = prefactor*integrand[max_index]/denom
-
-            #calculate the diffusion coefficient using the transition state theory
-            diffusion_length = cvs[max_index] - cvs[min_index]
-            dimensionality = 1
-
-            D = hopping_rate*diffusion_length**2/2/dimensionality
-            log.dump(f'Calculated the diffusion coefficient at {temp}K and {chempot/kjmol:#7.5f}kJ/mol: D = {D:.5e} m^2/s')
-            return D
-
-    def contribution_approximation(self, temp, chempot, contrib_names, cvs, cvs_mat, dist_mask, supercell=True, pert_size=1e-5, symmetric=False, fn=None):
-        '''This function calculates and saves projected contributions based on a perturbation of the density 
-        and free energy calculations.
+        Raises
+        ------
+        AssertionError
+            If density files are missing in subdirectories.
+        """
+        with log.section('CALCULATOR', 2, timer=None):
+            chempots = self.get_chempot_from_pressures(temperature, chempots, pressures)
+            if not hasattr(self, 'dir_list'):
+                self.find_subdirectories()
+            
+            if not hasattr(chempots, '__iter__'):
+                chempots = [chempots]
+            if not hasattr(temperature, '__iter__'):
+                temperature = [temperature]        
+            
+            for chempot in chempots:
+                for temp in temperature:
+                    results = np.empty((len(self.dir_list),self.ncomp,) + tuple(self.grid.npoints))
+                    file_suffix = get_file_suffix(chempot, temp)
+                    for e, directory in enumerate(self.dir_list):
+                        rho_fn = directory / f'rho_{file_suffix}.npy'
+                        assert rho_fn.is_file(), f'No density found for {temp}K and {chempot/kjmol}kJ/mol in {directory}'
+                        results[e] = np.load(rho_fn)
+                    avg_rho = np.mean(results, axis=0)
+                    fn = self.workdir / f'rho_{file_suffix}.npy'
+                    np.save(fn, avg_rho) 
         
+    def average_projected_density(self, temperature, chempots=None, pressures=None):
+        """
+        Average projected density files across subdirectories for given chemical potentials and temperatures.
+
         Parameters
         ----------
-        temp
-            temperature in kelvin
-        chempot
-            chemical potential in atomic units
-        contrib_names
-            A list of names of contributions that you want to calculate. These contributions could be
-            the free energy, grand potential, or any energetic functional used in the cDFT calculation.
-        cvs
-            An array of collective variables which define the diffusion process. See the function
-            `collective_variable` for more details on how to define the collective variables.
-        cvs_mat
-            A matrix which represents the value of the collective variable in each gridpoint of the system.
-        dist_mask
-            The `dist_mask` parameter is used as a mask to filter out certain values based on a distance
-            criterion. 
-        supercell, optional
-            If `supercell` is set to `True`, the function will perform calculations using a supercell. 
-            If set to `False`, only the original cell is used
-        fn
-            String which specifies the file path where the calculated projected contributions will be saved.
-            If the `fn` parameter is not provided when calling the function, a default file path will be 
-            generated based on the temperature (`temp`) and chemical potential (`chempot`) values.
-        rewrite, optional
-            Boolean parameter that determines whether to rewrite the projected contributions.       
-        '''
+        chempots : array-like
+            Chemical potentials in atomic units (Hartree).
+        temperature : array-like
+            Temperatures in Kelvin.
+
+        Raises
+        ------
+        AssertionError
+            If projected density or loading files are missing.
+        """
+        with log.section('CALCULATOR', 2, timer=None):
+            chempots = self.get_chempot_from_pressures(temperature, chempots, pressures)
+            if not hasattr(self, 'dir_list'):
+                self.find_subdirectories()
+            
+            if not hasattr(chempots, '__iter__'):
+                chempots = [chempots]
+            if not hasattr(temperature, '__iter__'):
+                temperature = [temperature]        
+
+            # Read each HDF5 file exactly once, cache by directory
+            proj_cache = {}
+            for directory in self.dir_list:
+                proj_fn = directory / 'projected_density_energy.hdf5'
+                assert proj_fn.is_file(), f'No projected density found in {directory}'
+                with h5py.File(proj_fn, 'r') as f:
+                    for temp in temperature:
+                        for chempot in chempots:
+                            temperature_name = f'{temp:0.5f}'
+                            chempot_name = get_chempot_key(chempot)
+                            
+                            grp_name = f'T_{temperature_name}/mu_{chempot_name}'
+                            grp = f[grp_name]
+
+                            proj_cache[(str(directory), grp_name)] = (
+                                grp['q'][:],       # adjust dataset names to match your HDF5 layout
+                                grp['n'][:]
+                            )
+
+            fn = self.workdir / 'projected_density_energy.hdf5'
+            with h5py.File(fn, 'w') as f_out:
+                for chempot in chempots:
+                    for temp in temperature:
+                        temperature_name = f'{temp:0.5f}'
+                        chempot_name = get_chempot_key(chempot)
+
+                        hdf5_path = f"T_{temperature_name}/mu_{chempot_name}"
+
+                        avg_q = np.mean([proj_cache[(str(d), hdf5_path)][0] for d in self.dir_list], axis=0)
+                        avg_n = np.mean([proj_cache[(str(d), hdf5_path)][1] for d in self.dir_list], axis=0)
+
+                        grp = f_out.create_group(hdf5_path)
+                        grp.create_dataset('q', data=avg_q)
+                        grp.create_dataset('n', data=avg_n)
+            
+            for temp in temperature:
+                loadings = np.empty((len(self.dir_list), len(chempots), self.ncomp))
+                omegas = np.empty((len(self.dir_list), len(chempots), 1))
+                for e, directory in enumerate(self.dir_list):
+                    dens_omega_fn = directory / f'loading_grand_potential_{temp:#7.5f}K.npz'
+                    assert dens_omega_fn.is_file(), f'No loading and grand potential found for {temp}K in {directory}'
+
+                    dens_omega_list = np.load(dens_omega_fn)
+                    mu_list = dens_omega_list['mu']
+                    prev_loadings = dens_omega_list['loading']
+                    prev_omegas = dens_omega_list['omega']
+                    for i, chempot in enumerate(chempots):
+                        diff = mu_list - chempot
+                        index = np.where(np.isclose(diff,0))
+                        loadings[e,i,:] = prev_loadings[index]
+                        omegas[e,i] = prev_omegas[index[0][0]]
+                avg_loadings = np.mean(loadings, axis=0)
+                avg_omegas = np.mean(omegas, axis=0)
+                fn = self.workdir / f'loading_grand_potential_{temp:7.5f}K.npz'
+                np.savez(fn, mu=chempots, loading=avg_loadings, omega=avg_omegas)
+
+    def flexibility_integration(self, flex_fep, dr_list, s_values, temperature, chempots=None, pressures=None):
+        with log.section('CALCULATOR', 2, timer=None):
+            chempots = self.get_chempot_from_pressures(temperature, chempots, pressures)
+            
+            if not hasattr(chempots, '__iter__'):
+                chempots = [chempots]
+            if not hasattr(temperature, '__iter__'):
+                temperature = [temperature]      
+
+            for temp in temperature:
+                temperature_name = f'{temp:0.5f}'
+                
+                # Read each HDF5 file exactly once, cache by directory
+                proj_cache = {}
+                loading_array = np.empty((len(dr_list), len(chempots), self.guest.nspecies))
+                omega_array = np.empty((len(dr_list), len(chempots), self.guest.nspecies))
+
+                for e, dr in enumerate(dr_list):
+                    adsorption_fn = f'{dr}/loading_grand_potential_{temp:0.5f}K.npz'
+                    adsorption_data = np.load(adsorption_fn)
+                    loading = adsorption_data['loading']
+                    omega = adsorption_data['omega']
+                    loading_array[e, :] = loading
+                    omega_array[e, :] = omega
+
+                    proj_fn = Path(f'{dr}/projected_density_energy.hdf5')
+                    assert proj_fn.is_file(), f'No projected density found at {proj_fn}'
+                    with h5py.File(proj_fn, 'r') as f:
+                            for chempot in chempots:
+                                chempot_name = get_chempot_key(chempot)
+                                
+                                grp_name = f'T_{temperature_name}/mu_{chempot_name}'
+                                grp = f[grp_name]
+                                proj_cache[(s_values[e], grp_name)] = (
+                                    grp['q'][:],       # adjust dataset names to match your HDF5 layout
+                                    grp['free_energy'][:],
+                                    grp['n'][:],
+
+                                )
+                                len_cvs = len(grp['q'][:])
+                
+                opt_s_ads, opt_loadings, opt_omega = integrate_flexibility_adsorption(omega_array, s_values, flex_fep, loading_array)
+                adsorption_fn = self.workdir / f'loading_grand_potential_{temp:0.5f}K.npz'
+                np.savez(adsorption_fn, mu=chempots, loading=opt_loadings, omega=opt_omega, s_values=opt_s_ads)
+
+                with h5py.File(self.workdir / 'projected_density_energy.hdf5', 'w') as f_out:
+                    for ii, mu in enumerate(chempots):
+                        chempot_name = get_chempot_key(mu)
+                        grp_name = f'T_{temperature_name}/mu_{chempot_name}'    
+                        subgrp = f_out.create_group(grp_name)
+                        full_free_energy = np.empty((len(s_values), len_cvs, self.guest.nspecies))
+
+                        for i, s in enumerate(s_values):
+                            full_free_energy[i, :] = proj_cache[(s, grp_name)][1]
+                        opt_s, fep_int =  integrate_flexibility(full_free_energy, s_values, flex_fep)
+                        opt_dens = np.empty((len_cvs, self.guest.nspecies))
+                        for e, s_ in enumerate(opt_s):
+                            opt_dens[e] = proj_cache[(s_[0], grp_name)][2][e]
+
+                        subgrp.create_dataset('q', data=proj_cache[(s, grp_name)][0])
+                        subgrp.create_dataset('n', data=opt_dens)
+                        subgrp.create_dataset('free_energy', data=fep_int)
+                        subgrp.create_dataset('opt_s', data=opt_s)
+
+    def contribution_approximation(self, contrib_names, cvs, cvs_mat, dist_mask, temperature, chempot=None, pressure=None, supercell=True, pert_size=1e-5, symmetric=False, fn=None):
+        """
+        Calculate and save projected contributions based on density perturbation.
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin.
+        chempot : float or array-like
+            Chemical potential in atomic units (Hartree).
+        contrib_names : list of str
+            List of contribution names.
+        cvs : array-like
+            Collective variables array.
+        cvs_mat : ndarray
+            CV values matrix.
+        dist_mask : ndarray
+            Distance mask.
+        supercell : bool, optional
+            If True, use supercell.
+        pert_size : float, optional
+            Perturbation size, default 1e-5.
+        symmetric : bool, optional
+            If True, use symmetric perturbation.
+        fn : str or Path, optional
+            Output filename; auto-generated if None.
+        """
         
         with log.section('CALCULATOR', 2, timer='contributions approximation'):
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
             if not isinstance(contrib_names, list):
                 contrib_names = [contrib_names]
             header = 'cv, density'            
             
-            file_suff = get_file_suffix(chempot, temp)
+            file_suff = get_file_suffix(chempot, temperature)
             rho_fn = self.workdir / f'rho_{file_suff}.npy'
-            assert rho_fn.is_file(), f'No density found for {temp}K and {chempot/kjmol}kJ/mol'
+            assert rho_fn.is_file(), f'No density found for {temperature}K and {chempot/kjmol}kJ/mol'
             rho = np.load(rho_fn).real
             rho_sup = make_supercell(rho, repetitions=[3,3,3], periodic=True)
 
-            n_list = self.project_density(temp, chempot, cvs, cvs_mat, dist_mask, supercell=supercell)[1]
-            n_list_not_norm = self.project_density(temp, chempot, cvs, cvs_mat, dist_mask, supercell=supercell, rewrite=True, normalize=False, save=False)[1]
+            n_list = self.project_density(temperature, chempot, cvs, cvs_mat, dist_mask, supercell=supercell)[1]
+            n_list_not_norm = self.project_density(temperature, chempot, cvs, cvs_mat, dist_mask, supercell=supercell, rewrite=True, normalize=False, save=False)[1]
 
             q_list = (cvs[1:]+cvs[:-1])/2
             contrib_list = np.empty((2+len(contrib_names), len(cvs)-1))
@@ -1005,19 +1750,17 @@ class Calculator(object):
             for ee, contrib_name in enumerate(contrib_names):
                 if contrib_name.lower() in ['fid_derive', 'fideal_derive']:
                     integrand = np.zeros_like(rho)
-                    integrand[rho>0] = np.log(self.fener.wavelength**3*rho[rho>0])*boltzmann*temp
+                    integrand[rho>0] = np.log(self.fener.wavelength**3*rho[rho>0])*boltzmann*temperature
                     old_contribs[ee] = self.grid.integrate(integrand)
                 elif contrib_name.lower() in ['free_energy', 'grand_potential']:
-                    old_contribs[ee] = self.grand_potential(temp, chempot)
+                    old_contribs[ee] = self.grand_potential(temperature, chempot)
                 else:
-                    old_contribs[ee] = self.free_energy_contrib(temp, chempot, contrib_name)
+                    old_contribs[ee] = self.free_energy_contrib(temperature, chempot, partname=contrib_name)
 
             for e in range(len(cvs)-1):
                 q_min = cvs[e]
                 q_max = cvs[e+1]
                 mask_full = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
-
-                print('q',(q_max+q_min)/2 ,'number', np.sum(mask_full))
 
                 #define the perturbation
                 rho_pert_sup = pert_size*rho_sup*mask_full
@@ -1053,7 +1796,7 @@ class Calculator(object):
                     #calculate the old and new free energy and their difference
                     if contrib_name.lower() in ['fid_derive', 'fideal_derive']:
                         integrand = np.zeros_like(rho)
-                        integrand[rho>0] = np.log(self.fener.wavelength**3*rho[rho>0])*boltzmann*temp
+                        integrand[rho>0] = np.log(self.fener.wavelength**3*rho[rho>0])*boltzmann*temperature
                         delta = self.grid.integrate(integrand*rho_pert)                    
                         contrib_list[ee+2, e] = delta/pert_size
                         continue
@@ -1063,53 +1806,54 @@ class Calculator(object):
                         neg_mask = neg_rho < 0
                         neg_rho[neg_mask] = 0
                         if contrib_name.lower() in ['free_energy', 'grand_potential']:
-                            old = self.grand_potential(temp, chempot, rho=neg_rho)/2
-                            new = self.grand_potential(temp, chempot, rho=new_rho)/2
+                            old = self.grand_potential(temperature, chempot, rho=neg_rho)/2
+                            new = self.grand_potential(temperature, chempot, rho=new_rho)/2
                         else:
-                            old = self.free_energy_contrib(temp, chempot, contrib_name, rho=neg_rho)/2
-                            new = self.free_energy_contrib(temp, chempot, contrib_name, rho=new_rho)/2
+                            old = self.free_energy_contrib(temperature, chempot, partname=contrib_name, rho=neg_rho)/2
+                            new = self.free_energy_contrib(temperature, chempot, partname=contrib_name, rho=new_rho)/2
                     else:
                         old = old_contribs[ee]
                         if contrib_name.lower() in ['free_energy', 'grand_potential']:
-                            # old = self.grand_potential(temp, chempot, rho=rho)
-                            new = self.grand_potential(temp, chempot, rho=new_rho)
+                            # old = self.grand_potential(temperature, chempot, rho=rho)
+                            new = self.grand_potential(temperature, chempot, rho=new_rho)
                         else:
                             old = old_contribs[ee]
-                            # old = self.free_energy_contrib(temp, chempot, contrib_name, rho=rho)
-                            new = self.free_energy_contrib(temp, chempot, contrib_name, rho=new_rho)
+                            # old = self.free_energy_contrib(temperature, chempot, contrib_name, rho=rho)
+                            new = self.free_energy_contrib(temperature, chempot, contrib_name, rho=new_rho)
                             
                     delta = (new - old)/pert_size
                     contrib_list[ee+2, e] = delta
             if fn is None:
-                file_suff = get_file_suffix(chempot, temp)
+                file_suff = get_file_suffix(chempot, temperature)
                 fn = self.workdir / f'approx_contributions_{file_suff}.csv'
             np.savetxt(fn, contrib_list.T, delimiter=',', header = header)
-            log.dump(f'Calculated the projected contributions at {temp}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')                
+            log.dump(f'Calculated the projected contributions at {temperature}K and {chempot/kjmol:#7.5f}kJ/mol save at {fn}')                
 
-    def local_contribution(self, temp, chempot, contrib_names, pert_size=1e-7):
+    def local_contribution(self, temperature, chempot, contrib_names, pert_size=1e-7):
         """
-        Calculates the local contributions to the chemical potential by perturbing the density at each grid point.
-        
+        Calculate local contributions to the chemical potential by perturbing the density at each grid point.
+
         Parameters
         ----------
-        temp : float
-            The temperature in Kelvin.
-        chempot : float
-            The chemical potential.
+        temperature : float
+            Temperature in Kelvin.
+        chempot : float or array-like
+            Chemical potential in atomic units (Hartree).
         contrib_names : list of str
-            A list of contribution names for which the local contributions are to be calculated.
+            List of contribution names.
         pert_size : float, optional
-            The size of the perturbation to apply to the density at each grid point. Default is 1e-7.
+            Perturbation size, default 1e-7.
+
         Returns
         -------
-        local_contribs : numpy.ndarray
-            A 4D array containing the local contributions for each contribution name at each grid point.
+        ndarray
+            4D array of local contributions.
         """
 
         with log.section('CALCULATOR', 2, timer='local contributions'):
-            file_suff = get_file_suffix(chempot, temp)
+            file_suff = get_file_suffix(chempot, temperature)
             rho_fn = self.workdir / f'rho_{file_suff}.npy'
-            assert rho_fn.is_file(), f'No density found for {temp}K and {chempot/kjmol}kJ/mol'
+            assert rho_fn.is_file(), f'No density found for {temperature}K and {chempot/kjmol}kJ/mol'
             rho = np.load(rho_fn).real
             npoints = self.grid.npoints
 
@@ -1119,9 +1863,9 @@ class Calculator(object):
                 if contrib_name.lower() in ['fid_derive', 'fideal_derive']:
                     continue
                 elif contrib_name.lower() in ['free_energy', 'grand_potential']:
-                    old_contribs[i] = self.grand_potential(temp, chempot)
+                    old_contribs[i] = self.grand_potential(temperature, chempot)
                 else:
-                    old_contribs[i] = self.free_energy_contrib(temp, chempot, contrib_name)
+                    old_contribs[i] = self.free_energy_contrib(temperature, chempot, partname=contrib_name)
             
             local_contribs = np.zeros((len(contrib_names), npoints[0], npoints[1], npoints[2]))
 
@@ -1132,15 +1876,15 @@ class Calculator(object):
                             if rho[e,ee,eee] > pert_size:
                                 rho[e,ee,eee] += pert_size
                                 if contrib_name.lower() in ['free_energy', 'grand_potential']:
-                                    new = self.grand_potential(temp, chempot, rho=rho)
+                                    new = self.grand_potential(temperature, chempot, rho=rho)
                                 elif contrib_name.lower() in ['fid_derive', 'fideal_derive']:
                                     integrand = np.zeros_like(rho)
-                                    integrand[rho>0] = np.log(self.fener.wavelength**3*rho[rho>0])*boltzmann*temp
+                                    integrand[rho>0] = np.log(self.fener.wavelength**3*rho[rho>0])*boltzmann*temperature
                                     local_contribs[i, e, ee, eee] = self.grid.integrate(integrand)
                                     rho[e,ee,eee] -= pert_size
                                     continue
                                 else:
-                                    new = self.free_energy_contrib(temp, chempot, contrib_name, rho=rho)
+                                    new = self.free_energy_contrib(temperature, chempot, partname=contrib_name, rho=rho)
                                 
                                 local_contribs[i, e, ee, eee] = (new - old_contribs[i])/pert_size
                                 rho[e,ee,eee] -= pert_size
@@ -1148,25 +1892,35 @@ class Calculator(object):
             return local_contribs
 
     def diffusion_constant(self, chempot, temperature, dT=0.001*kelvin, alpha=0.788, weighted_density=False, save=False):
-        """ 
-        Calculation of the diffusion constant with Rosenfeld's excess-entropy scaling method. Calculates the excess free energy of the same density profile evaluated at two different temperatures. 
-        From these two excess free energy points the excess entropy is calculated as the slope between them and subsequently the diffusion constant is determined.
-        
+        """
+        Calculate the diffusion constant using Rosenfeld's excess-entropy scaling method.
 
         Parameters
         ----------
-        chempot : Scalar, is the external chemical potential of the simulation.
-        temperature: Scalar, is the central temperature to compute the derivative to temperatures
-        dT : Scalar, the temprature difference between the two simulations, the default is 0.001K as used by Yu Liu (2015)
-        alpha: A parameter in the excess entropy scaling relation
+        chempot : float
+            Chemical potential in atomic units (Hartree).
+        temperature : float
+            Temperature in Kelvin.
+        dT : float, optional
+            Temperature difference, default 0.001 K.
+        alpha : float, optional
+            Scaling parameter, default 0.788.
+        weighted_density : bool, optional
+            If True, use weighted density.
+        save : bool, optional
+            If True, save local diffusion constants.
 
         Returns
         -------
-        Also saves a local profile of the diffusion constant, calculated by the local 
-        Diffusion constant
+        float
+            Diffusion constant.
 
+        Raises
+        ------
+        NotImplementedError
+            Method is in development.
         """
-        raise NotImplementedError("Diffusion constant calculation is not yet fully implemented.")
+        raise NotImplementedError("This method is in development and not yet available.")
         with log.section('PROGRAM', 2, timer='Diffusion constant'):
 
             T1 = temperature + dT/2
@@ -1177,68 +1931,58 @@ class Calculator(object):
             assert fn.is_file(), 'No density found for %3.0f K and %4.5f kJ/mol' %(temperature,chempot/kjmol)
             rho = np.load(fn)
 
-            if weighted_density:
-                wda = WDAVFunctional((T1+T2)/2, self.grid, D=self.system.guest.Rhs, eos=None)
-                wda._init_weight_function()
-                rho = wda._get_weighted_density(self.grid.fft(rho)).real
-                fn = self.workdir / f'wrho_{file_suff}.npy'
-                np.save(fn, rho)
-
             mask = rho>10**-8 #remove densities which are close to zero or negative
 
-            Fex1 = self.excess_free_energy(T1, chempot, local=True, fn=fn)
-            Fex2 = self.excess_free_energy(T2, chempot, local=True, fn=fn)
+            Fex1 = self.excess_free_energy(T1, chempot=chempot, fn=fn)
+            Fex2 = self.excess_free_energy(T2, chempot=chempot, fn=fn)
 
-            N = self.loading(temperature, chempot)
+            N = self.loading(temperature, chempot)[0]
             if not np.isclose(N,0):
                     
                 rho_avg = N/self.host.cell.volume
-                s_ex = -(Fex1 - Fex2)/dT/N/boltzmann 
+                s_ex = -(Fex1 - Fex2)/dT
 
-                mass = np.sum(self.guest.mol.masses)
+                mass = np.sum(self.guest.atoms.get_masses()*amu)
 
-                # log.dump(f'Reduced sef-diffusivity constant {0.585*np.exp(alpha*s_ex)}')
-                Ds_local = np.zeros_like(rho)
-                Ds_local[mask] = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex[mask])
-                Ds = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*self.grid.integrate(s_ex))
-
+                # Ds_local = np.zeros_like(rho)
+                # Ds_local[mask] = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*s_ex[mask])
                 S_ex = self.grid.integrate(s_ex)
-                log.dump(f'The excess entropy of the system is {S_ex*N*boltzmann*mol/joule:4e}J/mol/K')
-                if save:
-                    log.dump(f'Saved the local diffusion constants to {self.workdir}/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
-                    np.save(self.workdir / f'local_diffusion_constants_{(T1+T2)/2:#7.5f}K_{chempot/kjmol:#7.5f}.npy', Ds_local)
+                print(alpha*S_ex/N/boltzmann)
+                Ds = 0.585*rho_avg**(-1/3)*np.sqrt(boltzmann*temperature/mass)*np.exp(alpha*S_ex/N/boltzmann)
+
+                log.dump(f'The excess entropy of the system is {S_ex*mol/joule:4e}J/mol/K')
+                # if save:
+                #     log.dump(f'Saved the local diffusion constants to {self.workdir}/local_diffusion_constants_{temperature:#7.5f}K_{chempot/kjmol:#7.5f}.npy')
+                #     np.save(self.workdir / f'local_diffusion_constants_{(T1+T2)/2:#7.5f}K_{chempot/kjmol:#7.5f}.npy', Ds_local)
                 return Ds                 
             else:
                 Ds = np.nan
                 return Ds
             
-    def external_potential_from_rho(self, chempot, temperature, rho_fn=None, fn=None, limit_potential=1e+4*kjmol):
-        '''The function `external_potential_from_rho` calculates the external potential from a given density
-        profile at a specified temperature and chemical potential.
-        
+    def external_potential_from_rho(self, temperature, chempot=None, pressure=None,  rho_fn=None, fn=None, limit_potential=1e+4*kjmol):
+        """
+        Calculate the external potential from a given density profile.
+
         Parameters
         ----------
-        chempot
-            The `chempot` parameter represents the chemical potential in atomic units.
-        temperature
-            The `temperature` parameter represents the temperature in Kelvin.
-        rho_fn
-            The `rho_fn` parameter is used to specify the file path of the density profile. If it is not provided,
-            the function will look for a default file based on the chemical potential and temperature.
-        fn
-            The "fn" parameter is an optional argument which will be used to specify the file path where the
-        calculated external potential will be saved. If not provided, a default file path will be generated.
-        limit_potential
-            The `limit_potential` parameter is used to set a maximum value for the external potential. If the
-        calculated external potential exceeds this limit, it will be capped at this value.
-        
-        Returns
-        -------
-            The function `external_potential_from_rho` returns the external potential calculated from the
-        density profile.
-        
-        '''
+        chempot : float or array-like
+            Chemical potential in atomic units (Hartree).
+        temperature : float
+            Temperature in Kelvin.
+        rho_fn : str or Path, optional
+            Density file path; auto-generated if None.
+        fn : str or Path, optional
+            Output filename; auto-generated if None.
+        limit_potential : float, optional
+            Limit for potential in zero-density regions, default 1e4 kJ/mol.
+
+        Raises
+        ------
+        AssertionError
+            If density file is not found.
+        """
         with log.section('CALCULATOR', 2, timer='Virt extpot'):
+            chempot = self.get_chempot_from_pressures(temperature, chempot, pressure)
             if rho_fn is None:
                 file_suffix = get_file_suffix(chempot, temperature)
                 rho_fn = self.workdir / f'rho_{file_suffix}.npy'
@@ -1249,7 +1993,7 @@ class Calculator(object):
             rho_mask = np.isclose(rho*self.fener.wavelength**3, 0, atol=1e-200)
 
             dF = 0
-            krho = self.grid.fft(rho)
+            krho = self.grid.fftn(rho)
             for part in self.fener.parts:
                 if part.name in ['ExtPot', 'EffExtPot']:
                     continue
@@ -1263,7 +2007,95 @@ class Calculator(object):
                 if 'ExtPot' in self.fener.part_names:
                     fn = self.workdir / f'ext_pot.npy'
                 elif 'EffExtPot' in self.fener.part_names:
-                    effepot_fn = Path(self.program.name_dict['prefix']) / self.program.name_dict['hostname'] / self.program.name_dict['guestname'] / self.program.name_dict['ff_suffix'] / self.program.name_dict['grid_suffix'] / self.program.name_dict['suffix'] #LOUIS: why does this line use self.program.name_dict instead of self.name_dict?
+                    effepot_fn = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['guestname'] / self.name_dict['ff_suffix'] / self.name_dict['grid_suffix'] / self.name_dict['suffix'] #LOUIS: why does this line use self.name_dict instead of self.name_dict?
                     effepot_fn.mkdir(parents=True, exist_ok=True)
                     fn = f'{effepot_fn}/eff_epot_{temperature:3.2f}.npy'
             np.save(fn, ext_pot.real)
+
+    
+    def calc_distance(self, rewrite=False):
+        """
+        Calculate distances from grid points to nearest framework atoms.
+        
+        Computes the minimum distance from each grid point to any host atom
+        and stores the result. Used for identifying framework regions.
+        
+        Parameters
+        ----------
+        rewrite : bool, optional
+            If True, recompute distances even if file exists. Default is False
+        
+        Notes
+        -----
+        Results are stored in self.dis and cached to file for reuse.
+        Uses minimum image convention for periodic boundary conditions.
+        """
+        dist_file = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / self.name_dict['grid_suffix'] / 'distances.npy'
+        if not dist_file.parent.is_dir():
+            dist_file.parent.mkdir()
+        if rewrite:
+            dist_file.unlink()
+        if not dist_file.is_file():
+            atom_pos = self.host.atoms.positions
+            points = self.grid.points[...,:3]
+            points_flat = points.reshape(-1, 3)
+            vec = points_flat[:, np.newaxis, :] - atom_pos[np.newaxis, :, :]
+            vec = self.host.cell.mic(vec)
+            distances = np.linalg.norm(vec, axis=-1)
+            min_distances = np.amin(distances, axis=-1)
+            self.dis = min_distances.reshape(self.grid.npoints)
+
+            np.save(dist_file, self.dis)
+        else:
+            self.dis = np.load(dist_file)         
+    
+    def calc_regions(self, energy_cutoff=0.55, range_cutoff=3.4*angstrom, mof_cutoff=5):
+        """
+        Identify distinct regions in the nanoporous material.
+        
+        Classifies grid points into three regions based on distance and energy criteria:
+        interaction sites (energetically favorable), framework atoms (blocked), and
+        empty space (unfavorable).
+        
+        Parameters
+        ----------
+        energy_cutoff : float, optional
+            Energy criterion: fraction of minimum potential defining favorable sites.
+            Default is 0.55
+        range_cutoff : float, optional
+            Distance cutoff in Angstrom for empty space classification.
+            Default is 3.4 Angstrom
+        mof_cutoff : float, optional
+            Energy criterion for framework identification in units of k_B*T.
+            Default is 5
+        
+        Returns
+        -------
+        mask_site : ndarray
+            Boolean mask for adsorption sites (energetically favorable)
+        mask_mof : ndarray
+            Boolean mask for framework atoms (blocked regions)
+        mask_empty : ndarray
+            Boolean mask for empty space (unfavorable)
+        
+        Notes
+        -----
+        Requires external potential to be present in free energy.
+        Also sets self.mask_site, self.mask_mof, self.mask_empty attributes.
+        Calls calc_distance() internally if distance matrix not already computed.
+        """
+        self.calc_distance()
+        range_mask = self.dis<range_cutoff
+        index = None
+        for partname in self.fener.part_names:
+            if 'ExtPot' in partname:
+                index = self.fener.part_names.index(partname)
+        if index is None:
+            log.warning('The regions of a nanoporous material can only be calculated if an external potential is defined', label_section='calc_regions')
+        epot_data = self.fener.parts[index].potential
+        crit = np.amin(epot_data) - energy_cutoff*np.amin(epot_data)
+        energy_mask = epot_data<crit     
+        mask_mof = epot_data>mof_cutoff*boltzmann*self.fener.temperature
+        mask_site = (energy_mask + range_mask)*(~self.mask_mof)
+        mask_empty = (~energy_mask)*(~range_mask)*(~self.mask_mof)
+        return mask_site, mask_mof, mask_empty    

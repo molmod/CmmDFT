@@ -2,22 +2,40 @@
 from __future__ import division
 
 import numpy as np, sys, os
-import matplotlib.pyplot as plt
 import time
 import scipy.optimize as opt
 
-from molmod.constants import boltzmann
-from molmod.units import angstrom, kjmol
+from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom
 
 from .log import log
 from .functionals import HardSphereFunctional
-from .tools import selection_sort
 
 __all__ = ['Solver', 'Picard', 'Anderson', 'Fire', 'QuasiNewton']
 
 class Solver(object):
     """
-    Generic solver class for DFT calculations.
+    Base solver class for cDFT density functional theory calculations.
+    
+    Manages the iterative solution of the cDFT Euler-Lagrange equations
+    for finding the equilibrium density distribution. Handles convergence
+    checking, energy tracking, and provides common utilities for all solver types.
+    
+    Attributes
+    ----------
+    grid : :class:`cmmdft.grid.Grid`
+        Spatial discretization grid
+    fener : FreeEnergy
+        Free energy functional manager
+    nsteps : int
+        Maximum number of optimization steps
+    criterion : list of str
+        Convergence criteria ('RIUE', 'RES', 'DER')
+    threshold : list of float
+        Convergence thresholds for each criterion
+    track_history : bool
+        Whether to record convergence history
+    history : ndarray
+        Convergence metrics at each step (if tracked)
     """
 
     name = 'SOLVER'
@@ -25,39 +43,39 @@ class Solver(object):
     def __init__(self, program, nsteps=500, threshold=1e-6, criterion='RIUE', 
                  a_tol=1e-6, r_tol=1e-4, min_iter=1, track_history=False):
         """
-        Initialize the Solver.
-
+        Initialize the base solver.
+        
         Parameters
         ----------
-        program : object
-            Program object that must provide `grid` and `fener` attributes used by the solver.
+        program : Program
+            Program object containing grid and free energy
         nsteps : int, optional
-            Maximum number of iterations (default 500).
+            Maximum number of optimization steps. Default is 250
         threshold : float or list, optional
-            Convergence threshold(s) corresponding to the provided criterion(s).
+            Convergence threshold(s). Default is 1e-6
         criterion : str or list, optional
-            Convergence criterion name or list of names. 
-            Valid values are: 'RIUE' (Relative Integrated Unsigned Error), 'RES' (Residual error), 'DER' (Derivative error).
-            If a list is provided, multiple criteria will be checked for convergence.
+            Convergence criterion: 'RIUE' (relative integrated unsigned error),
+            'RES' (residual error), or 'DER' (derivative error).
+            Default is 'RIUE'
         a_tol : float, optional
-            Absolute tolerance used when computing derivative norm in the DER criterion.
+            Absolute tolerance for DER criterion. Default is 1e-6
         r_tol : float, optional
-            Relative tolerance used when computing derivative norm in the DER criterion.
+            Relative tolerance for DER criterion. Default is 1e-4
         min_iter : int, optional
-            Minimum number of iterations before accepting convergence.
+            Minimum iterations before checking convergence. Default is 1
         track_history : bool, optional
-            If True, the solver stores a per-step history array, containing convergence information.
-            This is saved as a .txt file in the output folder of the program.
-
+            Track convergence metrics at each step. Default is False
+        
         Raises
         ------
         AssertionError
-            If an invalid criterion is provided or if multiple criteria are given with a mismatched threshold list.
+            If criterion not in ['RIUE', 'RES', 'DER']
         """
         self.grid = program.grid
         self.fener = program.fener
         self.nsteps = nsteps
-
+        self.nspecies = self.fener.system.guest.nspecies
+        self.rho_shape = [self.nspecies] + list(self.grid.npoints)
         if isinstance(criterion, list):
             for crit in criterion:
                 assert crit.lower() in ['riue', 'res', 'der'], 'Criterion must be either RIUE (relative integrated unsigned error), RES (Residual error) or DER (Derivative error)'
@@ -73,6 +91,11 @@ class Solver(object):
                 threshold = 1
             self.criterion = [criterion]
             self.threshold = [threshold]
+
+        self.mask = np.ones(self.rho_shape, dtype=bool)
+        for part in self.fener.parts:
+            if 'ExtPot' in part.name:
+                self.mask = np.where(part.potential>50*boltzmann*self.fener.temperature, False, True)
             
         self.a_tol = a_tol
         self.r_tol = r_tol
@@ -89,8 +112,18 @@ class Solver(object):
 
     def _initiate_solving(self, chempot):
         """
-        Routine which is called before the solving starts to reset the solver.
+        Reset solver state before starting optimization.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray
+            Chemical potential(s) for the calculation
+        
+        Notes
+        -----
+        Computes fugacity from chemical potential and initializes counters.
         """
+        chempot = np.atleast_1d(chempot)
         self.fugacity = np.exp(self.fener.beta*chempot)/self.fener.beta/self.fener.wavelength**3
         self.chempot = chempot
         self.curr_step = 0
@@ -101,15 +134,35 @@ class Solver(object):
             self.history = np.zeros((self.nsteps+1, 7)) 
 
     def _get_Omega(self, rho, krho):
-        with log.section(self.name, self.log_level, timer='Omega calculation'):
-
-            N = self.grid.integrate(rho)
+        """
+        Calculate the grand canonical potential (Omega).
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Density field in real space
+        krho : ndarray
+            Fourier transform of density
+        
+        Returns
+        -------
+        float
+            Grand potential Omega = F_ideal + F_parts - mu*N
+        
+        Notes
+        -----
+        Also stores tracking information and omega0 for convergence monitoring.
+        """
+        with log.section(self.name, self.log_level, timer='Omega'):
+            N = np.asarray([self.grid.integrate_n(rho[e]) for e in range(self.nspecies)])
             rho_reg = self._clip_density(rho)
-            Fid = self.grid.integrate(rho_reg*(np.log(self.fener.wavelength**3*rho_reg)-1.0)).real/self.fener.beta
-            line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(self.iphase ,self.curr_step, N, (-self.chempot*N), Fid)
-            G = Fid - self.chempot*N
+            wvl3 = np.atleast_1d(self.fener.wavelength)**3
+            rho_lam = np.einsum('i,ijkl->ijkl', wvl3, rho_reg)
+            Fid = self.grid.integrate(rho_reg*(np.log(rho_lam)-1.0)).real/self.fener.beta
+            line = "%6i\t%4i\t%.6e\t%.6e\t% .6e" %(self.iphase ,self.curr_step, np.sum(N), np.sum(-self.chempot*N), Fid)
+            G = Fid - np.sum(self.chempot*N)
             for part in self.fener.parts:
-                Fpart = part.value(krho)
+                Fpart = part.value(rho, krho)
                 G += Fpart
                 line += "\t% .6e" %(Fpart)
             line += "\t% .6e" %(G)
@@ -119,6 +172,16 @@ class Solver(object):
             return G
     
     def _track_energy(self, rho, krho):
+        """
+        Record grand potential and its components to file.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Density field
+        krho : ndarray
+            Fourier transform of density
+        """
         if self.fener.fn_tracking is not None:
             if self.curr_step != self.tracking_step:
                 self._get_Omega(rho, krho)
@@ -126,47 +189,187 @@ class Solver(object):
                 f.write(self.tracking_line + '\n')
 
     def get_new_rho(self, C1, fugacity):
-        return self.fener.beta*np.exp(-self.fener.beta*C1)*fugacity
+        """
+        Compute new density from functional derivative.
+        
+        Parameters
+        ----------
+        C1 : ndarray
+            Functional derivative (one-body potential)
+        fugacity : float or ndarray
+            Fugacity or chemical potential factor
+        
+        Returns
+        -------
+        ndarray
+            Updated density field
+        
+        Notes
+        -----
+        Uses Boltzmann distribution: rho_new = fugacity * exp(-beta*C1)
+        """
+        fug = np.atleast_1d(fugacity)
+        return self.fener.beta*np.einsum('ijkl,i->ijkl',np.exp(-self.fener.beta*C1), fug)
 
     def _get_dOmega(self, rho, C1):
-        rho_reg = self._clip_density(rho)
-        lnrho = np.log(self.fener.wavelength**3*rho_reg, dtype='float64') / self.fener.beta # Avoid log(0)
-        dO = lnrho + C1 - self.chempot
-        return dO
+        """
+        Calculate the functional derivative of the grand potential from C1.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Density field
+        C1 : ndarray
+            Functional derivative from parts
+        
+        Returns
+        -------
+        ndarray
+            Functional derivative
+        
+        Notes
+        -----
+        delta(Omega)/delta(rho) = (1/beta) * ln(Lambda^3 * rho) + C1 - mu
+        """
+        return np.log(np.einsum('i,ijkl->ijkl',self.fener.wavelength**3,self._clip_density(rho)), dtype='float64') / self.fener.beta + C1 - self.chempot[:, np.newaxis, np.newaxis, np.newaxis]
 
     def _get_C1(self, rho, krho=None):
-        with log.section(self.name, self.log_level, timer='Excess derivative'):
+        """
+        Calculate the first derivative of all functionals
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Density field
+        krho : ndarray, optional
+            Fourier transform of density. Computed if not provided.
+        
+        Returns
+        -------
+        ndarray
+            C1 = sum of functional derivatives
+        """
+        with log.section(self.name, self.log_level, timer='C1'):
             if krho is None:
-                krho = self.grid.fft(rho)
-            C1 = np.zeros(self.grid.npoints)
+                krho = self.grid.fftn(rho)
+            C1 = np.zeros(self.rho_shape)
             for part in self.fener.parts:
-                C1 += part.derive(krho)
+                C1 += part.derive(rho, krho)
             return C1
 
     def _clip_density(self, rho):
-        rho = np.where(rho < self.lower_density, 1e-30, rho)
-        return rho
+        """
+        Clip density to prevent numerical issues with log(rho).
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Density field
+        
+        Returns
+        -------
+        ndarray
+            Clipped density with minimum value 1e-30
+        """
+        return np.where(rho < self.lower_density, 1e-30, rho)
+    
+    def pack_rhos(self, rho_list):
+        """
+        Flatten density field(s) to 1D vector.
+        
+        Parameters
+        ----------
+        rho_list : ndarray
+            Density field with shape (ncomp, nx, ny, nz) or similar
+        
+        Returns
+        -------
+        ndarray
+            Flattened 1D vector
+        """
+        return rho_list.ravel()
+
+    def unpack_rhos(self, rho_packed):
+        """
+        Reshape flattened density vector back to full shape.
+        
+        Parameters
+        ----------
+        rho_packed : ndarray
+            Flattened 1D density vector
+        
+        Returns
+        -------
+        ndarray
+            Reshaped density field
+        """
+        return rho_packed.reshape(*self.rho_shape)
 
     def _get_alpha_max(self, rho, krho, Grho, krho_new=None):
+        """
+        Calculate maximum safe step size from hard-sphere constraints.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        Grho : ndarray
+            Target density (e.g., from Boltzmann distribution)
+        krho_new : ndarray, optional
+            Fourier transform of new density. Computed if not provided.
+        
+        Returns
+        -------
+        float
+            Maximum step size keeping n3 < ~0.9 (packing fraction constraint)
+        
+        Notes
+        -----
+        Uses hard-sphere weighted density n3 to avoid unphysical overlaps.
+        """
         if krho_new is None:
-            krho_new = self.grid.fft(Grho)
+            krho_new = self.grid.fftn(Grho)
 
         #calculating the weighted densities from the FMT to calculate the alpha max and check certain conditions
         if not hasattr(self, '_get_n3'):
             if 'HardSphere' in self.fener.part_names:
                 self._get_n3 = self.fener.part_dict['HardSphere'].get_n3
             else:
-                HS = HardSphereFunctional(self.fener.system.guest.Rhs, self.grid)
+                HS = HardSphereFunctional(self.grid, self.fener.system.guest.Rhs )
                 HS.set_temperature(self.fener.temperature, self.fener.system.guest.Rhs)
                 self._get_n3 = HS.get_n3
         
         n3_max = np.max(self._get_n3(krho)).real
         n3_max_new = np.max(self._get_n3(krho_new)).real
-        return np.min([abs((1-n3_max)/((n3_max_new - n3_max) + 1e-16)), 1])
+        return np.min([abs((1-n3_max)/((n3_max_new - n3_max)+1e-16)), 1])
 
     def _check_convergence(self, rho_new, krho_new, C1_new, rho, N_new):
         """
-        Check the convergence of the solver.
+        Check if optimization has converged.
+        
+        Parameters
+        ----------
+        rho_new : ndarray
+            Updated density field
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        rho : ndarray
+            Previous density field
+        N_new : float
+            Total number of particles (loading)
+        
+        Returns
+        -------
+        bool
+            True if all active criteria meet their thresholds
+        
+        Notes
+        -----
+        Computes RIUE, RES, and DER metrics and logs progress.
         """
         with log.section(self.name, self.log_level, timer='Convergence'):
             CRIT_PASS = True
@@ -192,15 +395,13 @@ class Solver(object):
                     log.dump("             *  Rel. Integr. Unsign. Err. density = %11.4e " %(self.RIUE))
 
                 elif criterion.lower() == 'res':
-                    Grho_new = self.get_new_rho(C1_new, self.fugacity)
-                    res_norm = np.linalg.norm(Grho_new - rho_new)
+                    res_norm = np.linalg.norm(self.get_new_rho(C1_new, self.fugacity) - rho_new)
                     self.RES = res_norm/np.sqrt(N_new)/np.sqrt(np.prod(self.grid.npoints))
                     crit = self.RES
                     log.dump("             *  Norm of residual                  = %11.4e" %self.RES)
 
                 elif criterion.lower() == 'der':
-                    dOmega = self._get_dOmega(rho_new, C1_new)
-                    self.DER = np.linalg.norm((np.abs(rho_new)*beta*dOmega/(self.a_tol + self.r_tol*np.abs(rho_new)))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
+                    self.DER = np.linalg.norm((np.abs(rho_new)*beta*self._get_dOmega(rho_new, C1_new)/(self.a_tol + self.r_tol*np.abs(rho_new)))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
                     crit = self.DER
                     log.dump("             *  Norm of derivative                  = %11.4e" %self.DER)
                 CRIT_PASS *= (crit < thresh)
@@ -212,14 +413,12 @@ class Solver(object):
                 if not np.isnan(self.RES):
                     self.history[self.curr_step, 2] = self.RES
                 else:
-                    Grho_new = self.get_new_rho(C1_new, self.fugacity)
-                    res_norm = np.linalg.norm(Grho_new - rho_new)
+                    res_norm = np.linalg.norm(self.get_new_rho(C1_new, self.fugacity) - rho_new)
                     self.history[self.curr_step, 2] = res_norm/N_new/np.sqrt(np.prod(self.grid.npoints))
 
                 self.history[self.curr_step, 3] = self.RIUE
 
-                dOmega = beta*self._get_dOmega(rho_new, C1_new)
-                DER = np.linalg.norm((np.abs(rho_new)*dOmega)[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
+                DER = np.linalg.norm((np.abs(rho_new)*(beta*self._get_dOmega(rho_new, C1_new)))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
                 self.history[self.curr_step, 4] = DER
 
             if self.omega0 is not None:
@@ -235,34 +434,49 @@ class Solver(object):
         
     def _solve(self, chempot, rho, log_level):
         """
-        Solve the density functional theory (DFT) problem for a given chemical potential.
-        Parameters:
-        -----------
-        chempot : float
-            The chemical potential for which the density is to be calculated.
-        rho : numpy.ndarray
-            The initial guess for the density distribution.
+        Core optimization loop for density functional theory.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray
+            Chemical potential(s) for the calculation
+        rho : ndarray
+            Initial density guess
         log_level : int
-            The logging level to control the verbosity of the output.
-        Returns:
-        --------
-        N_new : float
-            The integrated density over the grid.
-        rho_new : numpy.ndarray
-            The updated density distribution after solving.
-        Raises:
+            Logging verbosity level
+        
+        Returns
         -------
+        N_new : float
+            Total number of adsorbed particles (loading)
+        rho_new : ndarray
+            Optimized density field
+        converged : bool
+            Whether convergence was achieved
+        
+        Raises
+        ------
         FloatingPointError
-            If the new density contains non-finite values, indicating a failure in the Picard iteration.
+            If density becomes non-finite (NaN or Inf)
+        
+        Notes
+        -----
+        Iteratively calls update_rho() until convergence or max steps reached.
         """
         self.log_level = log_level
         converged = False
+
+        if hasattr(chempot, '__iter__'):
+            chempot_str = ', '.join([f'{mu/kjmol:7.3f}' for mu in chempot])
+        else:
+            chempot_str = f'{chempot/kjmol:7.3f}'
+
         with log.section('SOLVER', self.log_level, timer=self.name):
             self._initiate_solving(chempot)
             tstart_tot = time.perf_counter()
             tstart = tstart_tot
 
-            krho = self.grid.fft(rho)
+            krho = self.grid.fftn(rho)
             C1 = self._get_C1(rho, krho)
 
             self.omega0 = self._get_Omega(rho, krho)
@@ -270,13 +484,11 @@ class Solver(object):
 
             if self.track_history:
                 rho_mask = np.isclose(rho, 0)
-                Grho = self.get_new_rho(C1, self.fugacity)
-                dOmega = self._get_dOmega(rho, C1)
                 self.history[0, 0] = self.grid.integrate(rho).real
                 self.history[0, 1] = self.omega0
-                self.history[0, 2] = np.linalg.norm(Grho - rho)
+                self.history[0, 2] = np.linalg.norm(self.get_new_rho(C1, self.fugacity) - rho)
                 self.history[0, 3] = np.nan
-                self.history[0, 4] = np.linalg.norm((np.abs(rho)*dOmega)[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
+                self.history[0, 4] = np.linalg.norm((np.abs(rho)* self._get_dOmega(rho, C1))[~rho_mask])/np.sqrt(np.prod(self.grid.npoints))
                 self.history[0, 5] = np.nan
                 self.history[0, 6] = np.nan
 
@@ -299,84 +511,118 @@ class Solver(object):
                 if self._check_convergence(rho_new, krho_new, C1_new, rho, N_new):
                     converged = True
                     break
-
                 rho = rho_new.copy()
-                C1 = C1_new.copy()
-                krho = krho_new.copy()
+                C1 = C1_new
+                krho = krho_new
 
 
             if istep==self.nsteps-1:
-                log.warning("Solution not converged after %d steps at temperature %5.3f and chemical potential %7.5f"%(self.nsteps, self.fener.temperature, chempot/kjmol), label_section='solve')
+                log.warning("Solution not converged after %d steps at temperature %5.3f and chemical potential %s"%(self.nsteps, self.fener.temperature, chempot_str), label_section='solve')
             
             tstop_tot = time.perf_counter()
             log.dump('#################################################################################')
-            log.dump(f'Calculated the density for a chemical potential of {round(chempot/kjmol,3)} kJ/mol in {round(tstop_tot-tstart_tot,2)} seconds')
+            log.dump(f'Calculated the density for a chemical potential of {chempot_str} kJ/mol in {round(tstop_tot-tstart_tot,2)} seconds')
             log.dump('#################################################################################')
             return N_new, rho_new, converged
 
     def solve(self, chempot, rho, log_level):
         """
-            
-            A function surrounding the general solver with an added failsafe of correction factors on the mixing parameter in case of floatingpoint errors.
-            
-            **arguments**
-            
-            chempot
-                The chemical potential
-            
-            rho
-                The initial guess of the one particle density that we need to 
-                solve for.
-            
+        Solve for density with automatic recovery from numerical errors.
+        
+        Wrapper around _solve() that handles floating point errors by
+        automatically reducing mixing parameters and retrying.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray
+            Chemical potential(s) for the calculation
+        rho : ndarray
+            Initial density guess
+        log_level : int
+            Logging verbosity level
+        
+        Returns
+        -------
+        N_new : float
+            Total number of adsorbed particles
+        rho_new : ndarray
+            Optimized density field
+        converged : bool
+            Whether convergence achieved
+        
+        Raises
+        ------
+        NoSolutionError
+            If all retry attempts fail
         """
         self.log_level = log_level
         self.correction_factor = 1
+        if hasattr(chempot, '__iter__'):
+            chempot_str = ', '.join([f'{mu/kjmol:7.3f}' for mu in chempot])
+        else:
+            chempot_str = f'{chempot/kjmol:7.3f}'
         with log.section(self.name, self.log_level, timer=None):
             while self.correction_factor >= 1/4:
                 try:
                     return self._solve(chempot, rho, self.log_level)
-                except FloatingPointError:
+                except (FloatingPointError, np.linalg.LinAlgError):
                     self.correction_factor /= 2
                     self.iphase += 1
-                    log.warning('THE CALCULATION OF THE DENSITY at chemical potential %7.5f kJ/mol and temperature %5.3f K HAS FAILED DUE TO A ---FloatingPointError---'%(chempot/kjmol, self.fener.temperature), label_section='Solve')
+                    log.warning('THE CALCULATION OF THE DENSITY at chemical potential %s kJ/mol and temperature %5.3f K HAS FAILED DUE TO A ---FloatingPointError---'%(chempot_str, self.fener.temperature), label_section='Solve')
                     log.dump(f'Adding a cycle with a correction factor of {self.correction_factor}')
             log.dump('A density could not be calculated due to numerical errors')
             self.correction_factor = 1
-            raise NoSolutionError("Solution not converged after %d steps at temperature %5.3f and chemical potential %7.5f"%(self.nsteps, self.fener.temperature, chempot/kjmol))
+            raise NoSolutionError("Solution not converged after %d steps at temperature %5.3f and chemical potential %s"%(self.nsteps, self.fener.temperature, chempot_str))
 
 class Picard(Solver):
     """
-    Picard solver with different methods to update the density.
+    Picard iterative solver for DFT with static or hybrid damping.
+    
+    Implements simple fixed-point iteration with exponential mixing.
+    Can use either constant mixing (static) or adaptive mixing (hybrid)
+    with quadratic approximation in the density space.
+    
+    Attributes
+    ----------
+    alpha_mix : float
+        Linear mixing parameter (0 < alpha < 1)
+    method : str
+        Iteration method: 'static' or 'hybrid'
+    break_nstep : int
+        Step number to switch methods (if applicable)
+    
+    See Also
+    --------
+    Anderson : Accelerated iterative solver
+    Fire : Inertial relaxation method
     """
 
     name = 'PICARD'
 
-    def __init__(self, program, nsteps=500, 
-                 alpha_mix=0.1, method='hybrid', **kwargs):
+    def __init__(self, program, nsteps=250, 
+                 alpha_mix=0.1, method='hybrid', break_nstep = 80, correction_factor=1, thresh=1*kjmol, **kwargs):
         """
-        Initialize a Picard solver.
-
+        Initialize Picard iteration solver.
+        
         Parameters
         ----------
-        program : object
-            Program object providing `grid` and `fener`.
+        program : Program
+            Program object containing grid and free energy
         nsteps : int, optional
-            Maximum number of iterations (default 500).
+            Maximum optimization steps. Default is 250
         alpha_mix : float, optional
-            Default mixing parameter used in Picard updates.
-        method : {'hybrid', 'static'}, optional
-            Update strategy. 'hybrid' uses a line-search / alpha optimization,
-            'static' uses fixed mixing with alpha_mix.
-        **kwargs :
-            Additional keyword arguments forwarded to the base Solver.
-
-        Raises
-        ------
-        AssertionError
-            If an unknown `method` is provided.
+            Mixing parameter for convergence (0-1). Default is 0.1
+        method : {'static', 'hybrid'}, optional
+            Iteration strategy. Default is 'hybrid'
+        break_nstep : int, optional
+            Step to potentially switch between methods. Default is 80
+        correction_factor : float, optional
+            Damping applied to alpha_mix for stability. Default is 1
+        thresh : float, optional
+            Threshold for SLSQP selection in hybrid mode. Default is 1 kJ/mol
+        **kwargs
+            Additional arguments passed to parent Solver class
         """
-        
-
         super().__init__(program, nsteps, **kwargs)
 
         self.alpha_mix = alpha_mix
@@ -389,118 +635,201 @@ class Picard(Solver):
             self.update_rho = self.update_rho_static
                   
 
-    def update_rho_static(self, rho, krho, C1):
+    def update_rho_static(self, rho, krho, C1, alpha=None):
+        """
+        Update density using simple linear mixing.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        C1 : ndarray
+            One-body potential
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        
+        Notes
+        -----
+        rho_new = (1 - alpha) * rho + alpha * G(rho)
+        where G is the Boltzmann operator with chemical potential.
+        """
         with log.section(self.name, self.log_level, timer='Update rho'):
-            Grho = self.get_new_rho(C1, self.fugacity)
-            alpha_mix_cor = self.alpha_mix*self.correction_factor
-            rho_new = (1.0-alpha_mix_cor)*rho+alpha_mix_cor*Grho
+            if alpha is not None:
+                alpha_mix_cor = alpha*self.correction_factor
+            else:
+                alpha_mix_cor = self.alpha_mix*self.correction_factor
+            
+            rho_new = (1.0-alpha_mix_cor)*rho+alpha_mix_cor*self.get_new_rho(C1, self.fugacity)
             rho_new[rho_new<1e-10/angstrom**3] = 0.0
 
-            krho_new = self.grid.fft(rho_new)
+            krho_new = self.grid.fftn(rho_new)
             C1_new = self._get_C1(rho_new, krho_new)
             return rho_new, krho_new, C1_new
 
     def update_rho_hybrid(self, rho, krho, C1):
+        """
+        Update density using adaptive mixing with quadratic line search.
+        
+        Fits a quadratic to the grand potential vs. mixing parameter and
+        finds the optimal step size that minimizes potential energy.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        C1 : ndarray
+            One-body potential
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        
+        Notes
+        -----
+        Uses SLSQP optimization if satisfies convergence criteria condition,
+        otherwise uses simple quadratic approximation for robust convergence.
+        """
         with log.section(self.name, self.log_level, timer='Update rho_hyb'): 
             prev_omega = self.omega0
             Grho = self.get_new_rho(C1, self.fugacity)
             alpha_max = self._get_alpha_max(rho, krho, Grho)
-
-            # start with a quadratic approximation for Omega as a function of alpha
-            if np.isclose(alpha_max,0):
-                alpha_opt = 0
-                min_pot, max_pot = 0, 0
-            else:
-                alpha1 = 0.45*alpha_max
-                rho1 = (1-alpha1)*rho + alpha1*Grho
-                krho1 = self.grid.fft(rho1)
-                omega1 = self._get_Omega(rho1, krho1)
-                #choose the third point for the quadratic approximation
-                if omega1 <= prev_omega:
-                    alpha2 = 0.9*alpha_max
+            try:
+                # start with a quadratic approximation for Omega as a function of alpha
+                if np.isclose(alpha_max,0):
+                    alpha_opt = 0
+                    min_pot, max_pot = 0, 0
                 else:
-                    alpha2 = 0.225*alpha_max
-                rho2 = (1-alpha2)*rho + alpha2*Grho
-                krho2 = self.grid.fft(rho2)
-                omega2 = self._get_Omega(rho2, krho2)
-                c, b, a = np.polyfit([0, alpha1, alpha2], [prev_omega, omega1, omega2], 2)
-                alphas = np.linspace(-max(alpha1,alpha2)/4, max(alpha1,alpha2), 10000)
-                omegas = a + b*alphas +c*alphas**2
-                alpha_opt = alphas[np.where(omegas==np.min(omegas))[0][0]]
+                    alpha1 = 0.45*alpha_max
+                    rho1 = (1-alpha1)*rho + alpha1*Grho
+                    omega1 = self._get_Omega(rho1, self.grid.fftn(rho1))
+                    #choose the third point for the quadratic approximation
+                    if omega1 <= prev_omega:
+                        alpha2 = 0.9*alpha_max
+                    else:
+                        alpha2 = 0.225*alpha_max
+                    rho2 = (1-alpha2)*rho + alpha2*Grho
+                    omega2 = self._get_Omega(rho2, self.grid.fftn(rho2))
+                    c, b, a = np.polyfit([0, alpha1, alpha2], [prev_omega, omega1, omega2], 2)
+                    alphas = np.linspace(-max(alpha1,alpha2)/4, max(alpha1,alpha2), 10000)
+                    omegas = a + b*alphas +c*alphas**2
+                    alpha_opt = alphas[np.where(omegas==np.min(omegas))[0][0]]
 
-                min_pot = np.min(omegas)/kjmol
-                max_pot = np.max(omegas)/kjmol    
-
-            # check if the quadratic approximation is valid and if the SLSQP solver should be used
-            if alpha_opt <= 0:
-                if max_pot-min_pot > self.thresh:
+                    min_pot = np.min(omegas)/kjmol
+                    max_pot = np.max(omegas)/kjmol    
+                # check if the quadratic approximation is valid and if the SLSQP solver should be used
+                if alpha_opt <= 0 and max_pot-min_pot>self.thresh:
+                    log.dump('original alpha_opt: %5.5e'%alpha_opt)
+                    tstart = time.time()
                     def calc_G_rho(alpha):
                         rho_temp = (1-alpha)*rho + alpha*Grho
-                        krho_temp = self.grid.fft(rho_temp)#*self.grid.dr
-                        omega = self._get_Omega(rho_temp, krho_temp)
-                        return omega
+                        return self._get_Omega(rho_temp, self.grid.fftn(rho_temp))
 
                     bounds = opt.Bounds(0.01*alpha_max, 0.9*alpha_max)
                     alpha_opt_new = opt.minimize(calc_G_rho, [self.alpha_mix*alpha_max], bounds=bounds, method='SLSQP', options= {'ftol':1e-8}).x
+                    tstop = time.time() 
                     alpha_opt = alpha_opt_new
-                else:
+                    log.dump('SLSQP alpha opt: %5.5e in %5.5fs'%(alpha_opt, tstop-tstart))
+
+                if alpha_opt <= 0 or np.isclose(alpha_opt,0):
                     alpha_opt = self.alpha_mix*alpha_max
-            if alpha_opt <= 0 or np.isclose(alpha_opt,0):
+                    log.dump(f'Manually set the value of alpha_mix to: {alpha_opt*self.correction_factor}')
+
+            except (FloatingPointError, np.linalg.LinAlgError):
                 alpha_opt = self.alpha_mix*alpha_max
                 
             rho_new = (1-alpha_opt*self.correction_factor)*rho + alpha_opt*self.correction_factor*Grho
             rho_new = self._clip_density(rho_new)
-
-            krho_new = self.grid.fft(rho_new)
+            krho_new = self.grid.fftn(rho_new)
             C1_new = self._get_C1(rho_new, krho_new)
-            self._get_Omega(rho_new, krho_new) # saves the correct Omega as self.omega0, necessary for next line search
-            return rho_new, krho_new, C1_new
+            Omega_new = self._get_Omega(rho_new, krho_new) # saves the correct Omega as self.omega0, necessary for next line search
+            Grho_new = self.get_new_rho(C1_new, self.fugacity)
+            
+            # safeguard for bad steps, fall back on safe static iteration
+            if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
+                return self.update_rho_static(rho, krho, C1, alpha=alpha_opt/50)
 
+            elif np.linalg.norm(Grho_new - rho_new) > np.linalg.norm(Grho - rho)*5:
+                return self.update_rho_static(rho, krho, C1, alpha=alpha_opt/50)
+            else:
+                if Omega_new > prev_omega*(0.8):
+                    return self.update_rho_static(rho, krho, C1, alpha=alpha_opt/50)
+            return rho_new, krho_new, C1_new
+        
 class Anderson(Picard):
     """
-    Anderson and Hybrid-Anderson solver 
-    Based  on https://doi.org/10.1063/5.0067172
+    Anderson acceleration solver for DFT optimization.
+    
+    Implements Anderson mixing acceleration that uses limited memory
+    of previous iterations to extrapolate better density updates.
+    Based on: https://doi.org/10.1063/5.0067172
+    
+    Attributes
+    ----------
+    m : int
+        Memory size (number of previous iterations to store)
+    damping : float
+        Adaptive damping coefficient for acceleration
+    adaptive_damping : bool
+        Whether to adjust damping based on residual norm changes
+    minimize_method : str
+        Optimization method for line search
+    
+    See Also
+    --------
+    Picard : Non-accelerated iterative solver
+    Fire : Inertial relaxation method
     """
 
     name = 'ANDERSON'
 
-    def __init__(self, program, nsteps=500, method='hybridanderson', 
-                 m=5, damping=0.3, delta=0.2, damping_max=0.8, damping_min=0.01, adaptive_damping=True, damping_factors=(1.5,0.5),
+    def __init__(self, program, nsteps=500, method='hybridanderson', minimize_method='SLSQP_new',
+                 m=5, damping=0.1, delta=0.1, damping_max=0.8, damping_min=0.01, adaptive_damping=True,
                    **kwargs):
         """
-        Initialize an Anderson (or Hybrid-Anderson) solver.
-
+        Initialize Anderson acceleration solver.
+        
         Parameters
         ----------
-        program : object
-            Program object providing `grid` and `fener`.
+        program : Program
+            Program object containing grid and free energy
         nsteps : int, optional
-            Maximum number of iterations (default 500).
-        method : {'anderson', 'hybridanderson'}, optional
-            Anderson variant to use. 'hybridanderson' enables hybrid switching logic with Picard.
+            Maximum optimization steps. Default is 100
+        method : {'hybridanderson', 'anderson'}, optional
+            Solver method variant. Default is 'hybridanderson'
+        minimize_method : str, optional
+            Line search method (e.g., 'SLSQP_new'). Default is 'SLSQP_new'
         m : int, optional
-            Memory length: number of previous residuals/iterates to store.
-        damping : float, optional (default 0.2)
-            Initial damping (mixing) coefficient applied to Anderson updates.
+            Memory depth for acceleration (cycles back with step size m).
+            Default is 5
+        damping : float, optional
+            Initial damping coefficient. Default is 0.3
         delta : float, optional
-            Threshold parameter used in hybrid switching decisions.
-        damping_max : float, optional (default 0.8)
-            Maximum allowed damping value.
-        damping_min : float, optional (default 0.01)
-            Minimum allowed damping value.
+            Threshold for switching to Picard (if applicable). Default is 0.1
+        damping_max : float, optional
+            Maximum damping allowed. Default is 0.8
+        damping_min : float, optional
+            Minimum damping allowed. Default is 0.01
         adaptive_damping : bool, optional
-            If True, adapt damping based on recent residual norms.
-        damping_factors : tuple(float, float), optional
-            Multiplicative factors (increase, decrease) used when adjusting damping.
-        **kwargs :
-            Additional keyword arguments forwarded to the Picard/Solver base class.
-
-        Notes
-        -----
-        The constructor stores the provided parameters as attributes. Anderson-specific
-        buffers (previous rhos/Grhos) are initialized in _initiate_solving.
-        """        
-        
+            Automatically adjust damping based on convergence. Default is True
+        **kwargs
+            Additional arguments passed to parent Picard class
+        """
         super().__init__(program, nsteps, method=method, **kwargs)
         self.Anderson_method = method
         self.m = m
@@ -509,16 +838,27 @@ class Anderson(Picard):
         self.damping_max = damping_max
         self.damping_min = damping_min
         self.adaptive_damping = adaptive_damping
-        self.damping_factors = damping_factors
+        self.damping_factors = [1.2, 0.6]
         self.delta = delta
+        self.minimize_method = minimize_method
+        self.opt_alphas_time = []
 
     def _initiate_solving(self, chempot):
         """
-        Reset the previous rhos and Grhos
+        Reset solver state and Anderson acceleration memory.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray
+            Chemical potential for calculation
+        
+        Notes
+        -----
+        Initializes prev_rhos and prev_Grhos arrays for limited-memory storage.
         """
         super()._initiate_solving(chempot)
-        self.prev_rhos = np.zeros((self.m,np.prod(self.grid.npoints)))
-        self.prev_Grhos = np.zeros((self.m,np.prod(self.grid.npoints)))
+        self.prev_rhos = np.zeros((self.m,np.prod(self.rho_shape)))
+        self.prev_Grhos = np.zeros((self.m,np.prod(self.rho_shape)))
         self.And_true = False
         self.it_eps0 = np.nan
         self.f = 0
@@ -526,7 +866,20 @@ class Anderson(Picard):
 
     def _save_previous_rhos(self, rho, krho, Grho):
         """
-        Save the previous rho and Grho values for Anderson method.
+        Store current density and target density for acceleration.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform (not used, kept for API consistency)
+        Grho : ndarray
+            Target density from Boltzmann operator
+        
+        Notes
+        -----
+        Maintains circular buffers of size m for limited-memory storage.
         """
 
         self.prev_rhos = np.roll(self.prev_rhos, -1, axis=0)
@@ -534,7 +887,27 @@ class Anderson(Picard):
         self.prev_Grhos = np.roll(self.prev_Grhos, -1, axis=0)
         self.prev_Grhos[-1] = np.copy(Grho).ravel()
 
-    def _get_damping_coefficient(self):
+    def _get_damping_coefficient(self, rho_result, Grho_result):
+        """
+        Adaptively adjust damping coefficient based on residual convergence.
+        
+        Parameters
+        ----------
+        rho_result : ndarray
+            Current density from Anderson acceleration
+        Grho_result : ndarray
+            Target density from Boltzmann operator
+        
+        Returns
+        -------
+        ndarray
+            Updated density with adjusted damping applied
+        
+        Notes
+        -----
+        Increases damping if residual decreasing, decreases if increasing.
+        Also ensures packing fraction stays below maximum.
+        """
         res_norm = np.linalg.norm(self.prev_Grhos[-1] - self.prev_rhos[-1])
         prev_res_norm = np.linalg.norm(self.prev_Grhos[-2] - self.prev_rhos[-2])
 
@@ -542,8 +915,59 @@ class Anderson(Picard):
             self.damping = min(self.damping*self.damping_factors[0], self.damping_max)
         else:
             self.damping = max(self.damping*self.damping_factors[1], self.damping_min)
-        
+
+        if not hasattr(self, '_get_n3'):
+            if 'HardSphere' in self.fener.part_names:
+                self._get_n3 = self.fener.part_dict['HardSphere'].get_n3
+            else:
+                HS = HardSphereFunctional(self.fener.system.guest.Rhs, self.grid)
+                HS.set_temperature(self.fener.temperature, self.fener.system.guest.Rhs)
+                self._get_n3 = HS.get_n3
+
+        rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
+        rho_new = self._clip_density(rho_new)        
+        krho_new = self.grid.fftn(rho_new)
+        n3_new = self._get_n3(krho_new)
+
+        while np.max(n3_new) > 0.99 and self.damping > (self.damping_min*0.1)*1.01:
+            self.damping = max(self.damping*self.damping_factors[1], self.damping_min*0.1)
+            log.dump('Max(n3) = %0.3e > 0.99, reducing damping factor to %0.3e'%(np.max(n3_new), self.damping))
+
+            rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
+            rho_new = self._clip_density(rho_new)
+            krho_new = self.grid.fftn(rho_new)
+            n3_new = self._get_n3(krho_new)
+
+        return rho_new, krho_new
+    
     def update_rho(self, rho, krho, C1):
+        """
+        Update density with Anderson acceleration or fallback to Picard.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        C1 : ndarray
+            One-body potential
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        
+        Notes
+        -----
+        Uses hybrid method to switch between Picard and Anderson based on
+        convergence criteria. Falls back to hybrid Picard if Anderson step
+        produces worse residuals or unphysical densities.
+        """
         with log.section(self.name, self.log_level, timer='Update rho'):
 
             prev_omega = self.omega0
@@ -558,78 +982,184 @@ class Anderson(Picard):
                 if self.curr_step < 3:
                     self.it_eps0 = self.it_eps
 
-            AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 4) or self.And_true
+            AND_condition = (not 'hybrid' in self.Anderson_method.lower()) or ((self.it_eps <= self.it_eps0 * self.delta) and self.curr_step > 3) or self.And_true or self.curr_step > 8
             if AND_condition:
-                try:
-                    rho_new, krho_new, C1_new = self.update_rho_Anderson()
-                    Grho_new = self.get_new_rho(C1_new, self.fugacity)
-                    self.And_true = True
-                    if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
-                        rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
-                    else:
-                        Omega_new = self._get_Omega(rho_new, krho_new)
-                        if Omega_new > prev_omega*(0.8):
-                            rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
-                except FloatingPointError:
-                    rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
+                rho_new, krho_new, C1_new = self.update_rho_Anderson()
+                Grho_new = self.get_new_rho(C1_new, self.fugacity)
+                self.And_true = True
+
+                if np.isinf(Grho_new).any() or np.isnan(Grho_new).any():
+                    return self.update_rho_hybrid(rho, krho, C1)
+
+                elif np.linalg.norm(Grho_new - rho_new) > np.linalg.norm(Grho - rho)*5:
+                    self.damping = self.damping_min
+                    return self.update_rho_hybrid(rho, krho, C1)
+                else:
+                    Omega_new = self._get_Omega(rho_new, krho_new)
+                    if Omega_new > prev_omega*(0.8):
+                        return self.update_rho_hybrid(rho, krho, C1)
 
             else:
-                rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
+                return self.update_rho_hybrid(rho, krho, C1)
 
             return rho_new, krho_new, C1_new
 
-    def update_rho_Anderson(self):
+    def update_rho_Anderson_analytical(self):
+        """
+        Compute accelerated step using analytical Anderson mixing.
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Accelerated density estimate
+        Grho_new : ndarray
+            Boltzmann estimate at new density
+        
+        Notes
+        -----
+        Solves the least-squares system to find optimal weights for
+        previous iterations, minimizing residual norm via Gram matrix.
+        """
         mk = min(self.curr_step, self.m)
         residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
-
-        def sum_res(alps):
-            combined = np.einsum('i,ij->j', alps, residuals)
-            return np.linalg.norm(combined)
         
-        bds = opt.Bounds(0,1)
-        linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
-        alphas = opt.minimize(sum_res, np.full(mk,1/mk), method='SLSQP', tol=1e-10, bounds=bds, constraints=linear_constraint).x
+        # Compute Gram matrix: R^T R
+        gram = residuals @ residuals.T
+        
+        # Add small regularization for numerical stability
+        gram += 1e-10 * np.eye(mk)
+        
+        # Solve: (R^T R) α = 1, with α summing to 1
+        ones = np.ones(mk)
+        alphas = np.linalg.solve(gram, ones)
+        alphas /= alphas.sum()  # Normalize to sum to 1
 
+        
+        # Project to [0,1] if needed (usually not necessary)
+        alphas = np.clip(alphas, 0, 1)
+        alphas /= alphas.sum()
+        
+        rho_result = (alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape)
+        Grho_result = (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
 
-        rho_result = np.einsum('i,ij->j', alphas, self.prev_rhos[-mk:]).reshape(self.grid.npoints)
-        Grho_result = np.einsum('i,ij->j', alphas, self.prev_Grhos[-mk:]).reshape(self.grid.npoints)
+        if self.adaptive_damping: 
+            rho_new, krho_new = self._get_damping_coefficient(rho_result, Grho_result)
+        else:
+            rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
+            rho_new = self._clip_density(rho_new)
+            krho_new = self.grid.fftn(rho_new)
 
-        if self.adaptive_damping: self._get_damping_coefficient()
-
-        rho_new = (1-self.correction_factor*self.damping)*rho_result + self.correction_factor*self.damping*Grho_result
-        rho_new = self._clip_density(rho_new)
-        krho_new = self.grid.fft(rho_new)
         C1_new = self._get_C1(rho_new, krho_new)
-
         return rho_new, krho_new, C1_new
+    
+    def update_rho_Anderson(self):
+        """
+        Compute accelerated step using numerical Anderson optimization.
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Accelerated density estimate
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        
+        Notes
+        -----
+        Minimizes squared residual norm with respect to blending weights
+        using SLSQP constrained optimization to enforce unit sum.
+        """
+        mk = min(self.curr_step, self.m)
+        residuals = self.prev_Grhos[-mk:] - self.prev_rhos[-mk:]
+        
+        # Precompute Gram matrix for faster objective evaluation
+        gram = residuals @ residuals.T
+        del residuals
+        def sum_res_fast(alphas):
+            return np.sqrt(alphas @ gram @ alphas)
+        
+        def jac_fast(alphas):
+            return (gram @ alphas) / (np.sqrt(alphas @ gram @ alphas) + 1e-15)
+        
+        bds = opt.Bounds(0, 1)
+        linear_constraint = opt.LinearConstraint(np.ones(mk), 1, 1)
+        
+        result = opt.minimize(
+            sum_res_fast, 
+            np.full(mk, 1/mk), 
+            method='SLSQP',
+            jac=jac_fast,  # Provide analytical gradient
+            bounds=bds, 
+            constraints=linear_constraint,
+            options={'ftol': 1e-15, 'maxiter': 200}
+        )
+        alphas = result.x
 
+        if self.adaptive_damping: 
+            rho_new, krho_new = self._get_damping_coefficient((alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape), (alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape))
+        else:
+            rho_new = (1-self.correction_factor*self.damping)*(alphas @ self.prev_rhos[-mk:]).reshape(self.rho_shape) + self.correction_factor*self.damping*(alphas @ self.prev_Grhos[-mk:]).reshape(self.rho_shape)
+            rho_new = self._clip_density(rho_new)
+            krho_new = self.grid.fftn(rho_new)
+
+        C1_new = self._get_C1(rho_new, krho_new)
+        return rho_new, krho_new, C1_new
+    
+        
 class Fire(Solver):
     """
-    Fast Inertial Relaxation Engine (FIRE) solver
-    # ABC-Fire algorithm https://doi.org/10.1016/j.commatsci.2022.111978   
-    based on  https://doi.org/10.1007/s10450-024-00444-z
+    Fast Inertial Relaxation Engine (FIRE) solver.
+    
+    Implements the ABC-FIRE algorithm for fast density optimization
+    using inertial dynamics with adaptive timesteps and damping.
+    Referenced from: https://doi.org/10.1007/s10450-024-00444-z
+    
+    Uses velocity-based acceleration and deceleration to find minimum
+    energy configurations efficiently.
+    
+    Attributes
+    ----------
+    dt : float
+        Current adaptive timestep
+    alpha : float
+        Current damping coefficient
+    Npos : int
+        Counter for consecutive positive steps
+    Nneg : int
+        Counter for consecutive negative steps
+    
+    See Also
+    --------
+    Picard : Fixed-point iteration
+    Anderson : Accelerated iteration with memory
     """
 
     name = 'FIRE'
 
     def __init__(self, program, nsteps=500, method='abc-fire', alpha=0.2, dt=0.02, **kwargs):
         """
-        Initialize the solver with the given parameters.
-        Parameters:
-        grid : object
-            The grid object to be used in the solver.
-        fener : object
-            The energy function or object to be used in the solver.
+        Initialize FIRE solver for accelerated DFT optimization.
+        
+        Parameters
+        ----------
+        program : Program
+            Program object containing grid and free energy
         nsteps : int, optional
-            The number of steps for the solver to run (default is 500).
-        method : str, optional
-            The method to be used in the solver (default is 'abc-fire'). Options are 'abc-fire' or 'fire'.
+            Maximum optimization steps. Default is 100
+        method : {'abc-fire', 'fire'}, optional
+            Algorithm variant (abc-fire recommended). Default is 'abc-fire'
         alpha : float, optional
-            The initial alpha value for the solver (default is 0.2).
+            Initial damping fraction (0-1). Default is 0.2
         dt : float, optional
-            The initial time step for the solver (default is 0.02).
-        **kwargs : dict
-            Additional keyword arguments to be passed to the parent class initializer.
+            Initial timestep. Default is 0.02
+        **kwargs
+            Additional arguments passed to parent Solver class
+        
+        Notes
+        -----
+        ABC-FIRE uses adaptive acceleration/deceleration of timesteps
+        and damping based on convergence progress.
         """
         super().__init__(program, nsteps, **kwargs)
 
@@ -650,20 +1180,56 @@ class Fire(Solver):
 
     def _initiate_solving(self, chempot):
         """
-        Routine which is called before the solving starts to reset the solver if necessary.
+        Reset FIRE solver state before starting optimization.
+        
+        Parameters
+        ----------
+        chempot : float or ndarray
+            Chemical potential(s) for calculation
+        
+        Notes
+        -----
+        Initializes velocity field and resets adaptive timestep and damping.
         """
         super()._initiate_solving(chempot)
-        self.V = np.zeros(self.grid.npoints)
+        self.V = np.zeros(self.rho_shape)
         self.dt = self.dt0
         self.alpha = self.alpha0
 
     def update_rho(self, rho, krho, C1):
+        """
+        Update density using FIRE inertial relaxation dynamics.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density (not used, kept for API consistency)
+        C1 : ndarray
+            One-body potential
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        
+        Notes
+        -----
+        Propagates density using velocity field V that follows the potential gradient
+        with adaptive damping and timesteps. Implements ABC-FIRE algorithm with
+        acceleration factors for faster convergence.
+        """
         with log.section(self.name, self.log_level, timer='Update rho'):
             lnrho = np.log(rho, where=rho>0)
             F = -self.fener.beta*self._get_dOmega(rho, C1)
 
             if self.curr_step == 0:
-                self.V = np.zeros(self.grid.npoints)
+                self.V = np.zeros(self.rho_shape)
             else:
                 self.V[self.mask] += F[self.mask]*0.5*self.dt            
             P = np.sum(F[self.mask]*self.V[self.mask]) # dissipated power
@@ -694,14 +1260,34 @@ class Fire(Solver):
 
             rho_new[self.mask] = np.exp(lnrho[self.mask])
             rho_new = self._clip_density(rho_new)
-            krho_new = self.grid.fft(rho_new)
+            krho_new = self.grid.fftn(rho_new)
             C1_new = self._get_C1(rho_new, krho_new)
             return rho_new, krho_new, C1_new
 
 class QuasiNewton(Picard):
     """
-    Quasi-Newton solver for DFT calculations.
-    This solver uses a quasi-Newton method to update the density.
+    Quasi-Newton solver for accelerated DFT optimization.
+    
+    Implements limited-memory quasi-Newton methods (L-BFGS, L-Broyden, CG)
+    with adaptive line search and optional trust region constraint.
+    
+    Uses cone projection to enforce physical constraints like positive density.
+    
+    Attributes
+    ----------
+    QN_method : str
+        Quasi-Newton variant: 'bfgs', 'broyden', or 'cg'
+    m : int
+        Limited memory size (number of pairs stored)
+    hybrid : bool
+        Use hybrid mode for better initial convergence
+    alpha : float
+        Current line search step size
+    
+    See Also
+    --------
+    Anderson : Anderson acceleration
+    Fire : Inertial relaxation
     """
 
     name = 'QUASI_NEWTON'
@@ -709,45 +1295,39 @@ class QuasiNewton(Picard):
     def __init__(self, program, nsteps=500, m=10, method='bfgs', hybrid=True, delta=0.5,
                  alpha_init=0.05, c1=1e-4, c2=0.9, line_search='backtracking', n_line_search=10, trust_radius=1, verbose=True, **kwargs):
         """
-        Initialize a Quasi-Newton solver.
-
+        Initialize Quasi-Newton solver with limited-memory updates.
+        
         Parameters
         ----------
-        program : object
-            Program object providing `grid` and `fener`.
+        program : Program
+            Program object containing grid and free energy
         nsteps : int, optional
-            Maximum number of iterations (default 500).
+            Maximum optimization steps. Default is 100
         m : int, optional
-            Memory size for limited-memory updates (default 10).
+            Limited memory size (stored pairs). Default is 10
         method : {'bfgs', 'broyden', 'cg'}, optional
-            Quasi-Newton update to use.
+            Quasi-Newton variant. Default is 'bfgs'
         hybrid : bool, optional
-            If True, alternate between Picard and QN updates (default True).
+            Use hybrid mode for initial phases. Default is True
         delta : float, optional
-            Hybrid switching threshold parameter.
+            Threshold for switching between methods. Default is 0.5
         alpha_init : float, optional
-            Initial step length for line search heuristics.
-        c1, c2 : float, optional
-            Wolfe condition constants used by line-search procedures.
-        line_search : {'backtracking', 'quadratic', 'none'}, optional
-            Line-search strategy to use for QN steps.
+            Initial line search step size. Default is 0.05
+        c1 : float, optional
+            Armijo line search parameter. Default is 1e-4
+        c2 : float, optional
+            Wolfe curvature condition parameter. Default is 0.9
         n_line_search : int, optional
-            Maximum number of line-search iterations.
-        trust_radius : float or None, optional
-            Trust-region radius cap for QN steps (default 1).
+            Maximum line search iterations. Default is 10
+        trust_radius : float, optional
+            Trust region radius constraint. Default is 1
         verbose : bool, optional
-            If True, print diagnostic messages.
-        **kwargs :
-            Additional keyword arguments forwarded to Picard/Solver base classes.
-
-        Raises
-        ------
-        AssertionError
-            If an unsupported `method` or `line_search` is provided.
-        """        
+            Logging verbosity. Default is True
+        **kwargs
+            Additional arguments passed to parent Picard class
+        """
         super().__init__(program, nsteps, method=method, **kwargs)
-        self.shape = np.array(program.grid.npoints)
-        self.n = np.prod(self.shape)
+        self.n = np.prod(self.rho_shape)
         self.m = m
 
         self.QN_method = method.lower()
@@ -774,27 +1354,35 @@ class QuasiNewton(Picard):
 
     def flatten(self, x):
         """
-        Flatten the input array to a 1D array.
-        Parameters:
-        x : numpy.ndarray
-            Input array to be flattened.
-        Returns:
-        numpy.ndarray
-            Flattened 1D array.
+        Flatten array to 1D vector.
+        
+        Parameters
+        ----------
+        x : ndarray
+            Multi-dimensional array
+        
+        Returns
+        -------
+        ndarray
+            Flattened 1D array
         """
         return x.reshape(-1)
     
     def unflatten(self, x):
         """
-        Reshape the flattened array back to its original shape.
-        Parameters:
-        x : numpy.ndarray
-            Flattened input array.
-        Returns:
-        numpy.ndarray
-            Reshaped array with the original dimensions.
+        Reshape 1D vector back to original density shape.
+        
+        Parameters
+        ----------
+        x : ndarray
+            Flattened 1D array
+        
+        Returns
+        -------
+        ndarray
+            Reshaped array with density shape
         """
-        return x.reshape(self.shape)
+        return x.reshape(self.rho_shape)
 
     def _initiate_solving(self, chempot):
         super()._initiate_solving(chempot)
@@ -818,6 +1406,21 @@ class QuasiNewton(Picard):
         self.k_QN = 0
 
     def _update_histories(self, rho_new, C1_new):
+        """
+        Record current state in limited-memory history for quasi-Newton.
+        
+        Parameters
+        ----------
+        rho_new : ndarray
+            Current density field
+        C1_new : ndarray
+            One-body potential
+        
+        Notes
+        -----
+        Maintains circular buffers X and G of size m for limited-memory storage.
+        Also updates omega_history with grand potential values.
+        """
         x_new = np.zeros(self.n)
         g_new = np.zeros(self.n)
 
@@ -839,11 +1442,49 @@ class QuasiNewton(Picard):
         dX = self.X[1:] - self.X[:-1]
         dG = self.G[1:] - self.G[:-1]
         return dX, dG
+  
+    def _check_restart(self, gk, do_restart=False):
+
+        if not do_restart and self.restart_period is not None and self.curr_step % self.restart_period == 0:
+            print(f"[Restart] Step {self.curr_step}, restarting...")
+            do_restart = True
+
+        # angle-based (use last dir if present)
+        if not do_restart and hasattr(self, 'd_prev_flat') and self.d_prev_flat is not None:
+            p_prev = self.d_prev_flat
+            cos_theta = -float(np.dot(p_prev, gk)) / (np.linalg.norm(p_prev)*np.linalg.norm(gk) + 1e-16)
+            if cos_theta < self.angle_restart_cos:
+                do_restart = True
+
+        # gradient-stagnation restart (requires previous gradient)
+        if not do_restart and hasattr(self, 'g_prev_flat') and self.g_prev_flat is not None:
+            g_prev = self.g_prev_flat
+            if np.linalg.norm(gk) > self.stagnation_restart_ratio * np.linalg.norm(g_prev):
+                do_restart = True
+            
+        if do_restart:
+            self._flush_history()
 
     def _find_direction(self, rho, g):
         """
-        Update the inverse Hessian approximation using the BFGS formula.
-        Parameters:
+        Compute search direction using limited-memory quasi-Newton method.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        g : ndarray
+            Gradient (one-body potential)
+        
+        Returns
+        -------
+        ndarray or None
+            Search direction for line search, or None if switching to Picard
+        
+        Notes
+        -----
+        Implements L-BFGS, L-Broyden, or CG descent based on configured method.
+        May return None to signal fallback to Picard iteration.
         """
         with log.section('Find Direction', self.log_level, timer='Find Direction'):
             dX, dG = self.compute_dX_dG()
@@ -872,6 +1513,36 @@ class QuasiNewton(Picard):
                 raise ValueError(f"Method {self.QN_method} not recognized. Choose from 'bfgs', 'broyden' or 'cg'.")
 
     def _line_search_feasible(self, rho, krho, g, p):
+        """
+        Perform constrained line search
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        g : ndarray
+            Gradient (negative of search direction)
+        p : ndarray
+            Search direction
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density after line search
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        alpha : float
+            Step size taken (for logging/analysis)
+        
+        Notes
+        -----
+        Uses cone projection to maintain feasibility (non-negative density).
+        Implements backtracking based on predicted sufficient decrease.
+        """
         with log.section('Line Search', self.log_level, timer='Line Search'):
             self.line_search_counter += 1
             lower = 1e-10
@@ -881,7 +1552,7 @@ class QuasiNewton(Picard):
             tau_very_aggressive = 0.01
             tau_gentle = 0.6
             alpha_min = 1e-8
-            step_floor = 1e-12
+            step_floor = 1e-20
             max_allowed_drop = 1e+3*kjmol
 
             # Flatten inputs
@@ -899,11 +1570,17 @@ class QuasiNewton(Picard):
                 rho_trial = self._clip_density(rho_trial)
 
                 p_eff = self.flatten(rho_trial - rho)
+                step_norm = np.linalg.norm(p_eff)
+                if step_norm < step_floor:
+                    log.dump('Step size below floor, reducing alpha')
+                    alpha *= tau
+                    continue
 
-                krho_trial = self.grid.fft(rho_trial)
+                krho_trial = self.grid.fftn(rho_trial)
                 f_new = self._get_Omega(rho_trial, krho_trial)
 
                 gtp_eff = float(np.dot(grad, p_eff))
+                # if self.verbose:
 
                 # sanity check for unphysical minima
                 if f0-f_new > max_allowed_drop:
@@ -985,6 +1662,39 @@ class QuasiNewton(Picard):
 
 
     def _update_rho_QN(self, rho, krho, C1):
+        """
+        Update density using quasi-Newton optimization with line search.
+        
+        Parameters
+        ----------
+        rho : ndarray
+            Current density field
+        krho : ndarray
+            Fourier transform of density
+        C1 : ndarray
+            One-body potential
+        
+        Returns
+        -------
+        rho_new : ndarray
+            Updated density
+        krho_new : ndarray
+            Fourier transform of new density
+        C1_new : ndarray
+            One-body potential at new density
+        Omega_new : float
+            Grand potential at new density
+        
+        Raises
+        ------
+        SwitchToPicardError
+            If QN step increases potential (fallback signal)
+        
+        Notes
+        -----
+        Computes search direction using L-BFGS/Broyden/CG, then performs
+        constrained line search with cone projection to maintain feasibility.
+        """
         with log.section(self.name, self.log_level, timer='Update rho QN'):
             rho_ravel = self.flatten(rho)
             g = self.G[-1]  # Gradient of the functional
@@ -1043,7 +1753,6 @@ class QuasiNewton(Picard):
                     self.k_QN += 1
 
                 except SwitchToPicardError as e:
-                    log.dump(f'QN method failed, switching to Picard for 1 iteration: {e}')
                     rho_new, krho_new, C1_new = self.update_rho_hybrid(rho, krho, C1)
                     self._flush_history()
             else:
@@ -1054,8 +1763,26 @@ class QuasiNewton(Picard):
 
 def cone_project_direction(x, d, lower=1e-10, rel_tol=1):
     """
-    Project d into the feasible cone at x for box constraint x >= lower.
-    Any component i with x_i <= lower+tol and d_i < 0 is set to 0.
+    Project direction into feasible cone for box constraints.
+    
+    Enforces x >= lower by setting d_i = 0 if x_i is at or near lower
+    and d_i would move away from feasible region.
+    
+    Parameters
+    ----------
+    x : ndarray
+        Current point
+    d : ndarray
+        Proposed direction
+    lower : float, optional
+        Lower bound on all components. Default is 1e-10
+    rel_tol : float, optional
+        Relative tolerance for active constraint detection. Default is 1
+    
+    Returns
+    -------
+    ndarray
+        Projected direction maintaining feasibility
     """
     d = d.copy()
     active = x <= (lower + lower*rel_tol)
@@ -1064,7 +1791,24 @@ def cone_project_direction(x, d, lower=1e-10, rel_tol=1):
     return d
 
 def apply_Minv(v, M_inv=None, eps=1e-12):
-    """Apply preconditioner inverse."""
+    """
+    Apply preconditioner (inverse Hessian approximation).
+    
+    Parameters
+    ----------
+    v : ndarray
+        Vector to precondition
+    M_inv : ndarray or callable, optional
+        Preconditioner: diagonal (1D array), full matrix (2D array),
+        or callable function. Default is None (identity)
+    eps : float, optional
+        Small value to avoid division by zero. Default is 1e-12
+    
+    Returns
+    -------
+    ndarray
+        Preconditioned vector M_inv @ v
+    """
     if M_inv is None:
         return v
     if callable(M_inv):
@@ -1139,7 +1883,6 @@ def lbroyden_direction(g, s_list, y_list, H0_scale=1.0, eps=1e-12):
         # Apply to vector: p += (s - Hy) * (y^T p) / (y^T s)
         p += (s - Hy) * (float(np.dot(y, p)) / ys)
     return p
-
 
 def cgdescent_direction(g, g_prev=None, d_prev=None, M_inv=None,
                         eps=1e-12, beta_floor=-0.1):

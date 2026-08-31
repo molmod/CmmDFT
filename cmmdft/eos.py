@@ -525,17 +525,16 @@ class EquationOfState(object):
         return densities
 
     def solve_densities_from_pressures(self, pressures, n_rough_gridpoints=10000, filter=True):
-        """
+        r"""
         Solve EOS for density as a function of pressure at fixed temperature.
 
         The pressure is given by:
 
         .. math::
 
-            p = k_B T \\rho + \\rho^2 \\frac{\\partial^2 f^\\mathrm{N}_\\mathrm{ex}}{\\partial \\rho^2}(\\rho, T)
-        
+           p = k_B T \rho + \rho^2 \frac{\partial^2 f^{\mathrm{N}}_{\mathrm{ex}}}{\partial \rho^2}(\rho, T)
 
-        Solutions are found by first evaluating $p(\\rho)$ on a coarse density grid
+        Solutions are found by first evaluating :math:`p(\rho)` on a coarse density grid
         to bracket candidates, then refining each bracket with `scipy.optimize.brentq`.
 
         Parameters
@@ -606,13 +605,13 @@ class EquationOfState(object):
         return densities
     
     def filter_stable_phases(self, rho, ensemble, p_tolerance=1e-15):
-        """
+        r"""
         Filter density solutions to keep only thermodynamically stable phases.
-        
+
         At equilibrium, phases with the lowest Gibbs free energy are stable.
         This method keeps the solution with minimum Gibbs energy, plus any
         metastable solutions within g_tolerance.
-        
+
         Parameters
         ----------
         rho : list
@@ -621,7 +620,7 @@ class EquationOfState(object):
             Pressure in bar
         g_tolerance : float, optional
             Relative tolerance for identifying metastable states, default 1e-6
-            
+
         Returns
         -------
         list
@@ -651,15 +650,14 @@ class EquationOfState(object):
         return stable_densities
 
     def find_critical_point(self, rho_scale=1.0/angstrom**3, T_scale=kelvin, p_scale=kjmol/angstrom, rho_red_init=0.0005, T_red_init=300, rho_red_upper=np.inf, T_red_upper=np.inf):
-        """
+        r"""
         Compute the critical point, defined where both $dP/dV = 0$ and $d^2P/dV^2 = 0$.
 
         In terms of the excess free energy per volume, this criterion becomes:
 
         .. math::
 
-            \\rho   \\frac{\\partial^2 f_V}{\\partial \\rho^2} &= -k_B T \\
-            \\rho^2 \\frac{\\partial^3 f_V}{\\partial \\rho^3} &= \\phantom{-}k_B T
+           \rho   \frac{\partial^2 f_V}{\partial \rho^2} &= -k_B T \\\n+           \rho^2 \frac{\partial^3 f_V}{\partial \rho^3} &= \phantom{-}k_B T
 
         Parameters
         ----------
@@ -683,7 +681,7 @@ class EquationOfState(object):
         tuple of float
             ``(rho_crit, T_crit, p_crit)``: critical density, temperature, and pressure.
             Returns ``(NaN, NaN, NaN)`` if no critical point is found.
-        """     
+        """
         with log.section('EOS', 2, timer="Initializing"):
             log.dump('Computing critical point ...')
             #define vector function with 2 components and dependent on density and temperature whose root is the critical point:
@@ -975,16 +973,25 @@ class EOS_MIX(EquationOfState):
         rho_arr, rho_sum, x = self._get_fractional_coefficients(rho)
         return rho_sum * self.excess_free_energy_particle(rho)
 
-    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=5000):
-        """
-        Solve EOS for density as function of chemical potential at fixed temperature.
+    def solve_densities_from_chempots(self, chempots, n_rough_gridpoints=10000):
+        r"""
+        Solve EOS for density as a function of chemical potential at fixed temperature.
+        The chemical potential is given by:
+
+        .. math::
+
+           \mu = k_B T \ln(\rho \Lambda^3) + f^{\mathrm{N}}_{\mathrm{ex}}(\rho, T)
+               + \rho \, \frac{\partial f^{\mathrm{N}}_{\mathrm{ex}}}{\partial \rho}(\rho, T)
+
+        Solutions are found by first evaluating :math:`\mu(\rho)` on a coarse density grid
+        to bracket candidates, then refining each bracket with :func:`scipy.optimize.brentq`.
 
         Parameters
         ----------
         chempots : float or array-like
             Chemical potential(ies) in atomic units (Hartree).
         n_rough_gridpoints : int, optional
-            Number of grid points for bracketing solutions, default 1000.
+            Number of grid points for bracketing solutions, default 10000.
         excess_only : bool, optional
             If True, use excess chemical potential only, default False.
 
@@ -998,54 +1005,15 @@ class EOS_MIX(EquationOfState):
         ValueError
             If more than 3 branches (phases) are found.
         """
-        # #first construct a rough density grid that will allow to determine density intervals that enclose the solution(s)
-        # rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
-        # rho, rho_sum, x = self._get_fractional_coefficients(rough_density_grid)
-        # #compute the chemical potential on this rough grid
-        # rough_chempot_grid = self.compute_chempot(rho=rho_sum)
-
-        # #determine in which interval in rough_chempot_grid the given chempots lies and
-        # chempots = np.atleast_1d(chempots)
-
-        # density_intervals = [None,]*len(chempots)
-        # for i, mu in enumerate(chempots):
-        #     for j in range(1,n_rough_gridpoints):
-        #         mu_low = rough_chempot_grid[j-1]
-        #         mu_high = rough_chempot_grid[j]
-        #         if np.all((mu_low - mu) * (mu_high - mu) <= 0):
-        #             interval = [rough_density_grid[j-1],rough_density_grid[j]]
-        #             if density_intervals[i] is None:
-        #                 density_intervals[i] = [interval]
-        #             else:
-        #                 density_intervals[i].append(interval)
-
-        # #for each chemical potential, find a solution in each proposed interval using the brentq method
-        # densities = np.zeros([len(chempots), 2])*np.nan
-        # for i,mu in enumerate(chempots):
-        #     solutions = []
-        #     def fun(rho):
-        #         return np.sum((self.compute_chempot(rho=rho) - mu))
-        #     if density_intervals[i] is not None:
-        #         for interval in density_intervals[i]:
-        #             sol = brentq(fun, interval[0], interval[1])
-        #             solutions.append(sol)
-        #     # if len(solutions)>3: raise ValueError('Solving densities from EOS only supports max 3 branches (i.e. three metastable phases), but found %i' %(len(solutions)))
-        #     if len(solutions) > 0:
-        #         stable_solutions = self.filter_stable_phases(solutions, ensemble='grand')
-        #         densities[i,:len(stable_solutions)] = np.array(sorted(stable_solutions))
-
-        # return densities
-
         rough_density_grid = self.get_rough_density_grid(n_rough_gridpoints)
         rho, rho_sum, x = self._get_fractional_coefficients(rough_density_grid)
         rough_chempot_grid = self.compute_chempot(rho=rho_sum)
-
         chempots = np.atleast_1d(chempots)
 
         density_intervals = []
         for mu in chempots:
             diff = rough_chempot_grid - mu
-            sign_changes = np.where(np.diff(np.sign(diff)))[0]
+            sign_changes = np.where(np.diff(np.sign(diff), axis=0))[0]
             sign_changes = sign_changes[sign_changes < len(rough_density_grid) - 1]  # guard OOB
             intervals = [[rough_density_grid[j], rough_density_grid[j + 1]] for j in sign_changes]
             density_intervals.append(intervals)

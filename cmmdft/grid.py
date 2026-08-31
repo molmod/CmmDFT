@@ -42,7 +42,7 @@ class Grid(object):
         where last dimension contains [x, y, z, r]
     kpoints : ndarray
         Reciprocal-space grid point coordinates with shape (nx, ny, nz, 4),
-        where last dimension contains [kx, ky, kz, |k|]
+        where last dimension contains [kx, ky, kz, :math:`|k|`]
     dr : float
         Volume element in real space
     dk : float

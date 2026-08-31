@@ -8,7 +8,7 @@ from pathlib import Path
 from .units_constants import kjmol, planck, boltzmann, angstrom
 
 from .log import log
-from .system import NanoporousHost, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
+from .system import NanoporousHost, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture, EffectiveAverageHost
 from .external_potential.extpot_calculator import get_external_potential, interpolate_effective_potential, precalculate_effective_potential, generate_sum_potential
 
 from numba import njit
@@ -110,7 +110,7 @@ class HardSphereFunctional(Functional):
         System temperature in Kelvin
     beta : float
         Inverse temperature (1/(k_B*T))
-    grid : Grid
+    grid : :class:`cmmdft.grid.Grid`
         Spatial grid object for real/reciprocal space calculations
     version : ndarray
         Version flags for anisotropy, tensor, and approximation variants
@@ -124,7 +124,7 @@ class HardSphereFunctional(Functional):
 
         Parameters
         ----------
-        grid : Grid
+        grid : :class:`cmmdft.grid.Grid`
             An instance of Grid (see system.py) defining the spatial discretization
         Rhs : float or array-like
             The radius of the hard sphere particles (can be array for multiple components)
@@ -1462,7 +1462,7 @@ class ExternalPotential(Functional):
                                         tmp_spacing=0.15*angstrom, cutoff=self.cutoff,
                                         degree=self.degree, int_method='trilinear', remove_tmp=True)
             else:
-                potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host.host_SystemData, guest_SystemData, degree=self.degree)
+                potential = precalculate_effective_potential(points, 1/temperature/boltzmann, host.host_SystemData, guest_SystemData, degree=self.degree, cutoff=self.cutoff)
         else:
             if isinstance(real_guest, DualModelGuest):
                 sigma, epsilon = real_guest.guest_ff_dict[0]
@@ -1492,6 +1492,42 @@ class ExternalPotential(Functional):
         else:
             self.potential[0] = self._generate_pot(self.host, self.guest, temperature)
         self.kpotential = self.grid.fftn(self.potential)
+
+    def generate_effective_average_potential(self, temperature):
+        """
+        Generate an effective averaged guest-host potential over multiple host configurations.
+
+        Computes the ensemble-averaged potential by summing contributions from each host
+        system in an EffectiveAverageHost. 
+
+        Parameters
+        ----------
+        temperature : float
+            Temperature in Kelvin used to weight the host contributions via beta = 1/(k_B T).
+        """
+        assert isinstance(self.host, EffectiveAverageHost), 'Host must be a list of hosts'
+        Ns = len(self.host.HostSystemList)
+        
+        log_sum = None
+        beta = 1/temperature/boltzmann
+        
+        for real_host in self.host.HostSystemList:
+            if isinstance(self.guest, GuestMixture):
+                potential = np.empty((self.guest.nspecies, ) + tuple(self.grid.npoints))
+                for e, real_guest in enumerate(self.guest.guests):
+                    potential[e] = self._generate_pot(real_host, real_guest, temperature)
+            else:
+                potential = np.empty((1, ) + tuple(self.grid.npoints))
+                potential[0] = self._generate_pot(real_host, self.guest, temperature)            
+            term = np.log(1/Ns) - beta * potential
+            if log_sum is None:
+                log_sum = term
+            else:
+                log_sum = np.logaddexp(log_sum, term)
+            
+        self.potential = -log_sum / beta
+        self.kpotential = self.grid.fftn(self.potential)
+
 
     def dump_potential(self, fn):
         assert self.potential is not None

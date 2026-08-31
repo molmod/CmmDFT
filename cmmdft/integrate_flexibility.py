@@ -35,7 +35,7 @@ def integrate_flexibility(fep_array, s_values, flex_fep):
         flex_fep.fs
     ) 
     # Add the flexibility correction to the rigid free energy.
-    fep_sum = flex_interpolate[:, np.newaxis] + fep_array
+    fep_sum = flex_interpolate[:, np.newaxis, np.newaxis] + fep_array
 
     # Find the minimum combined free energy over all gate sizes at each (pressure, CV) point
     fep_min = np.min(fep_sum, axis=0)  # shape: (n_pressures, n_cvs)
@@ -101,7 +101,7 @@ def integrate_flexibility_adsorption(omega_array, gate_sizes, flex_fep, loading_
     return optimal_s, opt_loadings, opt_omega
 
 
-class FEP(object):
+class FreeEnergyProfile(object):
     """
     Object containing free energy profile information.
 

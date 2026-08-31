@@ -98,18 +98,19 @@ class Grid:
 
         Product of all value_arrays will be computed element-wise then
         integrated on the grid with its weights.
+
         .. math::
             Integral = \int w(x) \prod_i f_i(x) dx
 
         Parameters
         ----------
         *value_arrays : np.ndarray(N, )
-            One or multiple value array to integrate.
+            One or multiple value arrays to integrate.
 
         Returns
         -------
         float
-            The calculated integral over given integrand or function
+            The calculated integral over the given integrand or function.
 
         """
         if len(value_arrays) < 1:

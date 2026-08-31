@@ -8,10 +8,11 @@ import numpy as np
 from functools import partial
 
 from numba import njit, prange
-from scipy.special import logsumexp, erfc
+from scipy.special import logsumexp
+import math 
 
 from ..units_constants import kjmol, bar, kelvin, angstrom, planck, boltzmann, parse_unit
-from .utils import load_chk, generate_rotation_matrix
+from .utils import load_chk, generate_rotation_matrix, get_system_data
 from ..grid import Cell, Grid
 from .interpolator import Interpolator
 
@@ -76,7 +77,7 @@ def lennard_jones(r, sigma, epsilon, derivative=False, cutoff=12*angstrom):
     else:
         return V
 
-@njit(parallel=True)
+@njit(parallel=True, cache=True)
 def _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
                   cell_matrix, cell_inv, cutoff):
     N = points.shape[0]
@@ -148,15 +149,21 @@ def _compute_coulomb_real(points, host_pos, host_charges, guest_charge,
     """
     N = points.shape[0]
     M = host_pos.shape[0]
+    host_charge_loading, host_charge_radius = host_charges.T
+    guest_charge_loading, guest_charge_radius = guest_charge
+
     cutoff_real = 6.0 / alpha
-    prefactor = ke * guest_charge / epsilon_r
+    prefactor = ke * guest_charge_loading / epsilon_r
+    eta_guest2 = 0.0
+    if guest_charge_radius > 0.0:
+        eta_guest2 = 1.0 / (2.0 * guest_charge_radius * guest_charge_radius)
 
     Vcoul = np.zeros(N, dtype=np.float64)
 
     for j in prange(N):
         v = 0.0
         for i in range(M):
-            if host_charges[i] == 0.0:
+            if host_charge_loading[i] == 0.0:
                 continue
 
             dx = points[j, 0] - host_pos[i, 0]
@@ -180,7 +187,28 @@ def _compute_coulomb_real(points, host_pos, host_charges, guest_charge,
             if r < 1e-12 or r >= cutoff_real:
                 continue
 
-            v += host_charges[i] * erfc(alpha * r) / r
+            # effective (combined) smearing width for this host atom
+            if host_charge_radius[i] > 0.0:
+                eta2 = 1.0 / (2.0 * host_charge_radius[i] * host_charge_radius[i])
+                if eta_guest2 > 0.0:
+                    # convolution of two Gaussians
+                    gamma2 = 1.0 / (1.0/eta2 + 1.0/eta_guest2)
+                else:
+                    gamma2 = eta2
+                gamma = math.sqrt(gamma2)
+
+                if r < 1e-12:
+                    # finite limit: 2*gamma/sqrt(pi) - 2*alpha/sqrt(pi)
+                    v += host_charge_loading[i] * (2.0/math.sqrt(math.pi)) * (gamma - alpha)
+                else:
+                    v += host_charge_loading[i] * (math.erf(gamma * r) - math.erf(alpha * r)) / r
+            else:
+                # point-charge limit, same as before
+                if r < 1e-12:
+                    continue
+                v += host_charge_loading[i] * math.erfc(alpha * r) / r
+
+            # v += host_charges[i] * math.erfc(alpha * r) / r
 
         Vcoul[j] = prefactor * v
 
@@ -236,7 +264,7 @@ def _coulomb_batched_derivatives(R, q_host, q_guest, alpha, dr, epsilon_r=1.0, k
     
     if np.any(mask):
         r = R[mask]
-        erfc_val = erfc(alpha * r)
+        erfc_val = math.erfc(alpha * r)
         exp_val = np.exp(-alpha2 * r * r)
         
         # Potential
@@ -303,21 +331,15 @@ def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alph
     npoints = points.shape[0]
     natoms = host_pos.shape[0]
     
+    host_charge_loading, host_charge_radius = host_charges.T
+    guest_charge_loading, guest_charge_radius = guest_charge
+
     V = np.zeros(npoints, dtype=np.float64)
-    if derivatives:
-        dVdx = np.zeros(npoints, dtype=np.float64)
-        dVdy = np.zeros(npoints, dtype=np.float64)
-        dVdz = np.zeros(npoints, dtype=np.float64)
-        dVdxy = np.zeros(npoints, dtype=np.float64)
-        dVdxz = np.zeros(npoints, dtype=np.float64)
-        dVdyz = np.zeros(npoints, dtype=np.float64)
-        dVdxyz = np.zeros(npoints, dtype=np.float64)
-    
     volume = np.abs(np.linalg.det(rvecs))
-    q_prod = ke * guest_charge / epsilon_r
+    q_prod = ke * guest_charge_loading / epsilon_r
     alpha2 = alpha * alpha
     inv_volume = 1.0 / volume
-    
+
     for n1 in prange(-kmax, kmax + 1):
         for n2 in prange(-kmax, kmax + 1):
             for n3 in prange(-kmax, kmax + 1):
@@ -336,8 +358,8 @@ def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alph
                 rho_k_imag = 0.0
                 for i in prange(natoms):
                     phase = kvec[0] * host_pos[i, 0] + kvec[1] * host_pos[i, 1] + kvec[2] * host_pos[i, 2]
-                    rho_k_real += host_charges[i] * np.cos(phase)
-                    rho_k_imag += host_charges[i] * np.sin(phase)
+                    rho_k_real += host_charge_loading[i] * np.cos(phase)
+                    rho_k_imag += host_charge_loading[i] * np.sin(phase)
                 
                 # Reciprocal space factors
                 exp_factor = np.exp(-k2 / (4.0 * alpha2))
@@ -351,26 +373,286 @@ def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alph
                 # Potential contribution
                 contrib = k_factor * (rho_k_real * cos_phase - rho_k_imag * sin_phase)
                 V += q_prod * contrib
-                if derivatives:
-                    # First derivatives
-                    dV_coeff = k_factor * (rho_k_real * (-sin_phase) - rho_k_imag * cos_phase)
-                    dVdx += q_prod * dV_coeff * kvec[0]
-                    dVdy += q_prod * dV_coeff * kvec[1]
-                    dVdz += q_prod * dV_coeff * kvec[2]
-                    
-                    # Second derivatives
-                    contrib_2nd = -k_factor * (rho_k_real * cos_phase - rho_k_imag * sin_phase)
-                    dVdxy += q_prod * contrib_2nd * kvec[0] * kvec[1]
-                    dVdxz += q_prod * contrib_2nd * kvec[0] * kvec[2]
-                    dVdyz += q_prod * contrib_2nd * kvec[1] * kvec[2]
-                    
-                    # Third derivative
-                    contrib_3rd = -k_factor * (rho_k_real * (-sin_phase) - rho_k_imag * cos_phase)
-                    dVdxyz += q_prod * contrib_3rd * kvec[0] * kvec[1] * kvec[2]
-    if derivatives:
-        return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
-    else:
-        return V
+    return V
+    
+@njit(cache=True, parallel=True)
+def _coulomb_reciprocal_space(points, host_pos, host_charges, guest_charge, alpha, kmax,
+                               rvecs, inv_rvecs, epsilon_r=1.0, ke=1.0, derivatives=False):
+    """
+    Reciprocal-space Ewald contribution (computed once for all grid points).
+
+    Parameters
+    ----------
+    points : ndarray
+        All grid points, shape (npoints, 3).
+    host_pos : ndarray
+        Host atom positions, shape (natoms, 3).
+    host_charges : ndarray
+        Host atom charges, shape (natoms,).
+    guest_charge : float
+        Guest atom charge.
+    alpha : float
+        Ewald damping parameter.
+    kmax : int
+        Reciprocal space cutoff order.
+    rvecs : ndarray
+        Cell vectors, shape (3, 3).
+    inv_rvecs : ndarray
+        Inverse cell vectors, shape (3, 3).
+    epsilon_r : float, optional
+        Relative permittivity, default 1.0.
+    ke : float, optional
+        Coulomb constant, default 1.0.
+
+    Returns
+    -------
+    tuple
+        (V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz) all shape (npoints,)
+    """
+    npoints = points.shape[0]
+    natoms = host_pos.shape[0]
+
+    host_charge_loading, host_charge_radius = host_charges.T
+    guest_charge_loading, guest_charge_radius = guest_charge
+
+    volume = np.abs(np.linalg.det(rvecs))
+    q_prod = ke * guest_charge_loading / epsilon_r
+    alpha2 = alpha * alpha
+
+    n_range = 2 * kmax + 1
+    total_k = n_range * n_range * n_range
+
+    # --- Pass 1: serially precompute all valid k-vectors, their prefactors,
+    #             and structure factors. Avoids nested prange, avoids
+    #             recomputing per grid point, and avoids the write race
+    #             that existed when prange'ing directly over (n1, n2, n3). ---
+    kx_arr = np.empty(total_k, dtype=np.float64)
+    ky_arr = np.empty(total_k, dtype=np.float64)
+    kz_arr = np.empty(total_k, dtype=np.float64)
+    kfac_arr = np.empty(total_k, dtype=np.float64)
+    rho_real_arr = np.empty(total_k, dtype=np.float64)
+    rho_imag_arr = np.empty(total_k, dtype=np.float64)
+
+    n_valid = 0
+    for idx in range(total_k):
+        n1 = idx // (n_range * n_range) - kmax
+        rem = idx % (n_range * n_range)
+        n2 = rem // n_range - kmax
+        n3 = rem % n_range - kmax
+
+        if n1 == 0 and n2 == 0 and n3 == 0:
+            continue
+
+        kx = 2.0 * np.pi * (n1*inv_rvecs[0, 0] + n2*inv_rvecs[0, 1] + n3*inv_rvecs[0, 2])
+        ky = 2.0 * np.pi * (n1*inv_rvecs[1, 0] + n2*inv_rvecs[1, 1] + n3*inv_rvecs[1, 2])
+        kz = 2.0 * np.pi * (n1*inv_rvecs[2, 0] + n2*inv_rvecs[2, 1] + n3*inv_rvecs[2, 2])
+        k2 = kx*kx + ky*ky + kz*kz
+
+        if k2 < 1e-16:
+            continue
+
+        rho_r = 0.0
+        rho_i = 0.0
+        for i in range(natoms):
+            phase = kx*host_pos[i, 0] + ky*host_pos[i, 1] + kz*host_pos[i, 2]
+            rho_r += host_charge_loading[i] * np.cos(phase)
+            rho_i += host_charge_loading[i] * np.sin(phase)
+
+        exp_factor = np.exp(-k2 / (4.0 * alpha2))
+        k_factor = 4.0 * np.pi * exp_factor / (k2 * volume)
+
+        kx_arr[n_valid] = kx
+        ky_arr[n_valid] = ky
+        kz_arr[n_valid] = kz
+        kfac_arr[n_valid] = k_factor
+        rho_real_arr[n_valid] = rho_r
+        rho_imag_arr[n_valid] = rho_i
+        n_valid += 1
+
+    # --- Pass 2: parallelize over grid points. Each thread only ever
+    #             writes to its own V[j] (and dV*[j]) -> no data race. ---
+    V = np.zeros(npoints, dtype=np.float64)
+
+    for j in prange(npoints):
+        px = points[j, 0]
+        py = points[j, 1]
+        pz = points[j, 2]
+
+        v = 0.0
+        for k in range(n_valid):
+            kx = kx_arr[k]
+            ky = ky_arr[k]
+            kz = kz_arr[k]
+            k_factor = kfac_arr[k]
+            rho_r = rho_real_arr[k]
+            rho_i = rho_imag_arr[k]
+
+            phase = kx*px + ky*py + kz*pz
+            cos_p = np.cos(phase)
+            sin_p = np.sin(phase)
+
+            contrib = k_factor * (rho_r * cos_p - rho_i * sin_p)
+            v += contrib
+
+        V[j] = q_prod * v
+    return V 
+
+
+    
+@njit(cache=True, parallel=True)
+def _coulomb_reciprocal_space_derivatives(points, host_pos, host_charges, guest_charge, alpha, kmax,
+                               rvecs, inv_rvecs, epsilon_r=1.0, ke=1.0):
+    """
+    Reciprocal-space Ewald contribution (computed once for all grid points).
+
+    Parameters
+    ----------
+    points : ndarray
+        All grid points, shape (npoints, 3).
+    host_pos : ndarray
+        Host atom positions, shape (natoms, 3).
+    host_charges : ndarray
+        Host atom charges, shape (natoms,).
+    guest_charge : float
+        Guest atom charge.
+    alpha : float
+        Ewald damping parameter.
+    kmax : int
+        Reciprocal space cutoff order.
+    rvecs : ndarray
+        Cell vectors, shape (3, 3).
+    inv_rvecs : ndarray
+        Inverse cell vectors, shape (3, 3).
+    epsilon_r : float, optional
+        Relative permittivity, default 1.0.
+    ke : float, optional
+        Coulomb constant, default 1.0.
+
+    Returns
+    -------
+    tuple
+        (V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz) all shape (npoints,)
+    """
+    npoints = points.shape[0]
+    natoms = host_pos.shape[0]
+
+    volume = np.abs(np.linalg.det(rvecs))
+    q_prod = ke * guest_charge / epsilon_r
+    alpha2 = alpha * alpha
+
+    n_range = 2 * kmax + 1
+    total_k = n_range * n_range * n_range
+
+    # --- Pass 1: serially precompute all valid k-vectors, their prefactors,
+    #             and structure factors. Avoids nested prange, avoids
+    #             recomputing per grid point, and avoids the write race
+    #             that existed when prange'ing directly over (n1, n2, n3). ---
+    kx_arr = np.empty(total_k, dtype=np.float64)
+    ky_arr = np.empty(total_k, dtype=np.float64)
+    kz_arr = np.empty(total_k, dtype=np.float64)
+    kfac_arr = np.empty(total_k, dtype=np.float64)
+    rho_real_arr = np.empty(total_k, dtype=np.float64)
+    rho_imag_arr = np.empty(total_k, dtype=np.float64)
+
+    n_valid = 0
+    for idx in range(total_k):
+        n1 = idx // (n_range * n_range) - kmax
+        rem = idx % (n_range * n_range)
+        n2 = rem // n_range - kmax
+        n3 = rem % n_range - kmax
+
+        if n1 == 0 and n2 == 0 and n3 == 0:
+            continue
+
+        kx = 2.0 * np.pi * (n1*inv_rvecs[0, 0] + n2*inv_rvecs[0, 1] + n3*inv_rvecs[0, 2])
+        ky = 2.0 * np.pi * (n1*inv_rvecs[1, 0] + n2*inv_rvecs[1, 1] + n3*inv_rvecs[1, 2])
+        kz = 2.0 * np.pi * (n1*inv_rvecs[2, 0] + n2*inv_rvecs[2, 1] + n3*inv_rvecs[2, 2])
+        k2 = kx*kx + ky*ky + kz*kz
+
+        if k2 < 1e-16:
+            continue
+
+        rho_r = 0.0
+        rho_i = 0.0
+        for i in range(natoms):
+            phase = kx*host_pos[i, 0] + ky*host_pos[i, 1] + kz*host_pos[i, 2]
+            rho_r += host_charges[i] * np.cos(phase)
+            rho_i += host_charges[i] * np.sin(phase)
+
+        exp_factor = np.exp(-k2 / (4.0 * alpha2))
+        k_factor = 4.0 * np.pi * exp_factor / (k2 * volume)
+
+        kx_arr[n_valid] = kx
+        ky_arr[n_valid] = ky
+        kz_arr[n_valid] = kz
+        kfac_arr[n_valid] = k_factor
+        rho_real_arr[n_valid] = rho_r
+        rho_imag_arr[n_valid] = rho_i
+        n_valid += 1
+
+    # --- Pass 2: parallelize over grid points. Each thread only ever
+    #             writes to its own V[j] (and dV*[j]) -> no data race. ---
+    V = np.zeros(npoints, dtype=np.float64)
+    dVdx = np.zeros(npoints, dtype=np.float64)
+    dVdy = np.zeros(npoints, dtype=np.float64)
+    dVdz = np.zeros(npoints, dtype=np.float64)
+    dVdxy = np.zeros(npoints, dtype=np.float64)
+    dVdxz = np.zeros(npoints, dtype=np.float64)
+    dVdyz = np.zeros(npoints, dtype=np.float64)
+    dVdxyz = np.zeros(npoints, dtype=np.float64)
+
+    for j in prange(npoints):
+        px = points[j, 0]
+        py = points[j, 1]
+        pz = points[j, 2]
+
+        v = 0.0
+        vx = 0.0
+        vy = 0.0
+        vz = 0.0
+        vxy = 0.0
+        vxz = 0.0
+        vyz = 0.0
+        vxyz = 0.0
+
+        for k in range(n_valid):
+            kx = kx_arr[k]
+            ky = ky_arr[k]
+            kz = kz_arr[k]
+            k_factor = kfac_arr[k]
+            rho_r = rho_real_arr[k]
+            rho_i = rho_imag_arr[k]
+
+            phase = kx*px + ky*py + kz*pz
+            cos_p = np.cos(phase)
+            sin_p = np.sin(phase)
+
+            contrib = k_factor * (rho_r * cos_p - rho_i * sin_p)
+            v += contrib
+
+            dV_coeff = k_factor * (rho_r * (-sin_p) - rho_i * cos_p)
+            vx += dV_coeff * kx
+            vy += dV_coeff * ky
+            vz += dV_coeff * kz
+
+            contrib_2nd = -contrib
+            vxy += contrib_2nd * kx * ky
+            vxz += contrib_2nd * kx * kz
+            vyz += contrib_2nd * ky * kz
+
+            contrib_3rd = -dV_coeff
+            vxyz += contrib_3rd * kx * ky * kz
+
+        V[j] = q_prod * v
+        dVdx[j] = q_prod * vx
+        dVdy[j] = q_prod * vy
+        dVdz[j] = q_prod * vz
+        dVdxy[j] = q_prod * vxy
+        dVdxz[j] = q_prod * vxz
+        dVdyz[j] = q_prod * vyz
+        dVdxyz[j] = q_prod * vxyz
+
+    return V, dVdx, dVdy, dVdz, dVdxy, dVdxz, dVdyz, dVdxyz
 
 def compute_ewald_parameters(rvecs, eta=5.0):
     """
@@ -444,7 +726,9 @@ def get_external_potential(points, host_SystemData, sigmaff, epsilonff, cutoff=1
                          cell_matrix, cell_inv, cutoff).reshape(orig_shape[:-1])
 
 
-def get_external_potential_LJ_Coulomb(points, host_SystemData, sigmaff, epsilonff, guest_charge=0.0, cutoff=12*angstrom, use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
+def get_external_potential_LJ_Coulomb(points, host_SystemData, sigmaff, epsilonff, 
+                                      guest_charge=0.0, cutoff=12*angstrom, 
+                                      use_coulomb=False, coulomb_alpha=None, coulomb_kmax=None, coulomb_epsilon_r=1.0):
     """
     Calculate the external potential using Lennard-Jones and optionally Coulomb interactions.
 
@@ -484,6 +768,8 @@ def get_external_potential_LJ_Coulomb(points, host_SystemData, sigmaff, epsilonf
     host_ff_params = host_SystemData.ff_params
     charges = host_SystemData.charges
 
+    guest_charge_loading, guest_charge_radius = guest_charge
+
     cell = Cell(rvecs)
     inv_rvecs = np.linalg.inv(rvecs)
     orig_shape = points.shape[:-1]
@@ -500,9 +786,8 @@ def get_external_potential_LJ_Coulomb(points, host_SystemData, sigmaff, epsilonf
     cell_inv    = np.linalg.inv(cell_matrix)
 
     Vext += _compute_vext(points, host_pos, sigmas_mixed, epsilons_mixed, v_shifts,
-                         cell_matrix, cell_inv, cutoff).reshape(orig_shape[:-1])
-
-    if use_coulomb and guest_charge != 0.0 and np.any(charges != 0.0):
+                         cell_matrix, cell_inv, cutoff).reshape(orig_shape)
+    if use_coulomb and guest_charge_loading != 0.0 and np.any(charges != 0.0):
         if coulomb_alpha is None or coulomb_kmax is None:
             coulomb_alpha, coulomb_kmax = compute_ewald_parameters(rvecs)
 
@@ -522,7 +807,7 @@ def get_external_potential_LJ_Coulomb(points, host_SystemData, sigmaff, epsilonf
         Vext += V_recip
 
         V_self = -(coulomb_alpha / np.sqrt(np.pi)) * np.sum(charges)
-        Vext += (guest_charge / coulomb_epsilon_r) * V_self
+        Vext += (guest_charge_loading / coulomb_epsilon_r) * V_self
 
     return Vext.reshape(orig_shape)
     
@@ -948,7 +1233,7 @@ def get_interpolator_dict(grid_values_fn_dict, grid_origin, grid_spacing, int_me
     return interpolator_dict
     
 
-def get_external_potential_dict(host_SystemData, guest_SystemData, cutoff=12*angstrom):
+def get_external_potential_dict(host_SystemData, guest_SystemData, cutoff=12*angstrom, use_coulomb=True):
     """
     Create dictionary of external potential generators for guest atom types, for
     generation of effective external potentials.
@@ -987,8 +1272,59 @@ def get_external_potential_dict(host_SystemData, guest_SystemData, cutoff=12*ang
             external_potential_dict[key] = partial(get_external_potential, host_SystemData=host_SystemData, sigmaff=sigmaff, epsilonff=epsilonff, cutoff=cutoff)
         else:
             guest_charge = guest_charges[i]
-            external_potential_dict[key] = partial(get_external_potential_LJ_Coulomb, host_SystemData=host_SystemData, 
+            external_potential_dict[key] = partial(get_external_potential_LJ_Coulomb, host_SystemData=host_SystemData, use_coulomb=use_coulomb,
                                                    sigmaff=sigmaff, epsilonff=epsilonff, guest_charge=guest_charge, cutoff=cutoff)
 
 
     return external_potential_dict
+
+def effective_average_potential(points, host_data_list, guest_data, temperature=1, **kwargs):
+    """Compute the temperature-weighted average effective potential over multiple hosts.
+
+    For each host configuration in `host_data_list`, this function evaluates the
+    external potential of the given `guest_data` at the specified spatial points. If the
+    guest contains multiple atoms, the effective rotational potential is computed via
+    `precalculate_effective_potential`; otherwise it uses the pairwise
+    Lennard-Jones external potential from `get_external_potential`.
+
+    The host potentials are combined in log-space using a Boltzmann-weighted
+    average to produce a smooth effective potential at the given temperature.
+
+    Parameters
+    ----------
+    points : ndarray
+        Coordinates where the potential is evaluated, shape (..., 3).
+    host_data_list : list
+        List of host system data objects.
+    guest_data : object
+        Guest system data object containing atom counts and force-field parameters.
+    temperature : float, optional
+        Temperature in kelvin inverse; default is 1.
+    **kwargs
+        Additional keyword arguments forwarded to the effective/external
+        potential evaluation routines.
+
+    Returns
+    -------
+    ndarray
+        Effective potential at `points`, shaped like `points[..., 0]`.
+    """
+    
+    Ns = len(host_data_list)
+    
+    log_sum = None
+    beta = 1/temperature/boltzmann
+    
+    for host_data in host_data_list:
+        if guest_data.natom > 1:
+            potential = precalculate_effective_potential(points, beta, host_data, guest_data, **kwargs)
+        else:
+            guest_sigma, guest_epsilon = guest_data.ff_params[0]
+            potential = get_external_potential(points, host_data, guest_sigma, guest_epsilon, **kwargs)
+        term = np.log(1/Ns) - beta * potential
+        if log_sum is None:
+            log_sum = term
+        else:
+            log_sum = np.logaddexp(log_sum, term)
+        
+    return -log_sum / beta

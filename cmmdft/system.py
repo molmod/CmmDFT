@@ -18,7 +18,7 @@ from .log import log
 from ase.io import read
 
 __all__ = ['System', 
-           'EmptyHost', 'NanoporousHost', 
+           'EmptyHost', 'NanoporousHost', 'EffectiveAverageHost',
            'Guest', 'NonSphericalGuest', 'GuestMixture', 'DualModelGuest', 'SphericalLJGuest', 
            ]
 
@@ -133,7 +133,7 @@ class NanoporousHost(Host):
             self.atoms.center()
             positions = self.atoms.get_positions()
 
-            self.atoms.set_positions(positions)
+            self.atoms.set_positions(positions * dist_unit)
             rvecs = self.atoms.get_cell().T * dist_unit
             cell = Cell(rvecs)
             super().__init__(name, cell)
@@ -143,7 +143,67 @@ class NanoporousHost(Host):
             self.host_SystemData = get_system_data(struct, par, 
                                                     unit_energy=unit_energy, unit_distance=unit_distance, unit_sigma=unit_sigma, unit_charge=unit_charge, unit_mass=unit_mass)
 
-    
+class EffectiveAverageHost(NanoporousHost):
+    """Host instance containing multiple host systems for effective averaging."""
+    def __init__(self, name, struct_list, par_list, struct=None, par=None, ffname='',
+                 unit_distance='au', unit_sigma='au', unit_energy='au', unit_charge='au', unit_mass='au'):
+        
+        """
+        Initialize an `EffectiveAverageHost` from lists of structure and
+        parameter files.
+
+        Parameters
+        ----------
+        name : str or list of str
+            Host identifier(s). If a single string is provided, the same name
+            is assigned to all hosts.
+        struct_list : list of str or list of Path
+            Paths to host structure files, each read by ASE or handled as .chk.
+        par_list : list of str or list of Path
+            Paths to corresponding force-field parameter files.
+        ff_name : str or list of str, optional
+            Optional force-field name tag(s). If a single string is provided,
+            it is replicated for all hosts.
+        unit_distance : str, optional
+            Units for distances passed to `get_system_data`, default 'au'.
+        unit_sigma : str, optional
+            Units for Lennard-Jones sigma parameters, default 'au'.
+        unit_energy : str, optional
+            Units for energy in the force-field, default 'au'.
+        unit_charge : str, optional
+            Units for charge in the force-field, default 'au'.
+        unit_mass : str, optional
+            Units for atomic masses, default 'au'.
+        """        
+        with log.section('SYSTEM', 1, timer='Initializing'):
+            Ns = len(struct_list)
+
+            assert Ns == len(struct_list), 'Number of structure files must be equal to number of parameter files'
+
+            if not isinstance(ffname, list):
+                ff_name_list = [ffname] * Ns
+            else:
+                assert len(ffname) == Ns, 'length of force field name list must be equal to the number of structure files'
+                ff_name_list = ffname
+            
+            if not isinstance(name, list):
+                name_list = [name] * Ns
+            else:
+                assert len(name) == Ns, 'length of name list must be equal to the number of structure files'
+                name_list = name
+
+            if struct is not None and par is not None:
+                super().__init__(name, struct, par, ffname, unit_distance, unit_sigma, unit_energy, unit_charge, unit_mass)
+
+            self.HostSystemList = []
+            for (name, struct, par, ff_name) in zip(name_list, struct_list, par_list, ff_name_list):
+                self.HostSystemList.append(NanoporousHost(name, struct, par, ff_name,
+                                                        unit_distance=unit_distance, unit_sigma=unit_sigma, unit_energy=unit_energy, 
+                                                        unit_charge=unit_charge, unit_mass=unit_mass))
+
+
+            self.cell = self.HostSystemList[0].cell
+
 class EmptyHost(Host):
     """Simple host representing an empty simulation volume.
 
@@ -341,6 +401,7 @@ class GuestMixture(Guest, object):
     """
     def __init__(self, guests, fractions, k_inter=None):
         self.names = [guest.name for guest in guests]
+        self.name = '_'.join(self.names)
         self.guests = guests
         self.fractions = fractions
         self.mix_name = '_'.join(self.names)

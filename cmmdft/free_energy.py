@@ -7,7 +7,7 @@ from pathlib import Path
 from .units_constants import kjmol, angstrom, boltzmann, planck
 
 from .log import log
-from .system import NanoporousHost, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture
+from .system import NanoporousHost, SphericalLJGuest, DualModelGuest, NonSphericalGuest, EmptyHost, GuestMixture, EffectiveAverageHost
 from .functionals import *
 from .eos import *
 
@@ -26,7 +26,7 @@ class FreeEnergy(object):
     
     Attributes
     ----------
-    grid : Grid
+    grid : :class:`cmmdft.grid.Grid`
         Spatial grid object for discretization
     system : System
         System object containing guest and host information
@@ -60,7 +60,7 @@ class FreeEnergy(object):
         
         Parameters
         ----------
-        grid : Grid
+        grid : :class:`cmmdft.grid.Grid`
             Spatial grid object for real/reciprocal space discretization
         system : System
             System object containing host and guest molecule definitions
@@ -359,7 +359,10 @@ class FreeEnergy(object):
 
                 if not os.path.isfile(fn) or self.overwrite or rewrite:
                     log.dump('computing external potential on grid')
-                    epot.generate_potential(temperature)
+                    if isinstance(self.system.host, EffectiveAverageHost):
+                        epot.generate_effective_average_potential(temperature)
+                    else:
+                        epot.generate_potential(temperature)
                     log.dump('writing external potential to %s' %fn)
                     epot.dump_potential(fn)
                 else:
@@ -404,7 +407,7 @@ class FreeEnergy(object):
         self.add_part(lda)
     
     def add_wdav(self, eos, **kwargs):
-        """
+        r"""
         Add weighted density approximation (WDA) functional.
         
         Implements an improved approximation over LDA by using a weighted density
@@ -423,9 +426,9 @@ class FreeEnergy(object):
         - Uses hard sphere radius from self.system.guest.Rhs as the smoothing scale
         - More accurate than LDA for moderate to high densities
         - Computationally more expensive than LDA due to convolution operations
-        - The effective density at each point r is computed as:
-          ρ_eff(r) = integral of w(|r-r'|) * ρ(r') dr'
-          where w is a weight function centered on the hard sphere radius
+        - The effective density at each point r is computed as
+          :math:`\rho_{\mathrm{eff}}(r) = \int w(\lvert r-r' \rvert) \rho(r') \, dr'`.
+          Here, :math:`w` is a weight function centered on the hard sphere radius.
         
         See Also
         --------
@@ -550,7 +553,7 @@ class FreeEnergy(object):
         self.add_part(mfa)
 
     def add_correlation_wda_lj(self, a=None, **kwargs):
-        """
+        r"""
         Add correlation correction functional for WDA using LJ parameters.
         
         Implements a correlation correction to the weighted density approximation
@@ -569,17 +572,21 @@ class FreeEnergy(object):
         Notes
         -----
         For pure components:
+
         - Uses three EOS contributions:
           - MBWR: Modified Benedict-Webb-Rubin equation of state
-          - CS: Carnahan-Starling equation of state  
+          - CS: Carnahan-Starling equation of state
           - MFA: Mean-field approximation EOS
+
         - Final contribution: MBWR - CS - MFA (removes overcounting)
         
         For mixtures:
+
         - Use mixture versions of all EOS components
-        - Σ parameter matrix computed for each pair interaction
+        - Sigma parameter matrix computed for each pair interaction
         
         LJ parameters obtained from self.system.guest:
+
         - mass: molecular mass
         - sigma: LJ characteristic length
         - epsilon: LJ characteristic energy

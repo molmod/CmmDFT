@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 
-import os, sys, numpy as np, matplotlib.pyplot as plt
+import os, sys, h5py, numpy as np, matplotlib.pyplot as plt
 from pathlib import Path
 import matplotlib.cm as cmap
 
 from .units_constants import boltzmann, kjmol, bar, kelvin, angstrom, parse_unit
-from .tools import aif_reader
+from .tools import aif_reader, get_chempot_key
 from .eos import ModifiedBenedictWebbRubinEOS
 
 __all__ = ['Plotter', 'MultiPlotter']
@@ -50,6 +50,8 @@ ylabels = {
 cm_convergence  = cmap.get_cmap('tab10')
 cm_contour      = cmap.get_cmap('rainbow')
 cm_temperatures = cmap.get_cmap('tab10')
+
+linestyles = ['-', '--', ':', '-.']
 
 class Plotter(object):
     def __init__(self, calculator):
@@ -710,7 +712,65 @@ class Plotter(object):
         ax.set_xlabel(f'{x_key} [{x_unit}]')
         ax.set_ylabel(f'{y_key} [{y_unit}]')
         return fig
-       
+
+    def plot_free_energy_profile(self, temperature, mus=None, pressures=None, title=None, fn=None, relative=True, density=False):
+        mus = self.calculator.get_chempot_from_pressures(temperature, chempot=mus, pressure=pressures)
+    
+        q_by_pressure = {}
+        n_by_pressure = {}
+        free_by_pressure = {}
+
+        mu_keys = [get_chempot_key(mu) for mu in mus]
+        with h5py.File(self.calculator.workdir / 'projected_density_energy.hdf5', 'r') as h5:
+            for mu_key in mu_keys:
+                h5_path = f"T_{temperature / kelvin:0.5f}/mu_{mu_key}"
+                group = h5[h5_path]
+                q = group['q'][:]
+                n = group['n'][:]
+                free = group['free_energy'][:]
+            
+                q_by_pressure[mu_key] = q
+                n_by_pressure[mu_key] = n
+                free_by_pressure[mu_key] = free
+        
+        fig, ax = plt.subplots(1,1, figsize=(6,6))
+        for i_mu, mu_key in enumerate(mu_keys):
+            if pressures is not None:
+                part_label = f'{pressures[i_mu] / bar:.1f} bar'
+            else:
+                mu_label_parts = mu_key.split('_')
+                mu_parts = [mu_part[-2:] for mu_part in mu_label_parts]
+                part_label = ', '.join(mu_parts) + ' kJ/mol'
+            if density:
+                n_dens = n_by_pressure[mu_key]
+                if n_dens.shape[1] > 1:
+                    for i in range(self.calculator.ncomp):
+                        ax.plot(q_by_pressure[mu_key] / angstrom, n_dens[:, i] / (1 / angstrom), linestyle=linestyles[i], label=f'{self.calculator.guest.names[i]} {part_label}')
+                else:
+                    ax.plot(q_by_pressure[mu_key] / angstrom, n_dens / (1 / angstrom), label=part_label)
+            else:
+                free_energy = free_by_pressure[mu_key]
+                if relative:
+                    free_energy = free_energy - np.nanmin(free_energy, axis=0)
+                if free_energy.shape[1] > 1:
+                    for i in range(self.calculator.ncomp):
+                        ax.plot(q_by_pressure[mu_key] / angstrom, free_energy / kjmol, linestyle=linestyles[i], label=f'{self.calculator.guest.names[i]} {part_label}')
+                else:
+                    ax.plot(q_by_pressure[mu_key] / angstrom, free_energy / kjmol, label=part_label)
+        if density:
+            ax.set_ylabel(r'Projected density [$\AA^{-1}$]')
+            ax.set_title('Density along diffusion coordinate')
+        else:
+            ax.set_ylabel('Free energy [kJ/mol]')
+            ax.set_title('Free energy profile along diffusion coordinate')
+
+        ax.set_xlabel(r'Diffusion CV [$\AA$]')
+        ax.legend()
+        fig.tight_layout()
+        if fn:
+            fig.savefig(self.calculator.workdir / fn, dpi=200)
+        return fig
+
         
 class MultiPlotter(Plotter):
     '''
@@ -861,7 +921,7 @@ class MultiPlotter(Plotter):
     def free_energy_contribution(self, temperatures, chempots, contrib_name, ylabel='Energy [%s]', yunit='kjmol', title=None, fn=None, over_loading=False):
         '''This function plots the contribution to the free energy specified by a given name as a function of
         chemical potential for several temperatures.
-        
+
         Parameters
         ----------
         temperatures
@@ -870,8 +930,8 @@ class MultiPlotter(Plotter):
             A list of chemical potentials to plot the contribution to free energy against.
         contrib_name
             The name of the contribution to the free energy that will be plotted. It can be a string or a list
-        of strings. A list can be provided when the different calculator instances use different functionals that 
-        need to be compared.
+            of strings. A list can be provided when the different calculator instances use different functionals that
+            need to be compared.
         ylabel, optional
             The label for the y-axis of the plot, with a placeholder for the unit specified by yunit.
         yunit, optional
@@ -882,14 +942,14 @@ class MultiPlotter(Plotter):
             The filename to save the plot as.
         over_loading, optional
             A boolean parameter that specifies whether to calculate the free energy contribution per unit cell
-        or per loading. If set to True, the contribution will be calculated per loading. If set to False,
-        the contribution will be calculated per unit cell.
-        
+            or per loading. If set to True, the contribution will be calculated per loading. If set to False,
+            the contribution will be calculated per unit cell.
+
         Returns
         -------
             A plot comparing the contribution to the free energy specified by 'contrib_name' as a function of the
-        chemical potential for geiven temperatures and the different calculator objects
-        
+            chemical potential for given temperatures and the different calculator objects
+
         '''
         if isinstance(contrib_name, list):
             contrib_names = ''

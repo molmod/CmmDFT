@@ -35,7 +35,7 @@ class Program(object):
         Working directory for output files
     system : System
         Host-guest system definition
-    grid : Grid
+    grid : :class:`cmmdft.grid.Grid`
         Spatial discretization
     fener : FreeEnergy
         Free energy functional manager
@@ -105,6 +105,66 @@ class Program(object):
         """
         return copy_module.deepcopy(self)
     
+    def alter_workdir(self, prefix=None, hostname=None, guestname=None, ff_suffix=None,
+                       funct_suffix=None, grid_suffix=None, suffix=None):
+        """
+        Alter the work directory of the program.
+
+        Updates one or more components of the work directory path and
+        recreates the directory structure accordingly. Any component left
+        as None retains its current value.
+
+        Parameters
+        ----------
+        prefix : str, optional
+            Root directory prefix. If None, keeps the current value.
+        hostname : str, optional
+            Name of the host framework. If None, keeps the current value.
+        guestname : str, optional
+            Name of the guest molecule(s). If None, keeps the current value.
+        ff_suffix : str, optional
+            Force field specification suffix. If None, keeps the current value.
+        funct_suffix : str, optional
+            Functional type suffix. If None, keeps the current value.
+        grid_suffix : str, optional
+            Grid specification suffix. If None, keeps the current value.
+        suffix : str, optional
+            Additional suffix for file naming. If None, keeps the current value.
+
+        Returns
+        -------
+        Path
+            The newly set work directory.
+        """
+        # Update only the provided components, keep the rest unchanged
+        updates = {
+            'prefix': prefix,
+            'hostname': hostname,
+            'guestname': guestname,
+            'ff_suffix': ff_suffix,
+            'funct_suffix': funct_suffix,
+            'grid_suffix': grid_suffix,
+            'suffix': suffix,
+        }
+        for key, value in updates.items():
+            if value is not None:
+                self.name_dict[key] = value
+
+        workdir = Path(self.name_dict['prefix']) / self.name_dict['hostname'] / \
+            self.name_dict['guestname'] / self.name_dict['ff_suffix'] / \
+            self.name_dict['funct_suffix'] / self.name_dict['grid_suffix'] / \
+            self.name_dict['suffix']
+
+        if not workdir.is_dir():
+            workdir.mkdir(parents=True, exist_ok=True)
+            
+        with log.section('PROGRAM', 1, timer='Initializing'):
+
+            log.dump('Altering work directory to %s' % workdir)
+            self.workdir = workdir
+
+        return self.workdir
+
     def set_system(self, host, guest):
         """
         Set the host and guest system definition.

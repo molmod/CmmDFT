@@ -36,7 +36,7 @@ class Calculator(object):
         Dictionary of naming conventions from the program.
     workdir : Path
         Working directory for output files.
-    grid : Grid
+    grid : :class:`cmmdft.grid.Grid`
         The computational grid.
     fener : FreeEnergy
         Free energy functional.
@@ -164,7 +164,11 @@ class Calculator(object):
             mus = chempot
         else:
             mus = self.get_chemical_potential(temp)
-        
+        try:
+            if len(mus) == 1:
+                mus = mus[0]
+        except TypeError:
+            pass
         return mus
     
     def density_statistics(self, temp, chempot=None, pressure=None):
@@ -1126,7 +1130,7 @@ class Calculator(object):
             assert os.path.isfile(npy_fn), f'No density found for {npy_fn}'
             rho = np.load(npy_fn).real
 
-            n_list = np.empty((rho.shape[0],cvs.shape[0]-1))
+            n_list = np.empty((cvs.shape[0]-1, rho.shape[0]))
             q_list = (cvs[1:] + cvs[:-1]) / 2
             step_dists = np.diff(cvs)
 
@@ -1140,10 +1144,10 @@ class Calculator(object):
 
                 for e in range(len(q_list)):
                     mask = valid & (bin_indices == e)
-                    n_list[i, e] = self.grid.integrate(mask * rho_part)
+                    n_list[e, i] = self.grid.integrate(mask * rho_part)
 
                 if normalize:
-                    n_list[i] /= step_dists       
+                    n_list[:, i] /= step_dists       
 
             if save:
                 with h5py.File(fn, 'a') as f:
@@ -1297,8 +1301,6 @@ class Calculator(object):
             if fn is None:
                 fn = self.workdir / f'loading_grand_potential_{temperature:7.5f}K.npz'
 
-            # data = np.array([[chempot], [n], [omega.real]])
-            # print(data)
             if os.path.isfile(fn):
                 data = np.load(fn)
                 chempots = data['mu']
@@ -1344,7 +1346,7 @@ class Calculator(object):
                 omegas = np.array([omega.real])
             np.savez(fn, mu=chempots, loading=loadings, omega=omegas)
     
-    def free_energy_path(self, temperature, chempot=None, pressure=None, list_chems=None, fn=None, max_n_chems=0, dens_omega_fn=None, sum=False):
+    def free_energy_path(self, temperature, chempot=None, pressure=None, list_chems=None, list_pressures=None, fn=None, max_n_chems=0, dens_omega_fn=None, sum=False):
         """
         Calculate the free energy profile along a predefined collective variable (CV), which is the projection of the position of a molecule on a diffusion path.
 
@@ -1395,9 +1397,11 @@ class Calculator(object):
             target_group_path = f"T_{temperature_name}/mu_{target_chempot_name}"
 
             beta = 1 / temperature / boltzmann            
-            if list_chems is None:
+            if list_chems is None and list_pressures is None:
                 # A list is created of chemical potentials lower than the input, over this list the later integration of n is carried out     
                 list_chems = self.get_chemical_potential(temperature)
+            elif list_pressures is not None:
+                list_chems = self.eos.compute_chempot(pressure=list_pressures, temperature=temperature)
                 
             if list_chems.ndim == 1:
                 matches = np.where(np.isclose(list_chems, chempot, atol=1e-8))[0]
@@ -1440,7 +1444,7 @@ class Calculator(object):
                     
                     n_proj = f[f"{source_path}/n"][:]
                     if sum:
-                        n_proj = np.atleast_2d(np.sum(n_proj, axis=0))
+                        n_proj = np.atleast_2d(np.sum(n_proj, axis=1))
                     n_proj_prev_mu_list.append(n_proj)
 
             n_proj_prev_mu_list = np.array(n_proj_prev_mu_list)
@@ -1468,7 +1472,7 @@ class Calculator(object):
             # integrate over the chemical potentials
             grand_potential_list = -beta * selected_omega_list
             for e in range(q_len):
-                n_list_per_mu = n_proj_prev_mu_list[:,:, e]
+                n_list_per_mu = n_proj_prev_mu_list[:,e,:]
                 omega_list[e] = -(logsumexp(grand_potential_list[:,None], b=n_list_per_mu, axis=0) + np.log(beta))/beta
                 if sum:
                     free_list[e] = omega_list[e] + np.sum(selected_loading_list[-1]*chempot)
@@ -1587,12 +1591,12 @@ class Calculator(object):
                             grp_name = f'T_{temperature_name}/mu_{chempot_name}'
                             grp = f[grp_name]
 
-                            proj_cache[(directory, grp_name)] = (
-                                grp['cv'][:],       # adjust dataset names to match your HDF5 layout
-                                grp['density'][:]
+                            proj_cache[(str(directory), grp_name)] = (
+                                grp['q'][:],       # adjust dataset names to match your HDF5 layout
+                                grp['n'][:]
                             )
 
-            fn = self.workdir / 'projected_density.hdf5'
+            fn = self.workdir / 'projected_density_energy.hdf5'
             with h5py.File(fn, 'w') as f_out:
                 for chempot in chempots:
                     for temp in temperature:
@@ -1601,12 +1605,12 @@ class Calculator(object):
 
                         hdf5_path = f"T_{temperature_name}/mu_{chempot_name}"
 
-                        avg_q = np.mean([proj_cache[d][0] for d in self.dir_list], axis=0)
-                        avg_n = np.mean([proj_cache[d][1] for d in self.dir_list], axis=0)
+                        avg_q = np.mean([proj_cache[(str(d), hdf5_path)][0] for d in self.dir_list], axis=0)
+                        avg_n = np.mean([proj_cache[(str(d), hdf5_path)][1] for d in self.dir_list], axis=0)
 
                         grp = f_out.create_group(hdf5_path)
-                        grp.create_dataset('cv', data=avg_q)
-                        grp.create_dataset('density', data=avg_n)
+                        grp.create_dataset('q', data=avg_q)
+                        grp.create_dataset('n', data=avg_n)
             
             for temp in temperature:
                 loadings = np.empty((len(self.dir_list), len(chempots), self.ncomp))
@@ -1637,58 +1641,61 @@ class Calculator(object):
                 chempots = [chempots]
             if not hasattr(temperature, '__iter__'):
                 temperature = [temperature]      
-            temperature_name = f'{temperature:0.5f}'
 
-              
-            # Read each HDF5 file exactly once, cache by directory
-            proj_cache = {}
-            loading_array = np.empty(len(dr_list), len(chempots))
-            omega_array = np.empty(len(dr_list), len(chempots))
+            for temp in temperature:
+                temperature_name = f'{temp:0.5f}'
+                
+                # Read each HDF5 file exactly once, cache by directory
+                proj_cache = {}
+                loading_array = np.empty((len(dr_list), len(chempots), self.guest.nspecies))
+                omega_array = np.empty((len(dr_list), len(chempots), self.guest.nspecies))
 
-            for e, dr in enumerate(dr_list):
-                adsorption_fn = f'{dr}/loading_grand_potential_{temperature:0.5f}K.npz'
-                adsorption_data = np.load(adsorption_fn)
-                loading = adsorption_data['loading']
-                omega = adsorption_data['omega']
-                loading_array[e, :] = loading
-                omega_array[e, :] = omega
+                for e, dr in enumerate(dr_list):
+                    adsorption_fn = f'{dr}/loading_grand_potential_{temp:0.5f}K.npz'
+                    adsorption_data = np.load(adsorption_fn)
+                    loading = adsorption_data['loading']
+                    omega = adsorption_data['omega']
+                    loading_array[e, :] = loading
+                    omega_array[e, :] = omega
 
-                proj_fn = f'{dr}/projected_density_energy.hdf5'
-                assert proj_fn.is_file(), f'No projected density found at {proj_fn}'
-                with h5py.File(proj_fn, 'r') as f:
-                        
-                        for chempot in chempots:
-                            chempot_name = get_chempot_key(chempot)
-                            
-                            grp_name = f'T_{temperature_name}/mu_{chempot_name}'
-                            grp = f[grp_name]
-                            proj_cache[(s_values[e], grp_name)] = (
-                                grp['cv'][:],       # adjust dataset names to match your HDF5 layout
-                                grp['free_energy'][:],
-                                grp['density'][:],
+                    proj_fn = Path(f'{dr}/projected_density_energy.hdf5')
+                    assert proj_fn.is_file(), f'No projected density found at {proj_fn}'
+                    with h5py.File(proj_fn, 'r') as f:
+                            for chempot in chempots:
+                                chempot_name = get_chempot_key(chempot)
+                                
+                                grp_name = f'T_{temperature_name}/mu_{chempot_name}'
+                                grp = f[grp_name]
+                                proj_cache[(s_values[e], grp_name)] = (
+                                    grp['q'][:],       # adjust dataset names to match your HDF5 layout
+                                    grp['free_energy'][:],
+                                    grp['n'][:],
 
-                            )
-                            len_cvs = len(grp['cv'][:])
-            
-            opt_s_ads, opt_loadings, opt_omega = self.integrate_flexibility_adsorption(omega_array, s_values, flex_fep, loading_array)
-            adsorption_fn = self.workdir / f'loading_grand_potential_{temperature:0.5f}K.npz'
-            np.savez(adsorption_fn, mu=chempots, loading=opt_loadings, omega=opt_omega, s_values=opt_s_ads)
+                                )
+                                len_cvs = len(grp['q'][:])
+                
+                opt_s_ads, opt_loadings, opt_omega = integrate_flexibility_adsorption(omega_array, s_values, flex_fep, loading_array)
+                adsorption_fn = self.workdir / f'loading_grand_potential_{temp:0.5f}K.npz'
+                np.savez(adsorption_fn, mu=chempots, loading=opt_loadings, omega=opt_omega, s_values=opt_s_ads)
 
-            with h5py.File(self.workdir / 'projected_density_energy.hdf5', 'w') as f_out:
-                for ii, mu in enumerate(chempots):
-                    chempot_name = get_chempot_key(mu)
-                    grp_name = f'T_{temperature_name}/mu_{chempot_name}'    
-                    subgrp = f_out.create_group(grp_name)
-                    full_free_energy = np.empty((len(s_values), len_cvs))
+                with h5py.File(self.workdir / 'projected_density_energy.hdf5', 'w') as f_out:
+                    for ii, mu in enumerate(chempots):
+                        chempot_name = get_chempot_key(mu)
+                        grp_name = f'T_{temperature_name}/mu_{chempot_name}'    
+                        subgrp = f_out.create_group(grp_name)
+                        full_free_energy = np.empty((len(s_values), len_cvs, self.guest.nspecies))
 
-                    for i, s in enumerate(s_values):
-                        full_free_energy[i, :] = proj_cache[(s, grp_name)][1]
+                        for i, s in enumerate(s_values):
+                            full_free_energy[i, :] = proj_cache[(s, grp_name)][1]
+                        opt_s, fep_int =  integrate_flexibility(full_free_energy, s_values, flex_fep)
+                        opt_dens = np.empty((len_cvs, self.guest.nspecies))
+                        for e, s_ in enumerate(opt_s):
+                            opt_dens[e] = proj_cache[(s_[0], grp_name)][2][e]
 
-                    opt_s, fep_int =  integrate_flexibility(full_free_energy, s_values, flex_fep)
-                    subgrp.create_dataset('free_energy', data=fep_int)
-                    subgrp.create_dataset('opt_s', data=opt_s)
-
-
+                        subgrp.create_dataset('q', data=proj_cache[(s, grp_name)][0])
+                        subgrp.create_dataset('n', data=opt_dens)
+                        subgrp.create_dataset('free_energy', data=fep_int)
+                        subgrp.create_dataset('opt_s', data=opt_s)
 
     def contribution_approximation(self, contrib_names, cvs, cvs_mat, dist_mask, temperature, chempot=None, pressure=None, supercell=True, pert_size=1e-5, symmetric=False, fn=None):
         """
@@ -1756,8 +1763,6 @@ class Calculator(object):
                 q_min = cvs[e]
                 q_max = cvs[e+1]
                 mask_full = (cvs_mat>q_min)*(cvs_mat<q_max)*dist_mask
-
-                print('q',(q_max+q_min)/2 ,'number', np.sum(mask_full))
 
                 #define the perturbation
                 rho_pert_sup = pert_size*rho_sup*mask_full
@@ -1995,7 +2000,6 @@ class Calculator(object):
                 if part.name in ['ExtPot', 'EffExtPot']:
                     continue
                 else:
-                    # print(part.name)
                     dF += part.derive(rho, krho)
             
             ext_pot[~rho_mask] = -boltzmann*temperature*np.log(rho[~rho_mask]*self.fener.wavelength**3) - dF[~rho_mask] + chempot

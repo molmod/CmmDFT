@@ -25,7 +25,7 @@ class Solver(object):
     
     Attributes
     ----------
-    grid : Grid
+    grid : :class:`cmmdft.grid.Grid`
         Spatial discretization grid
     fener : FreeEnergy
         Free energy functional manager

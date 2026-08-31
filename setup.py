@@ -45,11 +45,17 @@ setup(
         'Programming Language :: Python',
         'Topic :: Science/Engineering :: Molecular Science'
     ],
-    install_requires=['numpy>=1.0',
-                      'scipy',
-                      'matplotlib',
+    install_requires=['numpy>=1.23.0',
+                      'scipy>=1.9.0',
+                      'matplotlib>=3.7.0',
                       'ase>=3.23.0',
-                      'numba',
+                      'numba>=0.60.0',
+                      'h5py>=3.0.0',
                       ],
+    extras_require={
+        'docs': ['sphinx>=7.0',
+                 'sphinx-rtd-theme>=1.3.0',
+                 'sphinxcontrib-bibtex>=2.0.0'],
+    },
 
 )

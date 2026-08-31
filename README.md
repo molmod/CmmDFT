@@ -6,30 +6,68 @@ CmmDFT is a library developed at the [Center for Molecular Modeling (CMM)](https
 
 CmmDFT has the following dependencies:
 
-* [Cython](http://cython.org/)
-* [numpy](http://numpy.org/)
-* [scipy](http://www.scipy.org/)
-* [molmod](https://molmod.github.io/molmod/)
-* [yaff](https://github.com/molmod/yaff)
-* [scikit-learn](https://scikit-learn.org/)
-* [matplotlib](http://matplotlib.sourceforge.net)
+* [numpy](https://numpy.org/) >= 1.23.0
+* [scipy](https://scipy.org/) >= 1.9.0
+* [matplotlib](https://matplotlib.org/) >= 3.7.0
+* [ASE](https://wiki.fysik.dtu.dk/ase/) >= 3.23.0
+* [numba](https://numba.readthedocs.io/) >= 0.60.0
+* [h5py](https://www.h5py.org/) >= 3.0.0
 
-As [molmod](https://molmod.github.io/molmod/) and [yaff](https://github.com/molmod/yaff) are currently no longer maintained, it might result in conflicting package versions with some of the new versions of the above packages. Therefore, below I show how to set up a conda environment with confirmed non-conflicting and working versions of all dependencies above. 
+## Installation with pip
 
-    conda create -n CmmDFT python==3.8.5
-    conda activate CmmDFT
-    pip install numpy==1.22.0
-    pip install matplotlib==3.3.4
-    pip install scipy==1.6.3
-    pip install cython==0.29.23
-    pip install git+https://github.com/molmod/molmod.git
-    pip install yaff
+The easiest way to install CmmDFT is using pip:
+
     pip install .
+
+Or for development installation:
+
+    pip install -e .
+
+## Installation with conda or mamba
+
+For a conda or mamba-based environment:
+
+    mamba create -n CmmDFT python=3.12
+    mamba activate CmmDFT
+    python -m pip install -e .
+
+## Documentation Setup
+
+To build the documentation locally, install the documentation dependencies:
+
+    python -m pip install -r requirements.txt
+
+Then build the HTML documentation with:
+
+    python -m sphinx -b html docs docs/_build/html
+
+## Quick Start with Notebook Tutorials
+
+The best way to get started with CmmDFT is to explore the example notebooks in the `examples/` directory:
+
+* [adsorption_example.ipynb](examples/adsorption_example.ipynb) - Basic adsorption calculations
+* [eos_example.ipynb](examples/eos_example.ipynb) - Equation of state calculations
+* [diffusion_path.ipynb](examples/diffusion_path.ipynb) - Diffusion path analysis
+* [flexible_diffusion_path.ipynb](examples/flexible_diffusion_path.ipynb) - Advanced diffusion modeling
+* [mixture_adsorption.ipynb](examples/mixture_adsorption.ipynb) - Multi-component adsorption
+
+These notebooks demonstrate end-to-end workflows including system setup, calculations, and result analysis.
+
+## Documentation
+
+For detailed information about CmmDFT, please refer to the documentation:
+
+* [Theory Documentation](docs/source/theory/theory.rst) - Theoretical background on classical DFT
+* [Basic cDFT](docs/source/theory/basic_cdft.rst) - Introduction to density functional theory
+* [Excess Functionals](docs/source/theory/excess_functionals.rst) - Details on excess free energy functionals
+* [Diffusion Theory](docs/source/theory/diffusion_theory.rst) - Diffusion calculations
+* [Solvers](docs/source/theory/solvers.rst) - Numerical solver information
+* [API Reference](docs/source/modules.rst) - Python API documentation
     
 
 # Terms of use
 
 CmmDFT is developed by Louis Vanduyfhuys, Vic De Ridder and Steven Vandenbrande at the Center for Molecular Modeling under supervision of prof. Louis Vanduyfhuys. Usage of ThermoLIB should be requested with prof. Vanduyfhuys.
 
-Copyright (C) 2019 - 2024 Louis Vanduyfhuys <Louis.Vanduyfhuys@UGent.be>
+Copyright (C) 2019 - 2026 Louis Vanduyfhuys <Louis.Vanduyfhuys@UGent.be>
 Center for Molecular Modeling (CMM), Ghent University, Ghent, Belgium; all rights reserved unless otherwise stated.

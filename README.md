@@ -53,19 +53,7 @@ Documentation can be found at https://molmod.github.io/CmmDFT/.
   * Diffusion Theory - Diffusion calculations
   * Solvers - Numerical solver information
 * **API Reference** - Complete Python API documentation for all modules
-
-### Building documentation locally
-
-To build a local copy of the documentation, install the documentation dependencies:
-
-    python -m pip install -r requirements.txt
-
-Then build the HTML documentation with:
-
-    python -m sphinx -b html docs docs/_build/html
-
-Open `docs/_build/html/index.html` in a web browser to view the local documentation.
-    
+   
 
 # Terms of use
 

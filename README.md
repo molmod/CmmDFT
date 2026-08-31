@@ -31,16 +31,6 @@ For a conda or mamba-based environment:
     mamba activate CmmDFT
     python -m pip install -e .
 
-## Documentation Setup
-
-To build the documentation locally, install the documentation dependencies:
-
-    python -m pip install -r requirements.txt
-
-Then build the HTML documentation with:
-
-    python -m sphinx -b html docs docs/_build/html
-
 ## Quick Start with Notebook Tutorials
 
 The best way to get started with CmmDFT is to explore the example notebooks in the `examples/` directory:
@@ -55,14 +45,26 @@ These notebooks demonstrate end-to-end workflows including system setup, calcula
 
 ## Documentation
 
-For detailed information about CmmDFT, please refer to the documentation:
+Documentation can be found at https://molmod.github.io/CmmDFT/.
 
-* [Theory Documentation](docs/source/theory/theory.rst) - Theoretical background on classical DFT
-* [Basic cDFT](docs/source/theory/basic_cdft.rst) - Introduction to density functional theory
-* [Excess Functionals](docs/source/theory/excess_functionals.rst) - Details on excess free energy functionals
-* [Diffusion Theory](docs/source/theory/diffusion_theory.rst) - Diffusion calculations
-* [Solvers](docs/source/theory/solvers.rst) - Numerical solver information
-* [API Reference](docs/source/modules.rst) - Python API documentation
+* **Theory Documentation** - Theoretical background on classical DFT
+  * Basic cDFT - Introduction to density functional theory
+  * Excess Functionals - Details on excess free energy functionals
+  * Diffusion Theory - Diffusion calculations
+  * Solvers - Numerical solver information
+* **API Reference** - Complete Python API documentation for all modules
+
+### Building documentation locally
+
+To build a local copy of the documentation, install the documentation dependencies:
+
+    python -m pip install -r requirements.txt
+
+Then build the HTML documentation with:
+
+    python -m sphinx -b html docs docs/_build/html
+
+Open `docs/_build/html/index.html` in a web browser to view the local documentation.
     
 
 # Terms of use

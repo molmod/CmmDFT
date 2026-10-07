@@ -1,6 +1,5 @@
 from .calculator import *
 from .eos import *
-from .extpot_calculator import *
 from .functionals import *
 from .log import *
 from .plotter import *
@@ -8,4 +7,3 @@ from .program import *
 from .solver import *
 from .system import *
 from .tools import *
-from .rotations import *

@@ -12,7 +12,7 @@ from .units_constants import boltzmann, kjmol, angstrom, kcalmol, amu, gram, cen
 
 __all__ = [
     'selection_sort', 'bisect_left', 'get_file_suffix',
-    'find_local_maxima', 'find_neighbours'
+    'find_local_maxima', 'find_neighbours',
     'potential_from_mfa', 'make_supercell',
 ]
 

@@ -29,6 +29,23 @@ where :math:`s` is the number of species. The average number of particles of spe
 
 For a single-component fluid, the species index can be omitted.
 
+The following animations show example density profiles in two metal-organic
+frameworks:
+
+.. figure:: ../_static/images/mof5_anim.gif
+   :alt: Animated density profile in MOF-5.
+   :width: 70%
+   :align: center
+
+   Density profile in MOF-5.
+
+.. figure:: ../_static/images/zif8_anim.gif
+   :alt: Animated density profile in ZIF-8.
+   :width: 70%
+   :align: center
+
+   Density profile in ZIF-8.
+
 Grand potential
 ---------------
 
@@ -183,4 +200,3 @@ For a homogeneous system, the density is independent of position:
    \rho_i(\mathbf{r})=\rho_i^{\mathrm{bulk}}.
 
 The external potential is constant or zero, and the functional equations reduce to the bulk thermodynamic relations used by the equation of state. These bulk properties provide the chemical potentials and reference densities required for inhomogeneous calculations.
-

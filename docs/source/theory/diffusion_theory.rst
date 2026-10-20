@@ -211,6 +211,6 @@ The flexible-cDFT procedure is therefore:
 
 This workflow is depicted in the schematic below.
 
-.. figure:: /_static/images/methodology.png
+.. figure:: ../_static/images/methodology.png
    :alt: Workflow for calculating guest free-energy profiles in flexible host materials using cDFT, illustrated for ethane in ZIF-8.
    :width: 100.0%
